@@ -103,3 +103,19 @@ Enable repo hooks:
 ```bash
 git config core.hooksPath tools/hooks
 ```
+
+## Download Verification
+
+Linux/macOS:
+
+```bash
+gh release download v0.2.3 -R Pantelis23/KernRift
+sha256sum -c kernriftc-v0.2.3-linux-amd64.tar.gz.sha256
+```
+
+Windows PowerShell:
+
+```powershell
+gh release download v0.2.3 -R Pantelis23/KernRift
+Get-FileHash -Algorithm SHA256 .\kernriftc-v0.2.3-windows-amd64.zip
+```

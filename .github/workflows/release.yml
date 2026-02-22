@@ -27,7 +27,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p kernriftc
+          cargo build --release --locked -p kernriftc
+
+      - name: Verify version matches tag (linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          got="$(./target/release/kernriftc --version | tr -d '\r')"
+          echo "expected=$expected got=$got"
+          echo "$got" | grep -F "$expected"
+
+      - name: Verify version matches tag (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $expected = $env:GITHUB_REF_NAME.TrimStart('v')
+          $got = (target\release\kernriftc.exe --version).Trim()
+          Write-Host "expected=$expected got=$got"
+          if ($got -notmatch [regex]::Escape($expected)) { throw "version mismatch" }
 
       - name: Package (linux)
         if: matrix.os == 'ubuntu-latest'
