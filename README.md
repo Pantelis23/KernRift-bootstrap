@@ -109,13 +109,19 @@ git config core.hooksPath tools/hooks
 Linux/macOS:
 
 ```bash
-gh release download v0.2.3 -R Pantelis23/KernRift
-sha256sum -c kernriftc-v0.2.3-linux-amd64.tar.gz.sha256
+TAG=v0.2.3
+gh release download "$TAG" -R Pantelis23/KernRift
+sha256sum -c "kernriftc-$TAG-linux-amd64.tar.gz.sha256"
 ```
 
 Windows PowerShell:
 
 ```powershell
-gh release download v0.2.3 -R Pantelis23/KernRift
-Get-FileHash -Algorithm SHA256 .\kernriftc-v0.2.3-windows-amd64.zip
+$TAG="v0.2.3"
+gh release download $TAG -R Pantelis23/KernRift
+$zip="kernriftc-$TAG-windows-amd64.zip"
+$expected=(Get-Content "$zip.sha256").Split()[0]
+$actual=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+if ($actual -ne $expected) { throw "sha256 mismatch" }
+"OK"
 ```
