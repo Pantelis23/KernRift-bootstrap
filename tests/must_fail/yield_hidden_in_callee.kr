@@ -1,0 +1,7 @@
+fn inner() { yieldpoint(); }
+
+fn outer() {
+  acquire(SchedLock);
+  inner();
+  release(SchedLock);
+}

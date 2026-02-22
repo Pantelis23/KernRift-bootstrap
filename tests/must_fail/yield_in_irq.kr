@@ -1,0 +1,2 @@
+@ctx(irq)
+fn isr() { yieldpoint(); }

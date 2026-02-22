@@ -1,0 +1,16 @@
+/target
+**/target
+*.rlib
+*.rmeta
+*.exe
+*.pdb
+/.idea
+/.vscode
+*.log
+/.tools/
+/vendor/
+/.cargo/config.toml
+test-list.txt
+**/*.kernriftc.tmp.*
+*.swp
+.DS_Store

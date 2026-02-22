@@ -1,0 +1,5 @@
+fn bad() {
+  acquire(SchedLock);
+  yieldpoint();
+  release(SchedLock);
+}

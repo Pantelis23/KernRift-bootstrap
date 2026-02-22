@@ -1,0 +1,6 @@
+@ctx(irq, thread, boot)
+@eff(block)
+fn blocking() { }
+
+@ctx(irq)
+fn isr() { blocking(); }

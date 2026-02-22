@@ -1,0 +1,4 @@
+fn broken_release() {
+  acquire(ConsoleLock);
+  release(SchedLock);
+}

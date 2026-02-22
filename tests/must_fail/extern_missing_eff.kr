@@ -1,0 +1,2 @@
+// expected: HIR extern facts error (missing @eff)
+extern @ctx(thread) fn sleep();

@@ -1,0 +1,2 @@
+// expected: HIR undefined symbol
+fn f() { no_such_symbol(); }

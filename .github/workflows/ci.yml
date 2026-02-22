@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test Discovery (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p kernriftc --tests -- --list > test-list.txt
+          grep -q "must_pass_suite" test-list.txt
+          grep -q "must_fail_suite" test-list.txt
+          grep -q "interprocedural_lock_edge_is_emitted" test-list.txt
+          grep -q "report_rejects_unknown_metric" test-list.txt
+
+      - name: Test Discovery (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test -p kernriftc --tests -- --list > test-list.txt
+          $required = @(
+            "must_pass_suite",
+            "must_fail_suite",
+            "interprocedural_lock_edge_is_emitted",
+            "report_rejects_unknown_metric"
+          )
+          foreach ($name in $required) {
+            if (-not (Select-String -Path test-list.txt -Pattern $name -Quiet)) {
+              throw "missing discovered test: $name"
+            }
+          }
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: kernriftc kr0_contract
+        run: cargo test -p kernriftc --test kr0_contract
+
+      - name: kernriftc cli_contract
+        run: cargo test -p kernriftc --test cli_contract
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Lockgraph spot-check
+        run: cargo run -q -p kernriftc -- --emit lockgraph tests/must_pass/callee_acquires_lock.kr

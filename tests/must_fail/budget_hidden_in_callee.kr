@@ -1,0 +1,13 @@
+fn helper_leaf() { }
+
+fn helper() {
+  helper_leaf();
+  helper_leaf();
+}
+
+@lock_budget(1)
+fn root() {
+  acquire(SchedLock);
+  helper();
+  release(SchedLock);
+}

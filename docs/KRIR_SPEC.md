@@ -1,0 +1,176 @@
+# KRIR Spec (MVP)
+
+## Purpose
+
+KRIR is the kernel-aware IR for KernRift. It carries semantic facts that must remain enforceable through optimization and lowering.
+
+## Data Model
+
+### Sets
+
+- `CtxSet`: subset of `{boot, thread, irq, nmi}`
+- `EffSet`: subset of `{alloc, block, preempt_off, ioport, mmio, dma_map, yield}`
+- `CapSet`: set of capability atoms
+
+### Capability Atoms (MVP)
+
+- `Cap::PhysMap`
+- `Cap::PageTableWrite`
+- `Cap::IrqRoute`
+- `Cap::IoPort(range)`
+- `Cap::Mmio(base,len)`
+- `Cap::DmaMap(dev_id)`
+
+### Linear Capability Kinds (MVP)
+
+- frame ownership handles
+- DMA buffer ownership handles
+- temporary map handles (`Map`/`Unmap`)
+
+### Function Facts
+
+Each function in KRIR carries:
+
+- `ctx_ok: CtxSet`
+- `eff_used: EffSet`
+- `caps_req: CapSet`
+- region attrs: `@noyield`, `lock_budget(N)`, optional `@leaf`, optional `@hotpath`
+
+### Defaults (MVP)
+
+If a function has no explicit annotations for these facts:
+
+- `ctx_ok = {boot, thread}` (never defaults to `irq` or `nmi`)
+- `eff_used = {}`
+- `caps_req = {}`
+
+### Context Policy Builtins
+
+Compiler defines builtin `eff_allowed(ctx)` for each context:
+
+- `eff_allowed(boot)`
+- `eff_allowed(thread)`
+- `eff_allowed(irq)`
+- `eff_allowed(nmi)`
+
+MVP minimum policy:
+
+- `eff_allowed(irq)` excludes `alloc`, `block`, and `yield`
+- `eff_allowed(nmi)` allows only `{ioport, preempt_off}` in KR0.1
+
+### Extern/Unknown Symbol Rule (MVP)
+
+- Any called-but-undefined symbol must have an `extern fn` declaration in module scope.
+- Extern declarations participate in the same fact model (`ctx_ok`, `eff_used`, `caps_req`).
+- Extern declarations must explicitly declare `@ctx(...)` and `@eff(...)`.
+- Extern `@caps(...)` is optional and defaults to `{}`.
+- Missing extern declaration for a called symbol is compile error.
+
+### Capability Availability Model (KR0)
+
+- Module declares `module_caps: CapSet`.
+- `caps_avail(f) = module_caps` for all functions in KR0.
+- Call and function checks use module-level capability availability.
+
+## Core IR Ops
+
+- `Call(callee, args)`
+- `Acquire(lock_id, lock_class)`
+- `Release(lock_id, lock_class)`
+- `MmioRead(addr, width, order)`
+- `MmioWrite(addr, value, width, order)`
+- `Map(kind, args)`
+- `Unmap(kind, handle)`
+- `Fence(domain, kind)`
+- `YieldPoint`
+
+MMIO ordering:
+
+- read order: `Relaxed | Acquire`
+- write order: `Release | SeqCst`
+
+Fence domains:
+
+- `mmio`
+- `cpu`
+
+## Mandatory Passes (MVP)
+
+1. `ctx-check`
+- Enforce `ctx_ok(caller) subset_of ctx_ok(callee)`
+- Forbid `YieldPoint` in `{irq, nmi}`
+
+2. `effect-check`
+- Enforce `eff_used(callee) subset_of eff_allowed(ctx)` for all possible caller contexts
+- Forbid `YieldPoint` inside `@noyield`
+
+3. `cap-check`
+- Enforce `caps_req(callee) subset_of caps_avail(caller)` where `caps_avail(caller) = module_caps` in KR0
+- Enforce linear caps are moved/consumed correctly on `Map`/`Unmap`/`DmaMap`
+
+4. `mmio-verify`
+- Validate MMIO width/access-mode legality
+- Validate required fence patterns
+- MVP policy: missing required fence is compile error
+
+5. `lockgraph`
+- Extract lock edges from `Acquire`/`Release` sequences per object
+- Emit `lockgraph.json` per object
+- Final link step merges lock graphs and rejects cycles
+- Compute and report `max_lock_depth`
+- Reject `YieldPoint` while any lock is held
+- Reject calls to yielding callees while any lock is held
+- Use interprocedural lock summaries in KR0.1; recursion is rejected in KR0.1
+
+## Budget and Span Metrics (MVP)
+
+### `lock_budget(N)`
+
+- Budget unit is call-count
+- Cost is +1 for every call to a function not marked `@leaf`
+- For any path from `Acquire` to matching `Release`, cost must be `<= N`
+
+### `no_yield_spans`
+
+- Span unit uses the same call-count metric
+- Report an upper bound on call-count between `YieldPoint`s in `thread` context
+- `YieldPoint` inside `@noyield` is compile error
+- Region with no reachable `YieldPoint` in thread context is reported as `unbounded`
+
+## Call-Edge Rules (Summary)
+
+For each `caller -> callee`:
+
+- `ctx_ok(caller) subset_of ctx_ok(callee)`
+- for all `c in ctx_ok(caller)`: `eff_used(callee) subset_of eff_allowed(c)`
+- `caps_avail(caller) superset_of caps_req(callee)` (KR0: `caps_avail(caller) = module_caps`)
+
+Any violation is a compile error.
+
+## Artifact Outputs (MVP)
+
+- `kernriftc --emit krir <file.kr>`
+- `kernriftc --emit lockgraph <file.kr>`
+- `kernriftc --emit caps <file.kr>`
+- `kernriftc --emit contracts <file.kr>`
+- `kernriftc check --policy <policy.toml> <file.kr>`
+- `kernriftc check --contracts-out <contracts.json> <file.kr>`
+- `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> <file.kr>`
+- `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> <file.kr>`
+- `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> --sign-ed25519 <secret.hex> --sig-out <contracts.sig> <file.kr>`
+- `kernriftc --report max_lock_depth,no_yield_spans <file.kr>`
+- `kernriftc policy --policy <policy.toml> --contracts <contracts.json>`
+- `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>`
+- `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>`
+
+Contracts schema:
+
+- `docs/schemas/kernrift_contracts_v1.schema.json`
+
+## Lowering Invariants
+
+- calling convention semantics
+- section placement semantics
+- symbol linkage and visibility semantics
+- MMIO ordering semantics
+- lock-class identity references

@@ -1,0 +1,2 @@
+@ctx(thread)
+fn pump() { yieldpoint(); }

@@ -1,0 +1,13 @@
+[package]
+name = "hir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+parser = { path = "../parser" }
+krir = { path = "../krir" }
+
+[dev-dependencies]
+proptest = "1"

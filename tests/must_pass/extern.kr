@@ -1,0 +1,4 @@
+extern @ctx(thread, boot) @eff(block) @caps() fn sleep();
+
+@ctx(thread)
+fn worker() { sleep(); }

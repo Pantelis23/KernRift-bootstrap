@@ -1,0 +1,8 @@
+@leaf
+fn tiny() { }
+
+fn lock_ok() {
+  acquire(ConsoleLock);
+  tiny();
+  release(ConsoleLock);
+}

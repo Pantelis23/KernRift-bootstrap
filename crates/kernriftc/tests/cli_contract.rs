@@ -1,0 +1,1016 @@
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use ed25519_dalek::SigningKey;
+use jsonschema::JSONSchema;
+use predicates::str::contains;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+const CONTRACTS_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("repo root")
+}
+
+#[test]
+fn report_unknown_metric_exits_nonzero() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit")
+        .arg("report")
+        .arg("--metrics")
+        .arg("max_lock_depth,unknown")
+        .arg(fixture.as_os_str());
+    cmd.assert()
+        .failure()
+        .stderr(contains("unsupported report metric"));
+}
+
+#[test]
+fn check_unresolved_callee_exits_nonzero_with_hir_error() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("unresolved_callee.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert()
+        .failure()
+        .stderr(contains("undefined symbol 'no_such_symbol'"));
+}
+
+#[test]
+fn check_yield_hidden_two_levels_exits_nonzero_with_lockgraph_message() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("yield_hidden_two_levels.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lockgraph_lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("lockgraph: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lockgraph_lines,
+        vec!["lockgraph: function 'outer' calls yielding callee 'mid' under lock(s): SchedLock"],
+        "expected exactly one lockgraph line and no lockgraph noise, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn emit_lockgraph_outputs_only_expected_top_level_keys() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit")
+        .arg("lockgraph")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let json: Value = serde_json::from_str(&stdout).expect("lockgraph json");
+    let keys = json
+        .as_object()
+        .expect("lockgraph object")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["edges".to_string(), "max_lock_depth".to_string()])
+    );
+    let edges = json["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 1, "callee_acquires_lock should emit one edge");
+    for edge in edges {
+        let obj = edge.as_object().expect("edge object");
+        let edge_keys = obj.keys().cloned().collect::<BTreeSet<_>>();
+        assert_eq!(
+            edge_keys,
+            BTreeSet::from(["from".to_string(), "to".to_string()])
+        );
+        assert!(
+            obj.get("from").and_then(|v| v.as_str()).is_some(),
+            "edge.from must be a string"
+        );
+        assert!(
+            obj.get("to").and_then(|v| v.as_str()).is_some(),
+            "edge.to must be a string"
+        );
+    }
+}
+
+#[test]
+fn emit_report_outputs_only_requested_keys() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit")
+        .arg("report")
+        .arg("--metrics")
+        .arg("max_lock_depth,no_yield_spans")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let json: Value = serde_json::from_str(&stdout).expect("report json");
+    let keys = json
+        .as_object()
+        .expect("report object")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["max_lock_depth".to_string(), "no_yield_spans".to_string()])
+    );
+}
+
+#[test]
+fn emit_contracts_outputs_expected_schema_and_keys() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit")
+        .arg("contracts")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let json: Value = serde_json::from_str(&stdout).expect("contracts json");
+
+    let top_keys = json
+        .as_object()
+        .expect("contracts object")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        top_keys,
+        BTreeSet::from([
+            "capabilities".to_string(),
+            "facts".to_string(),
+            "lockgraph".to_string(),
+            "report".to_string(),
+            "schema_version".to_string(),
+        ])
+    );
+    assert_eq!(
+        json["schema_version"],
+        Value::String("kernrift_contracts_v1".to_string())
+    );
+
+    let fact_symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    assert!(
+        !fact_symbols.is_empty(),
+        "facts symbols should not be empty"
+    );
+
+    let first_symbol_keys = fact_symbols[0]
+        .as_object()
+        .expect("fact symbol object")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        first_symbol_keys,
+        BTreeSet::from([
+            "attrs".to_string(),
+            "caps_req".to_string(),
+            "ctx_ok".to_string(),
+            "eff_used".to_string(),
+            "is_extern".to_string(),
+            "name".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn check_with_contracts_out_writes_canonical_json() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!("kernrift-contracts-{}.json", ts));
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let text = fs::read_to_string(&out_path).expect("read contracts output");
+    fs::remove_file(&out_path).ok();
+
+    assert!(
+        !text.contains('\n'),
+        "contracts output file should be canonical (minified)"
+    );
+    let json: Value = serde_json::from_str(&text).expect("contracts json");
+    validate_contracts_schema(&json);
+    assert_eq!(
+        json["schema_version"],
+        Value::String("kernrift_contracts_v1".to_string())
+    );
+}
+
+#[test]
+fn check_with_contracts_out_must_fail_does_not_write_file() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("yield_hidden_two_levels.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!("kernrift-contracts-fail-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().failure();
+
+    assert!(
+        !out_path.exists(),
+        "contracts output should not be created for failing input"
+    );
+}
+
+fn validate_contracts_schema(instance: &Value) {
+    let schema_json: Value = serde_json::from_str(CONTRACTS_SCHEMA_V1).expect("schema json");
+    let compiled = JSONSchema::compile(&schema_json).expect("compile schema");
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "contracts JSON must validate against contracts_v1 schema: {}",
+            details.join(" | ")
+        );
+    }
+}
+
+fn write_test_keypair(secret_path: &Path, pubkey_path: &Path) {
+    let secret = std::array::from_fn::<u8, 32, _>(|i| (i as u8).wrapping_add(1));
+    let signing_key = SigningKey::from_bytes(&secret);
+    let pubkey = signing_key.verifying_key().to_bytes();
+    fs::write(secret_path, format!("{}\n", hex_encode(&secret))).expect("write secret key");
+    fs::write(pubkey_path, format!("{}\n", hex_encode(&pubkey))).expect("write pubkey");
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(nibble_to_hex((b >> 4) & 0x0f));
+        out.push(nibble_to_hex(b & 0x0f));
+    }
+    out
+}
+
+fn nibble_to_hex(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'a' + (n - 10)) as char,
+        _ => unreachable!(),
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex_encode(&digest)
+}
+
+#[test]
+fn policy_passes_for_compliant_contracts() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-pass-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-pass-{}.toml", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 2
+
+[locks]
+forbid_edges = [["RunQueueLock", "SchedLock"]]
+
+[caps]
+allow_module = []
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    policy_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_fails_with_deterministic_ordered_errors() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-fail-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-fail-{}.toml", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+
+[locks]
+forbid_edges = [["ConsoleLock", "SchedLock"]]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: LIMIT_MAX_LOCK_DEPTH: max_lock_depth 2 exceeds limit 1",
+            "policy: LOCK_FORBID_EDGE: forbidden lock edge 'ConsoleLock -> SchedLock' is present"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_caps_allow_module_rejects_disallowed_caps() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-caps-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-caps-{}.toml", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[caps]
+allow_module = ["IoPort"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains(
+            "policy: CAP_MODULE_ALLOWLIST: module capability 'PhysMap' is not in allow_module"
+        ),
+        "expected caps allowlist violation, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_bad_parse_exits_with_invalid_input_code() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-bad-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-bad-{}.toml", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(&policy_path, "[limits\nmax_lock_depth = 1\n").expect("write bad policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    policy_cmd.assert().failure().code(2);
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn check_with_policy_pass_writes_contracts_out() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-check-policy-pass-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-check-policy-pass-{}.toml", ts));
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 2
+
+[locks]
+forbid_edges = [["RunQueueLock", "SchedLock"]]
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let text = fs::read_to_string(&contracts_path).expect("read contracts output");
+    assert!(
+        !text.is_empty(),
+        "contracts output should be written on pass"
+    );
+    let json: Value = serde_json::from_str(&text).expect("contracts json");
+    validate_contracts_schema(&json);
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn check_with_policy_fail_does_not_write_file() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-check-policy-fail-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-check-policy-fail-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+
+[locks]
+forbid_edges = [["ConsoleLock", "SchedLock"]]
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().failure().code(1);
+
+    assert!(
+        !contracts_path.exists(),
+        "contracts output should not be written when policy denies"
+    );
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn check_with_policy_fail_has_deterministic_lines() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path = std::env::temp_dir().join(format!("kernrift-check-policy-lines-{}.toml", ts));
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+
+[locks]
+forbid_edges = [["ConsoleLock", "SchedLock"]]
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: LIMIT_MAX_LOCK_DEPTH: max_lock_depth 2 exceeds limit 1",
+            "policy: LOCK_FORBID_EDGE: forbidden lock edge 'ConsoleLock -> SchedLock' is present",
+        ]
+    );
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn check_pass_writes_contracts_hash_sig_and_verifies() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-p84-contracts-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-p84-hash-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-p84-sig-{}.sig", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-p84-policy-{}.toml", ts));
+    let secret_path = std::env::temp_dir().join(format!("kernrift-p84-secret-{}.hex", ts));
+    let pubkey_path = std::env::temp_dir().join(format!("kernrift-p84-pubkey-{}.hex", ts));
+
+    write_test_keypair(&secret_path, &pubkey_path);
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 2
+"#,
+    )
+    .expect("write policy");
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let contracts_bytes = fs::read(&contracts_path).expect("read contracts");
+    let expected_hash = sha256_hex(&contracts_bytes);
+    let got_hash = fs::read_to_string(&hash_path).expect("read hash");
+    assert_eq!(
+        got_hash.trim(),
+        expected_hash,
+        "hash file must match contracts bytes"
+    );
+    let sig_text = fs::read_to_string(&sig_path).expect("read sig");
+    assert!(!sig_text.trim().is_empty(), "sig file should not be empty");
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--sig")
+        .arg(sig_path.as_os_str())
+        .arg("--pubkey")
+        .arg(pubkey_path.as_os_str());
+    verify_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&secret_path).ok();
+    fs::remove_file(&pubkey_path).ok();
+}
+
+#[test]
+fn check_policy_deny_writes_nothing_even_if_hash_sig_flags_present() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-p84-deny-contracts-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-p84-deny-hash-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-p84-deny-sig-{}.sig", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-p84-deny-policy-{}.toml", ts));
+    let secret_path = std::env::temp_dir().join(format!("kernrift-p84-deny-secret-{}.hex", ts));
+    let pubkey_path = std::env::temp_dir().join(format!("kernrift-p84-deny-pubkey-{}.hex", ts));
+    write_test_keypair(&secret_path, &pubkey_path);
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+"#,
+    )
+    .expect("write policy");
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().failure().code(1);
+
+    assert!(
+        !contracts_path.exists(),
+        "contracts file must not be written on deny"
+    );
+    assert!(!hash_path.exists(), "hash file must not be written on deny");
+    assert!(!sig_path.exists(), "sig file must not be written on deny");
+
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&secret_path).ok();
+    fs::remove_file(&pubkey_path).ok();
+}
+
+#[test]
+fn check_invalid_key_exits_2_and_writes_nothing() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-p84-badkey-contracts-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-p84-badkey-hash-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-p84-badkey-sig-{}.sig", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-p84-badkey-policy-{}.toml", ts));
+    let bad_secret_path =
+        std::env::temp_dir().join(format!("kernrift-p84-badkey-secret-{}.hex", ts));
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 2
+"#,
+    )
+    .expect("write policy");
+    fs::write(&bad_secret_path, "zz\n").expect("write bad key");
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(bad_secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().failure().code(2);
+
+    assert!(
+        !contracts_path.exists(),
+        "contracts file must not be written on invalid key"
+    );
+    assert!(
+        !hash_path.exists(),
+        "hash file must not be written on invalid key"
+    );
+    assert!(
+        !sig_path.exists(),
+        "sig file must not be written on invalid key"
+    );
+
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&bad_secret_path).ok();
+}
+
+#[test]
+fn verify_rejects_mismatched_hash_or_sig() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-p84-vrf-contracts-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-p84-vrf-hash-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-p84-vrf-sig-{}.sig", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-p84-vrf-policy-{}.toml", ts));
+    let secret_path = std::env::temp_dir().join(format!("kernrift-p84-vrf-secret-{}.hex", ts));
+    let pubkey_path = std::env::temp_dir().join(format!("kernrift-p84-vrf-pubkey-{}.hex", ts));
+
+    write_test_keypair(&secret_path, &pubkey_path);
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 2
+"#,
+    )
+    .expect("write policy");
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &hash_path,
+        "0000000000000000000000000000000000000000000000000000000000000000\n",
+    )
+    .expect("write tampered hash");
+    let mut verify_hash_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_hash_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str());
+    verify_hash_cmd.assert().failure().code(1);
+
+    let contracts_bytes = fs::read(&contracts_path).expect("read contracts");
+    fs::write(&hash_path, format!("{}\n", sha256_hex(&contracts_bytes))).expect("restore hash");
+    let bad_sig = BASE64_STANDARD.encode([0_u8; 64]);
+    fs::write(&sig_path, format!("{bad_sig}\n")).expect("tamper sig");
+    let mut verify_sig_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_sig_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--sig")
+        .arg(sig_path.as_os_str())
+        .arg("--pubkey")
+        .arg(pubkey_path.as_os_str());
+    verify_sig_cmd.assert().failure().code(1);
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&secret_path).ok();
+    fs::remove_file(&pubkey_path).ok();
+}
+
+#[test]
+fn check_refuses_overwriting_existing_outputs() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-p84-overwrite-{}.json", ts));
+
+    fs::write(&contracts_path, "sentinel\n").expect("write sentinel");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().failure().code(2);
+
+    let after = fs::read_to_string(&contracts_path).expect("read sentinel");
+    assert_eq!(after, "sentinel\n", "existing output must remain untouched");
+
+    fs::remove_file(&contracts_path).ok();
+}
+
+#[test]
+fn verify_rejects_schema_invalid_even_with_matching_hash() {
+    let root = repo_root();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-p84-schema-invalid-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-p84-schema-invalid-{}.sha256", ts));
+
+    let garbage = b"{\"not_contracts\":true}";
+    fs::write(&contracts_path, garbage).expect("write garbage contracts");
+    fs::write(&hash_path, format!("{}\n", sha256_hex(garbage))).expect("write matching hash");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str());
+    cmd.assert().failure().code(2);
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+}

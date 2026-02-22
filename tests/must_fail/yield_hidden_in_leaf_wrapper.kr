@@ -1,0 +1,14 @@
+fn inner() {
+  yieldpoint();
+}
+
+@leaf
+fn wrapper() {
+  inner();
+}
+
+fn outer() {
+  acquire(SchedLock);
+  wrapper();
+  release(SchedLock);
+}

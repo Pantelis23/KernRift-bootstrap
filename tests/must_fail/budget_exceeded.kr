@@ -1,0 +1,9 @@
+fn deep() { }
+
+@lock_budget(1)
+fn budget_bad() {
+  acquire(SchedLock);
+  deep();
+  deep();
+  release(SchedLock);
+}
