@@ -1,0 +1,59 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-upload:
+    name: build + upload (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build (release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p kernriftc
+
+      - name: Package (linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          cp target/release/kernriftc dist/kernriftc
+          tar -czf "dist/kernriftc-${tag}-linux-amd64.tar.gz" -C dist kernriftc
+          sha256sum "dist/kernriftc-${tag}-linux-amd64.tar.gz" > "dist/kernriftc-${tag}-linux-amd64.tar.gz.sha256"
+
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $tag = "${env:GITHUB_REF_NAME}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\kernriftc.exe dist\kernriftc.exe
+          $zip = "dist\kernriftc-$tag-windows-amd64.zip"
+          Compress-Archive -Force -Path dist\kernriftc.exe -DestinationPath $zip
+          $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          Set-Content -NoNewline -Path "$zip.sha256" -Value "$h  $(Split-Path -Leaf $zip)`n"
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
