@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Guard: dist/ must not be tracked
+      - name: "Guard: dist/ must not be tracked"
         shell: bash
         run: |
           set -euo pipefail
@@ -27,7 +27,7 @@ jobs:
             exit 1
           fi
 
-      - name: Guard: no new blobs > 25MB
+      - name: "Guard: no new blobs > 25MB"
         shell: bash
         env:
           LIMIT_BYTES: "26214400"
