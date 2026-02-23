@@ -2,6 +2,15 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.8 - 2026-02-23
+
+### Changed
+- Infra-only: release pipeline now signs/verifies archives only (`.tar.gz`, `.zip`).
+- `.sha256` files remain unsigned convenience artifacts.
+
+### Notes
+- No compiler behavior changes vs v0.2.7.
+
 ## v0.2.7 - 2026-02-23
 
 ### Changed
