@@ -2,6 +2,14 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.7 - 2026-02-23
+
+### Changed
+- Fixed Windows cosign self-verification identity regex in release workflow.
+
+### Notes
+- `v0.2.6` introduced portable Linux checksums + signature self-verify, but release failed on Windows identity regex mismatch; use `v0.2.7`.
+
 ## v0.2.6 - 2026-02-23
 
 ### Changed
