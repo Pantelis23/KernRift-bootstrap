@@ -2,6 +2,14 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.5 - 2026-02-23
+
+### Changed
+- Added `kernriftc --version` / `kernriftc -V` output (`kernriftc <semver>`) for release automation checks.
+
+### Notes
+- `v0.2.4` introduced release gating/signing workflow changes but failed release execution due missing CLI `--version`; use `v0.2.5`.
+
 ## v0.2.4 - 2026-02-23
 
 ### Changed

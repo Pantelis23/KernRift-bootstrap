@@ -105,6 +105,10 @@ struct VerifyArgs {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        println!("kernriftc {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if args.len() < 2 {
         print_usage();
         return ExitCode::from(2);
@@ -1309,6 +1313,7 @@ fn print_errors(errs: &[String]) {
 
 fn print_usage() {
     eprintln!("usage:");
+    eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
     eprintln!("  kernriftc check --policy <policy.toml> <file.kr>");
     eprintln!("  kernriftc check --contracts-out <contracts.json> <file.kr>");
