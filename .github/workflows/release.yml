@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build-upload:
@@ -22,6 +23,17 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Gate the release: fail early if repo is broken
+      - name: Gates (fmt/clippy/test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
 
       - name: Build (release)
         shell: bash
@@ -71,11 +83,43 @@ jobs:
           $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
           Set-Content -NoNewline -Path "$zip.sha256" -Value "$h  $(Split-Path -Leaf $zip)`n"
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign artifacts (linux, keyless)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist/*.tar.gz dist/*.tar.gz.sha256; do
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.cert" \
+              "$f"
+          done
+
+      - name: Sign artifacts (windows, keyless)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist | Where-Object { $_.Name -match '\.zip(\.sha256)?$' }
+          foreach ($f in $files) {
+            $p = $f.FullName
+            cosign sign-blob --yes `
+              --output-signature "$p.sig" `
+              --output-certificate "$p.cert" `
+              "$p"
+          }
+
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/*.tar.gz.sig
+            dist/*.tar.gz.cert
             dist/*.zip
             dist/*.zip.sha256
+            dist/*.zip.sig
+            dist/*.zip.cert
