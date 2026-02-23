@@ -69,7 +69,10 @@ jobs:
           mkdir -p dist
           cp target/release/kernriftc dist/kernriftc
           tar -czf "dist/kernriftc-${tag}-linux-amd64.tar.gz" -C dist kernriftc
-          sha256sum "dist/kernriftc-${tag}-linux-amd64.tar.gz" > "dist/kernriftc-${tag}-linux-amd64.tar.gz.sha256"
+          (
+            cd dist
+            sha256sum "kernriftc-${tag}-linux-amd64.tar.gz" > "kernriftc-${tag}-linux-amd64.tar.gz.sha256"
+          )
 
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
@@ -108,6 +111,36 @@ jobs:
             cosign sign-blob --yes `
               --output-signature "$p.sig" `
               --output-certificate "$p.cert" `
+              "$p"
+          }
+
+      - name: Verify signatures (linux, keyless)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist/*.tar.gz dist/*.tar.gz.sha256; do
+            cosign verify-blob \
+              --certificate "${f}.cert" \
+              --signature "${f}.sig" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-identity-regexp "^https://github.com/Pantelis23/KernRift/\\.github/workflows/release\\.yml@refs/tags/${GITHUB_REF_NAME}$" \
+              "$f"
+          done
+
+      - name: Verify signatures (windows, keyless)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $re = "^https://github.com/Pantelis23/KernRift/\\.github/workflows/release\\.yml@refs/tags/$($env:GITHUB_REF_NAME)$"
+          $files = Get-ChildItem dist | Where-Object { $_.Name -match '\.zip(\.sha256)?$' }
+          foreach ($f in $files) {
+            $p = $f.FullName
+            cosign verify-blob `
+              --certificate "$p.cert" `
+              --signature "$p.sig" `
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" `
+              --certificate-identity-regexp $re `
               "$p"
           }
 
