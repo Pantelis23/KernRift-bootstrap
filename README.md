@@ -125,3 +125,29 @@ $actual=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
 if ($actual -ne $expected) { throw "sha256 mismatch" }
 "OK"
 ```
+
+### Signature Verification (cosign keyless)
+
+Linux/macOS:
+
+```bash
+TAG=v0.2.3
+cosign verify-blob \
+  --certificate "kernriftc-$TAG-linux-amd64.tar.gz.cert" \
+  --signature   "kernriftc-$TAG-linux-amd64.tar.gz.sig" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --certificate-identity-regexp "^https://github.com/Pantelis23/KernRift/\\.github/workflows/release\\.yml@refs/tags/$TAG$" \
+  "kernriftc-$TAG-linux-amd64.tar.gz"
+```
+
+Windows PowerShell:
+
+```powershell
+$TAG="v0.2.3"
+cosign verify-blob `
+  --certificate "kernriftc-$TAG-windows-amd64.zip.cert" `
+  --signature   "kernriftc-$TAG-windows-amd64.zip.sig" `
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" `
+  --certificate-identity-regexp "^https://github.com/Pantelis23/KernRift/\.github/workflows/release\.yml@refs/tags/$TAG$" `
+  "kernriftc-$TAG-windows-amd64.zip"
+```
