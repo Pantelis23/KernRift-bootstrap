@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use emit::{
-    emit_caps_manifest_json, emit_contracts_json, emit_krir_json, emit_lockgraph_json,
-    emit_report_json,
+    ContractsSchema, emit_caps_manifest_json, emit_contracts_json, emit_contracts_json_with_schema,
+    emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{analyze, check_file, check_module, compile_file};
 use serde_json::Value;
@@ -194,6 +194,145 @@ fn contracts_bundle_contains_governance_surfaces() {
         object_keys(&contracts["facts"]),
         BTreeSet::from(["symbols".to_string()]),
         "facts top-level schema drifted"
+    );
+}
+
+#[test]
+fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let module = compile_file(&fixture).expect("compile policy_families_order.kr");
+    check_module(&module).expect("checks should pass");
+    let (report, errs) = analyze(&module);
+    assert!(errs.is_empty(), "analysis errors: {:?}", errs);
+
+    let contracts_json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+        .expect("emit contracts v2");
+    let contracts: Value = serde_json::from_str(&contracts_json).expect("contracts json");
+
+    assert_eq!(
+        contracts["schema_version"],
+        Value::String("kernrift_contracts_v2".to_string()),
+        "contracts v2 schema_version drifted"
+    );
+
+    let symbols = contracts["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols");
+    let entry = symbols
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("entry symbol");
+    assert_eq!(
+        object_keys(entry),
+        BTreeSet::from([
+            "attrs".to_string(),
+            "caps_provenance".to_string(),
+            "caps_req".to_string(),
+            "caps_transitive".to_string(),
+            "ctx_ok".to_string(),
+            "ctx_reachable".to_string(),
+            "eff_provenance".to_string(),
+            "eff_transitive".to_string(),
+            "eff_used".to_string(),
+            "is_extern".to_string(),
+            "name".to_string(),
+        ]),
+        "v2 fact symbol keys drifted"
+    );
+    assert!(
+        entry["ctx_reachable"].is_array(),
+        "ctx_reachable must be array"
+    );
+    assert!(
+        entry["eff_transitive"].is_array(),
+        "eff_transitive must be array"
+    );
+    assert!(
+        entry["eff_provenance"].is_array(),
+        "eff_provenance must be array"
+    );
+    assert!(
+        entry["caps_transitive"].is_array(),
+        "caps_transitive must be array"
+    );
+    assert!(
+        entry["caps_provenance"].is_array(),
+        "caps_provenance must be array"
+    );
+
+    let eff_prov = entry["eff_provenance"]
+        .as_array()
+        .expect("eff_provenance array")
+        .first()
+        .expect("at least one eff provenance entry");
+    assert_eq!(
+        object_keys(eff_prov),
+        BTreeSet::from(["effect".to_string(), "provenance".to_string()]),
+        "eff_provenance entry keys drifted"
+    );
+    assert_eq!(
+        object_keys(&eff_prov["provenance"]),
+        BTreeSet::from([
+            "direct".to_string(),
+            "via_callee".to_string(),
+            "via_extern".to_string(),
+        ]),
+        "eff provenance object keys drifted"
+    );
+
+    let cap_prov = entry["caps_provenance"]
+        .as_array()
+        .expect("caps_provenance array")
+        .first()
+        .expect("at least one cap provenance entry");
+    assert_eq!(
+        object_keys(cap_prov),
+        BTreeSet::from(["capability".to_string(), "provenance".to_string()]),
+        "caps_provenance entry keys drifted"
+    );
+    assert_eq!(
+        object_keys(&cap_prov["provenance"]),
+        BTreeSet::from([
+            "direct".to_string(),
+            "via_callee".to_string(),
+            "via_extern".to_string(),
+        ]),
+        "caps provenance object keys drifted"
+    );
+
+    assert!(
+        contracts["report"]["contexts"].is_null(),
+        "report.contexts must not be present in v2"
+    );
+    let critical_violations = contracts["report"]["critical"]["violations"]
+        .as_array()
+        .expect("critical violations array");
+    assert!(
+        !critical_violations.is_empty(),
+        "expected critical violations in fixture"
+    );
+    let violation = &critical_violations[0];
+    assert_eq!(
+        object_keys(violation),
+        BTreeSet::from([
+            "effect".to_string(),
+            "function".to_string(),
+            "provenance".to_string(),
+        ]),
+        "critical violation keys drifted"
+    );
+    assert_eq!(
+        object_keys(&violation["provenance"]),
+        BTreeSet::from([
+            "direct".to_string(),
+            "via_callee".to_string(),
+            "via_extern".to_string(),
+        ]),
+        "critical violation provenance keys drifted"
     );
 }
 

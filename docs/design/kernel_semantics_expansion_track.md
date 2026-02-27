@@ -30,6 +30,8 @@ Kernel invariants enforced by this layer must be encoded in contracts, then eval
 ## Staged PR Plan
 
 ### PR-A: Effect Semantics Core (current)
+Status: complete on `main` (`613c476`, `5685f9f` stack).
+
 Proves:
 - deterministic effect provenance is emitted in contracts v2
 - provenance includes direct, via-callee, and via-extern paths
@@ -73,6 +75,9 @@ Files:
 - `examples/kernel/*`
 
 ### PR-D: Policy Engine Normalization
+Status: complete on `main` for family split + artifact-driven policy + capability provenance
+foundation (`5685f9f`).
+
 Proves:
 - policy rules are grouped by semantic category (context/effect/region/lock/capability)
 - each rule has a stable code, deterministic message shape, and deterministic order
@@ -82,6 +87,10 @@ Proves:
   - effect checks consume `facts.symbols[*].eff_transitive` + `eff_provenance`
   - capability checks consume `facts.symbols[*].caps_transitive` + `caps_provenance`
   - region checks consume `report.critical.violations`
+
+Milestone note:
+- capability transitive semantics and deterministic capability provenance are now landed in
+  contracts v2 symbol facts.
 
 Files:
 - `crates/kernriftc/src/main.rs`
