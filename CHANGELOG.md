@@ -2,6 +2,22 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.9 - 2026-02-27
+
+### Changed
+- KRIR v0.1: added schema-validated verify report ABI v1 (`docs/schemas/kernrift_verify_report_v1.schema.json`).
+- `verify --report` now validates emitted report JSON against embedded schema with deterministic canonicalization.
+- Expanded golden matrix for verify/report edge cases:
+  - invalid UTF-8 contracts
+  - schema-invalid contracts
+  - signature mismatch
+  - invalid signature/public key parsing
+  - report overwrite refusal
+- Aligned verify report output writing to guarded safe-write behavior (no overwrite + staged write flow).
+
+### Notes
+- User-visible product update: verify report format and coverage are now regression-locked in golden tests.
+
 ## v0.2.8 - 2026-02-23
 
 ### Changed
