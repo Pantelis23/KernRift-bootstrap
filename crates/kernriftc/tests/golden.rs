@@ -414,6 +414,8 @@ fn assert_snapshot(path: &Path, actual: &str, update: bool) {
 
     let expected = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read snapshot '{}': {}", path.display(), e));
+    let expected = expected.replace("\r\n", "\n");
+    let actual = actual.replace("\r\n", "\n");
     assert_eq!(
         expected,
         actual,
