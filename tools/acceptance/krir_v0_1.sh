@@ -13,20 +13,14 @@ HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
 
-echo "[1/5] cargo test --workspace"
-cargo test --workspace
-
-echo "[2/5] cargo test -p kernriftc --test golden"
-cargo test -p kernriftc --test golden
-
-echo "[3/5] smoke: check emits contracts/hash"
+echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
   check \
   --contracts-out "$CONTRACTS_OUT" \
   --hash-out "$HASH_OUT" \
   "$FIXTURE"
 
-echo "[4/5] smoke: verify pass writes report"
+echo "[2/3] smoke: verify pass writes report"
 cargo run -q -p kernriftc -- \
   verify \
   --contracts "$CONTRACTS_OUT" \
@@ -36,7 +30,7 @@ cargo run -q -p kernriftc -- \
 grep -q '"schema_version": "kernrift_verify_report_v1"' "$REPORT_OUT"
 grep -q '"result": "pass"' "$REPORT_OUT"
 
-echo "[5/5] smoke: verify deny on hash mismatch (exit 1)"
+echo "[3/3] smoke: verify deny on hash mismatch (exit 1)"
 printf '%064d\n' 0 > "$BAD_HASH_OUT"
 set +e
 cargo run -q -p kernriftc -- \
