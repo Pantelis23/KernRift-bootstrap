@@ -1,359 +1,282 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# shellcheck source=tools/acceptance/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=tools/acceptance/lib/toolchain.sh
+source "$SCRIPT_DIR/lib/toolchain.sh"
+# shellcheck source=tools/acceptance/lib/hosted_x86_64.sh
+source "$SCRIPT_DIR/lib/hosted_x86_64.sh"
+
 cd "$ROOT_DIR"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kernrift-artifact-exports-XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-FIXTURE="tests/must_pass/basic.kr"
-RELOC_FIXTURE="tests/must_pass/extern_call_object.kr"
-KRBO_OUT="$TMP_DIR/basic.krbo"
-KRBO_META="$TMP_DIR/basic.krbo.json"
-ELF_OUT="$TMP_DIR/basic.o"
-ELF_META="$TMP_DIR/basic.o.json"
-RELOC_ELF_OUT="$TMP_DIR/extern_call_object.o"
-RELOC_ELF_META="$TMP_DIR/extern_call_object.o.json"
-ASM_OUT="$TMP_DIR/basic.s"
-RELOC_ASM_OUT="$TMP_DIR/extern_call_object.s"
-RELOC_ASM_OBJ="$TMP_DIR/extern_call_object.from_asm.o"
-RELINKED_ELF_OUT="$TMP_DIR/basic.relinked.o"
+BASIC_FIXTURE="tests/must_pass/basic.kr"
+EXTERN_FIXTURE="tests/must_pass/extern_call_object.kr"
+MIXED_FIXTURE="tests/must_pass/extern_internal_chain.kr"
+
+BASIC_KRBO_OUT="$TMP_DIR/basic.krbo"
+BASIC_KRBO_META="$TMP_DIR/basic.krbo.json"
+BASIC_ELF_OUT="$TMP_DIR/basic.o"
+BASIC_ELF_META="$TMP_DIR/basic.o.json"
+BASIC_ASM_OUT="$TMP_DIR/basic.s"
+
+EXTERN_ELF_OUT="$TMP_DIR/extern_call_object.o"
+EXTERN_ELF_META="$TMP_DIR/extern_call_object.o.json"
+EXTERN_ASM_OUT="$TMP_DIR/extern_call_object.s"
+EXTERN_ASM_OBJ="$TMP_DIR/extern_call_object.from_asm.o"
+
+MIXED_ELF_OUT="$TMP_DIR/extern_internal_chain.o"
+MIXED_ELF_META="$TMP_DIR/extern_internal_chain.o.json"
+MIXED_ASM_OUT="$TMP_DIR/extern_internal_chain.s"
+MIXED_ASM_OBJ="$TMP_DIR/extern_internal_chain.from_asm.o"
+
+RELINKED_BASIC_ELF_OUT="$TMP_DIR/basic.relinked.o"
 FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
 FINAL_RUNTIME_STUB_OBJ="$TMP_DIR/runtime_stub.o"
-FINAL_LINK_ELF_OUT="$TMP_DIR/extern_call_object.final"
-FINAL_LINK_ASM_OUT="$TMP_DIR/extern_call_object.from_asm.final"
+FINAL_EXTERN_ELF_OUT="$TMP_DIR/extern_call_object.elf.final"
+FINAL_MIXED_ELF_OUT="$TMP_DIR/extern_internal_chain.elf.final"
+FINAL_EXTERN_ASM_OUT="$TMP_DIR/extern_call_object.asm.final"
+FINAL_MIXED_ASM_OUT="$TMP_DIR/extern_internal_chain.asm.final"
 
-find_readelf() {
-  if command -v readelf >/dev/null 2>&1; then
-    printf '%s\n' "readelf"
-    return 0
-  fi
-  if command -v llvm-readelf >/dev/null 2>&1; then
-    printf '%s\n' "llvm-readelf"
-    return 0
-  fi
-  return 1
+emit_artifact_with_meta() {
+  local emit_kind="$1"
+  local output_path="$2"
+  local meta_path="$3"
+  local fixture="$4"
+
+  cargo run -q -p kernriftc -- \
+    "--emit=${emit_kind}" \
+    -o "$output_path" \
+    --meta-out "$meta_path" \
+    "$fixture"
+  acceptance_assert_nonempty_file "$output_path"
+  acceptance_assert_nonempty_file "$meta_path"
 }
 
-find_reloc_linker() {
-  if command -v ld.lld >/dev/null 2>&1; then
-    printf '%s\n' "ld.lld"
-    return 0
-  fi
-  if command -v ld >/dev/null 2>&1; then
-    printf '%s\n' "ld"
-    return 0
-  fi
-  return 1
+emit_artifact() {
+  local emit_kind="$1"
+  local output_path="$2"
+  local fixture="$3"
+
+  cargo run -q -p kernriftc -- \
+    "--emit=${emit_kind}" \
+    -o "$output_path" \
+    "$fixture"
+  acceptance_assert_nonempty_file "$output_path"
 }
 
-find_asm_compiler() {
-  if command -v as >/dev/null 2>&1; then
-    printf '%s\n' "as"
-    return 0
-  fi
-  if command -v clang >/dev/null 2>&1; then
-    printf '%s\n' "clang"
-    return 0
-  fi
-  if command -v gcc >/dev/null 2>&1; then
-    printf '%s\n' "gcc"
-    return 0
-  fi
-  return 1
+verify_artifact_meta() {
+  local artifact_path="$1"
+  local meta_path="$2"
+
+  cargo run -q -p kernriftc -- \
+    verify-artifact-meta \
+    "$artifact_path" \
+    "$meta_path"
 }
 
-assert_nonempty_file() {
-  local path="$1"
-  if [[ ! -s "$path" ]]; then
-    echo "expected non-empty file: $path" >&2
-    exit 1
-  fi
+assert_asm_line() {
+  local line="$1"
+  local file="$2"
+  grep -q "^${line}$" "$file"
 }
 
 inspect_final_linked_artifact() {
   local readelf_tool="$1"
   local path="$2"
 
-  local header
-  header="$("$readelf_tool" -h "$path")"
-  printf '%s\n' "$header" | grep -Eq 'Type:[[:space:]]+EXEC'
-  printf '%s\n' "$header" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
-
-  local syms
-  syms="$("$readelf_tool" -sW "$path")"
-  printf '%s\n' "$syms" | grep -Eq '[[:space:]]entry$'
-  printf '%s\n' "$syms" | grep -Eq '[[:space:]]ext$'
-  if printf '%s\n' "$syms" | grep -Eq '[[:space:]]UND[[:space:]].*[[:space:]]ext$'; then
-    echo "expected ext to be resolved in final linked artifact" >&2
-    exit 1
-  fi
-
-  local relocs
-  relocs="$("$readelf_tool" -rW "$path")"
-  if printf '%s\n' "$relocs" | grep -Eq '[[:space:]]ext([[:space:]]|$)'; then
-    echo "expected no relocation against ext in final linked artifact" >&2
-    exit 1
-  fi
+  acceptance_assert_elf_exec_x86_64 "$readelf_tool" "$path"
+  acceptance_assert_symbol_present "$readelf_tool" "$path" "entry"
+  acceptance_assert_symbol_present "$readelf_tool" "$path" "ext"
+  acceptance_assert_symbol_not_undefined "$readelf_tool" "$path" "ext"
+  acceptance_assert_relocation_not_references_symbol "$readelf_tool" "$path" "ext"
 }
 
-run_runtime_smoke_or_skip() {
-  local path="$1"
-  local label="$2"
-  local stderr_file="$TMP_DIR/${label}.stderr"
-  local status=0
+echo "[1/10] internal-only fixture: emit krbo/elfobj/asm"
+emit_artifact_with_meta "krbo" "$BASIC_KRBO_OUT" "$BASIC_KRBO_META" "$BASIC_FIXTURE"
+emit_artifact_with_meta "elfobj" "$BASIC_ELF_OUT" "$BASIC_ELF_META" "$BASIC_FIXTURE"
+emit_artifact "asm" "$BASIC_ASM_OUT" "$BASIC_FIXTURE"
 
-  chmod +x "$path" || true
-  set +e
-  "$path" >/dev/null 2>"$stderr_file"
-  status=$?
-  set -e
+echo "[2/10] internal-only fixture: verify sidecars"
+verify_artifact_meta "$BASIC_KRBO_OUT" "$BASIC_KRBO_META"
+verify_artifact_meta "$BASIC_ELF_OUT" "$BASIC_ELF_META"
 
-  if [[ "$status" -eq 7 ]]; then
-    return 0
-  fi
+echo "[3/10] simple extern fixture: emit elfobj/asm"
+emit_artifact_with_meta "elfobj" "$EXTERN_ELF_OUT" "$EXTERN_ELF_META" "$EXTERN_FIXTURE"
+emit_artifact "asm" "$EXTERN_ASM_OUT" "$EXTERN_FIXTURE"
 
-  if [[ "$status" -eq 126 ]] && grep -Eq 'Permission denied|Operation not permitted' "$stderr_file"; then
-    echo "[optional] $label runtime smoke skipped: execution unavailable"
-    return 1
-  fi
+echo "[4/10] simple extern fixture: verify elfobj sidecar"
+verify_artifact_meta "$EXTERN_ELF_OUT" "$EXTERN_ELF_META"
 
-  echo "expected $label runtime smoke to exit 7, got $status" >&2
-  if [[ -s "$stderr_file" ]]; then
-    cat "$stderr_file" >&2
-  fi
-  exit 1
-}
+echo "[5/10] mixed internal+extern fixture: emit elfobj/asm"
+emit_artifact_with_meta "elfobj" "$MIXED_ELF_OUT" "$MIXED_ELF_META" "$MIXED_FIXTURE"
+emit_artifact "asm" "$MIXED_ASM_OUT" "$MIXED_FIXTURE"
 
-echo "[1/9] emit krbo + metadata"
-cargo run -q -p kernriftc -- \
-  --emit=krbo \
-  -o "$KRBO_OUT" \
-  --meta-out "$KRBO_META" \
-  "$FIXTURE"
-assert_nonempty_file "$KRBO_OUT"
-assert_nonempty_file "$KRBO_META"
+echo "[6/10] mixed internal+extern fixture: verify elfobj sidecar"
+verify_artifact_meta "$MIXED_ELF_OUT" "$MIXED_ELF_META"
 
-echo "[2/9] emit elfobj + metadata"
-cargo run -q -p kernriftc -- \
-  --emit=elfobj \
-  -o "$ELF_OUT" \
-  --meta-out "$ELF_META" \
-  "$FIXTURE"
-assert_nonempty_file "$ELF_OUT"
-assert_nonempty_file "$ELF_META"
+echo "[7/10] asm text structure smoke"
+assert_asm_line "\\.text" "$BASIC_ASM_OUT"
+assert_asm_line "\\.globl bar" "$BASIC_ASM_OUT"
+assert_asm_line "bar:" "$BASIC_ASM_OUT"
+assert_asm_line "\\.globl foo" "$BASIC_ASM_OUT"
+assert_asm_line "foo:" "$BASIC_ASM_OUT"
+assert_asm_line "    call bar" "$BASIC_ASM_OUT"
+assert_asm_line "    ret" "$BASIC_ASM_OUT"
 
-echo "[3/9] emit relocation-bearing elfobj + metadata"
-cargo run -q -p kernriftc -- \
-  --emit=elfobj \
-  -o "$RELOC_ELF_OUT" \
-  --meta-out "$RELOC_ELF_META" \
-  "$RELOC_FIXTURE"
-assert_nonempty_file "$RELOC_ELF_OUT"
-assert_nonempty_file "$RELOC_ELF_META"
+assert_asm_line "\\.text" "$EXTERN_ASM_OUT"
+assert_asm_line "\\.globl entry" "$EXTERN_ASM_OUT"
+assert_asm_line "entry:" "$EXTERN_ASM_OUT"
+assert_asm_line "    call ext" "$EXTERN_ASM_OUT"
+assert_asm_line "    ret" "$EXTERN_ASM_OUT"
 
-echo "[4/9] emit asm"
-cargo run -q -p kernriftc -- \
-  --emit=asm \
-  -o "$ASM_OUT" \
-  "$FIXTURE"
-assert_nonempty_file "$ASM_OUT"
+assert_asm_line "\\.text" "$MIXED_ASM_OUT"
+assert_asm_line "\\.globl entry" "$MIXED_ASM_OUT"
+assert_asm_line "entry:" "$MIXED_ASM_OUT"
+assert_asm_line "    call helper" "$MIXED_ASM_OUT"
+assert_asm_line "\\.globl helper" "$MIXED_ASM_OUT"
+assert_asm_line "helper:" "$MIXED_ASM_OUT"
+assert_asm_line "    call ext" "$MIXED_ASM_OUT"
+assert_asm_line "    ret" "$MIXED_ASM_OUT"
 
-echo "[5/9] emit relocation-bearing asm"
-cargo run -q -p kernriftc -- \
-  --emit=asm \
-  -o "$RELOC_ASM_OUT" \
-  "$RELOC_FIXTURE"
-assert_nonempty_file "$RELOC_ASM_OUT"
+echo "[8/10] optional emitted-ELF inspection matrix"
+if READELF_TOOL="$(acceptance_find_readelf)"; then
+  echo "[optional] inspect emitted elf objects with $READELF_TOOL"
 
-echo "[6/9] verify krbo metadata"
-cargo run -q -p kernriftc -- \
-  verify-artifact-meta \
-  "$KRBO_OUT" \
-  "$KRBO_META"
+  acceptance_assert_elf_rel_x86_64 "$READELF_TOOL" "$BASIC_ELF_OUT"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$BASIC_ELF_OUT" "bar"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$BASIC_ELF_OUT" "foo"
+  acceptance_assert_no_relocations "$READELF_TOOL" "$BASIC_ELF_OUT"
 
-echo "[7/9] verify elfobj metadata"
-cargo run -q -p kernriftc -- \
-  verify-artifact-meta \
-  "$ELF_OUT" \
-  "$ELF_META"
+  acceptance_assert_elf_rel_x86_64 "$READELF_TOOL" "$EXTERN_ELF_OUT"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$EXTERN_ELF_OUT" "entry"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$EXTERN_ELF_OUT" "ext"
+  acceptance_assert_symbol_undefined "$READELF_TOOL" "$EXTERN_ELF_OUT" "ext"
+  acceptance_assert_rela_text_present "$READELF_TOOL" "$EXTERN_ELF_OUT"
+  acceptance_assert_relocation_references_symbol "$READELF_TOOL" "$EXTERN_ELF_OUT" "ext"
 
-echo "[8/9] verify relocation-bearing elfobj metadata"
-cargo run -q -p kernriftc -- \
-  verify-artifact-meta \
-  "$RELOC_ELF_OUT" \
-  "$RELOC_ELF_META"
-
-echo "[9/9] smoke-check asm structure"
-grep -q '^\.text$' "$ASM_OUT"
-grep -q '^bar:$' "$ASM_OUT"
-grep -q '^foo:$' "$ASM_OUT"
-grep -q '^    call bar$' "$ASM_OUT"
-grep -q '^    ret$' "$ASM_OUT"
-grep -q '^\.text$' "$RELOC_ASM_OUT"
-grep -q '^entry:$' "$RELOC_ASM_OUT"
-grep -q '^    call ext$' "$RELOC_ASM_OUT"
-grep -q '^    ret$' "$RELOC_ASM_OUT"
-
-if READELF_TOOL="$(find_readelf)"; then
-  echo "[optional] inspect emitted elfobj with $READELF_TOOL"
-  READELF_HEADER="$("$READELF_TOOL" -h "$ELF_OUT")"
-  printf '%s\n' "$READELF_HEADER" | grep -Eq 'Class:[[:space:]]+ELF64'
-  printf '%s\n' "$READELF_HEADER" | grep -Eq "Data:[[:space:]]+2's complement, little endian"
-  printf '%s\n' "$READELF_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
-  printf '%s\n' "$READELF_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
-
-  READELF_SYMS="$("$READELF_TOOL" -sW "$ELF_OUT")"
-  printf '%s\n' "$READELF_SYMS" | grep -Eq '[[:space:]]bar$'
-  printf '%s\n' "$READELF_SYMS" | grep -Eq '[[:space:]]foo$'
-
-  READELF_RELOCS="$("$READELF_TOOL" -rW "$ELF_OUT")"
-  printf '%s\n' "$READELF_RELOCS" | grep -Eq 'There are no relocations in this file\.'
-
-  RELOC_HEADER="$("$READELF_TOOL" -h "$RELOC_ELF_OUT")"
-  printf '%s\n' "$RELOC_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
-  printf '%s\n' "$RELOC_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
-
-  RELOC_SYMS="$("$READELF_TOOL" -sW "$RELOC_ELF_OUT")"
-  printf '%s\n' "$RELOC_SYMS" | grep -Eq '[[:space:]]entry$'
-  printf '%s\n' "$RELOC_SYMS" | grep -Eq '[[:space:]]ext$'
-
-  RELOC_RELOCS="$("$READELF_TOOL" -rW "$RELOC_ELF_OUT")"
-  printf '%s\n' "$RELOC_RELOCS" | grep -Eq '\.rela\.text'
-  printf '%s\n' "$RELOC_RELOCS" | grep -Eq 'R_X86_64_PLT32'
-  printf '%s\n' "$RELOC_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'
+  acceptance_assert_elf_rel_x86_64 "$READELF_TOOL" "$MIXED_ELF_OUT"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$MIXED_ELF_OUT" "entry"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$MIXED_ELF_OUT" "helper"
+  acceptance_assert_symbol_present "$READELF_TOOL" "$MIXED_ELF_OUT" "ext"
+  acceptance_assert_symbol_undefined "$READELF_TOOL" "$MIXED_ELF_OUT" "ext"
+  acceptance_assert_symbol_not_undefined "$READELF_TOOL" "$MIXED_ELF_OUT" "helper"
+  acceptance_assert_rela_text_present "$READELF_TOOL" "$MIXED_ELF_OUT"
+  acceptance_assert_relocation_references_symbol "$READELF_TOOL" "$MIXED_ELF_OUT" "ext"
+  acceptance_assert_relocation_not_references_symbol "$READELF_TOOL" "$MIXED_ELF_OUT" "helper"
+else
+  acceptance_optional_skip "emitted-ELF inspection matrix" "readelf/llvm-readelf not found"
 fi
 
-if RELOC_LINKER="$(find_reloc_linker)"; then
-  echo "[optional] relocatable relink smoke with $RELOC_LINKER"
-  "$RELOC_LINKER" -r "$ELF_OUT" -o "$RELINKED_ELF_OUT"
-  assert_nonempty_file "$RELINKED_ELF_OUT"
-
-  if READELF_TOOL="$(find_readelf)"; then
-    RELINKED_HEADER="$("$READELF_TOOL" -h "$RELINKED_ELF_OUT")"
-    printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
-    printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+echo "[9/10] optional downstream relink/final-link/runtime matrix"
+if LINKER_TOOL="$(acceptance_find_linker)"; then
+  echo "[optional] relocatable relink smoke with $LINKER_TOOL"
+  "$LINKER_TOOL" -r "$BASIC_ELF_OUT" -o "$RELINKED_BASIC_ELF_OUT"
+  acceptance_assert_nonempty_file "$RELINKED_BASIC_ELF_OUT"
+  if READELF_TOOL="$(acceptance_find_readelf)"; then
+    acceptance_assert_elf_rel_x86_64 "$READELF_TOOL" "$RELINKED_BASIC_ELF_OUT"
   fi
+else
+  acceptance_optional_skip "relocatable relink smoke" "ld.lld/ld not found"
 fi
 
-if FINAL_LINKER="$(find_reloc_linker)" && ASM_COMPILER="$(find_asm_compiler)"; then
-  echo "[optional] final-link + runtime smoke for emitted elfobj with $FINAL_LINKER + $ASM_COMPILER"
-  cat > "$FINAL_RUNTIME_STUB_SRC" <<'EOF'
-.text
-.globl _start
-.globl ext
-_start:
-    call entry
-    mov $60, %rax
-    mov $99, %rdi
-    syscall
-ext:
-    mov $60, %rax
-    mov $7, %rdi
-    syscall
-EOF
+if LINKER_TOOL="$(acceptance_find_linker)" && ASM_COMPILER="$(acceptance_find_asm_compiler)"; then
+  echo "[optional] final-link + hosted runtime for emitted elfobj with $LINKER_TOOL + $ASM_COMPILER"
+  acceptance_write_hosted_runtime_stub "$FINAL_RUNTIME_STUB_SRC" "entry" "ext"
+  acceptance_assemble_source "$ASM_COMPILER" "$FINAL_RUNTIME_STUB_SRC" "$FINAL_RUNTIME_STUB_OBJ"
+  acceptance_assert_nonempty_file "$FINAL_RUNTIME_STUB_OBJ"
 
-  case "$ASM_COMPILER" in
-    as)
-      "$ASM_COMPILER" -o "$FINAL_RUNTIME_STUB_OBJ" "$FINAL_RUNTIME_STUB_SRC"
-      ;;
-    *)
-      "$ASM_COMPILER" -c "$FINAL_RUNTIME_STUB_SRC" -o "$FINAL_RUNTIME_STUB_OBJ"
-      ;;
-  esac
-  assert_nonempty_file "$FINAL_RUNTIME_STUB_OBJ"
+  "$LINKER_TOOL" -m elf_x86_64 -e _start -o "$FINAL_EXTERN_ELF_OUT" "$EXTERN_ELF_OUT" "$FINAL_RUNTIME_STUB_OBJ"
+  acceptance_assert_nonempty_file "$FINAL_EXTERN_ELF_OUT"
+  "$LINKER_TOOL" -m elf_x86_64 -e _start -o "$FINAL_MIXED_ELF_OUT" "$MIXED_ELF_OUT" "$FINAL_RUNTIME_STUB_OBJ"
+  acceptance_assert_nonempty_file "$FINAL_MIXED_ELF_OUT"
 
-  "$FINAL_LINKER" -m elf_x86_64 -e _start -o "$FINAL_LINK_ELF_OUT" "$RELOC_ELF_OUT" "$FINAL_RUNTIME_STUB_OBJ"
-  assert_nonempty_file "$FINAL_LINK_ELF_OUT"
-
-  if READELF_TOOL="$(find_readelf)"; then
-    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_LINK_ELF_OUT"
+  if READELF_TOOL="$(acceptance_find_readelf)"; then
+    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_EXTERN_ELF_OUT"
+    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_MIXED_ELF_OUT"
   fi
 
-  run_runtime_smoke_or_skip "$FINAL_LINK_ELF_OUT" "emitted-elfobj"
+  acceptance_run_binary_expect_exit_or_skip "$FINAL_EXTERN_ELF_OUT" "emitted-elfobj-extern" 7 "$TMP_DIR/emitted-elfobj-extern.stderr"
+  acceptance_run_binary_expect_exit_or_skip "$FINAL_MIXED_ELF_OUT" "emitted-elfobj-mixed" 7 "$TMP_DIR/emitted-elfobj-mixed.stderr"
 else
   missing_tools=()
-  if ! FINAL_LINKER="$(find_reloc_linker)"; then
+  if ! LINKER_TOOL="$(acceptance_find_linker)"; then
     missing_tools+=("ld.lld/ld")
   fi
-  if ! ASM_COMPILER="$(find_asm_compiler)"; then
+  if ! ASM_COMPILER="$(acceptance_find_asm_compiler)"; then
     missing_tools+=("as/clang/gcc")
   fi
-  echo "[optional] final-link + runtime smoke for emitted elfobj skipped: ${missing_tools[*]}"
+  acceptance_optional_skip "final-link + hosted runtime for emitted elfobj" "${missing_tools[*]}"
 fi
 
-if ASM_COMPILER="$(find_asm_compiler)" && READELF_TOOL="$(find_readelf)"; then
-  echo "[optional] assemble relocation-bearing asm with $ASM_COMPILER and inspect with $READELF_TOOL"
-  case "$ASM_COMPILER" in
-    as)
-      "$ASM_COMPILER" -o "$RELOC_ASM_OBJ" "$RELOC_ASM_OUT"
-      ;;
-    *)
-      "$ASM_COMPILER" -c "$RELOC_ASM_OUT" -o "$RELOC_ASM_OBJ"
-      ;;
-  esac
-  assert_nonempty_file "$RELOC_ASM_OBJ"
+if ASM_COMPILER="$(acceptance_find_asm_compiler)" && READELF_TOOL="$(acceptance_find_readelf)"; then
+  echo "[optional] assemble emitted asm and inspect relocations with $ASM_COMPILER + $READELF_TOOL"
+  acceptance_assemble_source "$ASM_COMPILER" "$EXTERN_ASM_OUT" "$EXTERN_ASM_OBJ"
+  acceptance_assert_nonempty_file "$EXTERN_ASM_OBJ"
+  acceptance_assemble_source "$ASM_COMPILER" "$MIXED_ASM_OUT" "$MIXED_ASM_OBJ"
+  acceptance_assert_nonempty_file "$MIXED_ASM_OBJ"
 
-  RELOC_ASM_RELOCS="$("$READELF_TOOL" -rW "$RELOC_ASM_OBJ")"
-  printf '%s\n' "$RELOC_ASM_RELOCS" | grep -Eq '\.rela\.text'
-  printf '%s\n' "$RELOC_ASM_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'
+  acceptance_assert_elf_rel_x86_64 "$READELF_TOOL" "$EXTERN_ASM_OBJ"
+  acceptance_assert_rela_text_present "$READELF_TOOL" "$EXTERN_ASM_OBJ"
+  acceptance_assert_relocation_references_symbol "$READELF_TOOL" "$EXTERN_ASM_OBJ" "ext"
+
+  acceptance_assert_elf_rel_x86_64 "$READELF_TOOL" "$MIXED_ASM_OBJ"
+  acceptance_assert_rela_text_present "$READELF_TOOL" "$MIXED_ASM_OBJ"
+  acceptance_assert_relocation_references_symbol "$READELF_TOOL" "$MIXED_ASM_OBJ" "helper"
+  acceptance_assert_relocation_references_symbol "$READELF_TOOL" "$MIXED_ASM_OBJ" "ext"
+else
+  missing_tools=()
+  if ! ASM_COMPILER="$(acceptance_find_asm_compiler)"; then
+    missing_tools+=("as/clang/gcc")
+  fi
+  if ! READELF_TOOL="$(acceptance_find_readelf)"; then
+    missing_tools+=("readelf/llvm-readelf")
+  fi
+  acceptance_optional_skip "assemble emitted asm and inspect relocations" "${missing_tools[*]}"
 fi
 
-if FINAL_LINKER="$(find_reloc_linker)" && ASM_COMPILER="$(find_asm_compiler)"; then
-  echo "[optional] final-link + runtime smoke for emitted asm with $FINAL_LINKER + $ASM_COMPILER"
-  case "$ASM_COMPILER" in
-    as)
-      "$ASM_COMPILER" -o "$RELOC_ASM_OBJ" "$RELOC_ASM_OUT"
-      ;;
-    *)
-      "$ASM_COMPILER" -c "$RELOC_ASM_OUT" -o "$RELOC_ASM_OBJ"
-      ;;
-  esac
-  assert_nonempty_file "$RELOC_ASM_OBJ"
+if LINKER_TOOL="$(acceptance_find_linker)" && ASM_COMPILER="$(acceptance_find_asm_compiler)"; then
+  echo "[optional] final-link + hosted runtime for emitted asm with $LINKER_TOOL + $ASM_COMPILER"
+
+  acceptance_assemble_source "$ASM_COMPILER" "$EXTERN_ASM_OUT" "$EXTERN_ASM_OBJ"
+  acceptance_assert_nonempty_file "$EXTERN_ASM_OBJ"
+  acceptance_assemble_source "$ASM_COMPILER" "$MIXED_ASM_OUT" "$MIXED_ASM_OBJ"
+  acceptance_assert_nonempty_file "$MIXED_ASM_OBJ"
+
   if [[ ! -s "$FINAL_RUNTIME_STUB_OBJ" ]]; then
-    cat > "$FINAL_RUNTIME_STUB_SRC" <<'EOF'
-.text
-.globl _start
-.globl ext
-_start:
-    call entry
-    mov $60, %rax
-    mov $99, %rdi
-    syscall
-ext:
-    mov $60, %rax
-    mov $7, %rdi
-    syscall
-EOF
-    case "$ASM_COMPILER" in
-      as)
-        "$ASM_COMPILER" -o "$FINAL_RUNTIME_STUB_OBJ" "$FINAL_RUNTIME_STUB_SRC"
-        ;;
-      *)
-        "$ASM_COMPILER" -c "$FINAL_RUNTIME_STUB_SRC" -o "$FINAL_RUNTIME_STUB_OBJ"
-        ;;
-    esac
-  fi
-  assert_nonempty_file "$FINAL_RUNTIME_STUB_OBJ"
-
-  "$FINAL_LINKER" -m elf_x86_64 -e _start -o "$FINAL_LINK_ASM_OUT" "$RELOC_ASM_OBJ" "$FINAL_RUNTIME_STUB_OBJ"
-  assert_nonempty_file "$FINAL_LINK_ASM_OUT"
-
-  if READELF_TOOL="$(find_readelf)"; then
-    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_LINK_ASM_OUT"
+    acceptance_write_hosted_runtime_stub "$FINAL_RUNTIME_STUB_SRC" "entry" "ext"
+    acceptance_assemble_source "$ASM_COMPILER" "$FINAL_RUNTIME_STUB_SRC" "$FINAL_RUNTIME_STUB_OBJ"
+    acceptance_assert_nonempty_file "$FINAL_RUNTIME_STUB_OBJ"
   fi
 
-  run_runtime_smoke_or_skip "$FINAL_LINK_ASM_OUT" "emitted-asm"
+  "$LINKER_TOOL" -m elf_x86_64 -e _start -o "$FINAL_EXTERN_ASM_OUT" "$EXTERN_ASM_OBJ" "$FINAL_RUNTIME_STUB_OBJ"
+  acceptance_assert_nonempty_file "$FINAL_EXTERN_ASM_OUT"
+  "$LINKER_TOOL" -m elf_x86_64 -e _start -o "$FINAL_MIXED_ASM_OUT" "$MIXED_ASM_OBJ" "$FINAL_RUNTIME_STUB_OBJ"
+  acceptance_assert_nonempty_file "$FINAL_MIXED_ASM_OUT"
+
+  if READELF_TOOL="$(acceptance_find_readelf)"; then
+    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_EXTERN_ASM_OUT"
+    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_MIXED_ASM_OUT"
+  fi
+
+  acceptance_run_binary_expect_exit_or_skip "$FINAL_EXTERN_ASM_OUT" "emitted-asm-extern" 7 "$TMP_DIR/emitted-asm-extern.stderr"
+  acceptance_run_binary_expect_exit_or_skip "$FINAL_MIXED_ASM_OUT" "emitted-asm-mixed" 7 "$TMP_DIR/emitted-asm-mixed.stderr"
 else
   missing_tools=()
-  if ! FINAL_LINKER="$(find_reloc_linker)"; then
+  if ! LINKER_TOOL="$(acceptance_find_linker)"; then
     missing_tools+=("ld.lld/ld")
   fi
-  if ! ASM_COMPILER="$(find_asm_compiler)"; then
+  if ! ASM_COMPILER="$(acceptance_find_asm_compiler)"; then
     missing_tools+=("as/clang/gcc")
   fi
-  echo "[optional] final-link + runtime smoke for emitted asm skipped: ${missing_tools[*]}"
+  acceptance_optional_skip "final-link + hosted runtime for emitted asm" "${missing_tools[*]}"
 fi
 
+echo "[10/10] hosted artifact matrix complete"
 echo "kernriftc artifact export acceptance: PASS"

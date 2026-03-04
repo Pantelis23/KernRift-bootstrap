@@ -2912,6 +2912,56 @@ mod tests {
     }
 
     #[test]
+    fn executable_krir_x86_64_asm_export_preserves_mixed_internal_and_external_calls() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![ExecutableOp::Call {
+                            callee: "helper".to_string(),
+                        }],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "helper".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![ExecutableOp::Call {
+                            callee: "ext".to_string(),
+                        }],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("helper")
+                },
+            ],
+            extern_declarations: vec![executable_extern_decl("ext")],
+            call_edges: vec![],
+        };
+
+        let target = BackendTargetContract::x86_64_sysv();
+        let object = lower_executable_krir_to_compiler_owned_object(&module, &target)
+            .expect("lower compiler-owned object");
+        let exported =
+            export_compiler_owned_object_to_x86_64_asm(&object, &target).expect("export asm");
+        let wrapped = lower_executable_krir_to_x86_64_asm(&module, &target).expect("wrap asm");
+
+        assert_eq!(wrapped, exported);
+        assert_eq!(
+            emit_x86_64_asm_text(&exported),
+            ".text\n\n.globl entry\nentry:\n    call helper\n    ret\n\n.globl helper\nhelper:\n    call ext\n    ret\n"
+        );
+    }
+
+    #[test]
     fn executable_krir_validation_rejects_undeclared_direct_call_target() {
         let module = ExecutableKrirModule {
             module_caps: vec![],
