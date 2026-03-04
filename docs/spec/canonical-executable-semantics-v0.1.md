@@ -29,13 +29,15 @@ This boundary is distinct from:
 Canonical executable semantics v0.1 supports:
 
 - non-extern function definitions,
+- explicit extern declarations,
 - zero-parameter signatures,
 - unit result,
 - linear function bodies,
 - direct named calls to defined non-extern executable functions,
+- direct named calls to declared extern functions,
 - explicit canonical `return unit`.
 
-Extern declarations may exist in the source module for analysis/checking purposes, but they are outside the canonical executable subset in v0.1 and are not valid call targets there.
+Extern declarations remain distinct from executable function bodies in canonical executable semantics v0.1. They are valid call targets, but they are preserved as declarations rather than lowered as executable bodies.
 
 ## Canonical function model
 
@@ -45,6 +47,10 @@ Each canonical executable function contains:
 - `signature`
 - `facts`
 - `body`
+
+Canonical executable module also contains:
+
+- `extern_declarations`
 
 Facts remain semantic metadata:
 
@@ -98,7 +104,6 @@ Also out of scope:
 - non-unit returns,
 - branching / CFG joins,
 - memory loads/stores,
-- extern call targets,
 - target-machine details.
 
 ## Why this boundary exists
@@ -115,6 +120,7 @@ This boundary keeps KernRift sovereign:
 For the supported subset, lowering to executable KRIR is deterministic:
 
 - one canonical executable function lowers to one executable KRIR function,
+- declared externs lower to explicit executable KRIR extern declarations,
 - one executable body lowers to one explicit `entry` block,
 - ordered canonical direct calls lower to ordered executable `Call` ops,
 - canonical `return unit` lowers to executable `Return { value: Unit }`.

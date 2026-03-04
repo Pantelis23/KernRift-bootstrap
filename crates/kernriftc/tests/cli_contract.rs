@@ -345,6 +345,91 @@ fn emit_asm_writes_expected_text_output() {
 }
 
 #[test]
+fn emit_krbo_supports_declared_extern_call_target_and_metadata_verifies() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let artifact_path = unique_temp_output_path("emit-krbo-extern-call", "krbo");
+    let meta_path = unique_temp_output_path("emit-krbo-extern-call", "json");
+
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(stdout, "verify-artifact-meta: PASS\n");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn emit_elfobj_supports_declared_extern_call_target_and_metadata_verifies() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let artifact_path = unique_temp_output_path("emit-elfobj-extern-call", "o");
+    let meta_path = unique_temp_output_path("emit-elfobj-extern-call", "json");
+
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(stdout, "verify-artifact-meta: PASS\n");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn emit_asm_rejects_declared_extern_call_target_downstream() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let output_path = unique_temp_output_path("emit-asm-extern-call", "s");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=asm")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "x86_64 asm export does not support unresolved external call target 'ext' in function 'entry'"
+        ]
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
 fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");

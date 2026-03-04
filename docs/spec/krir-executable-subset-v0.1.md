@@ -52,12 +52,14 @@ Executable KRIR module fields:
 
 - `module_caps: string[]`
 - `functions: ExecutableFunction[]`
+- `extern_declarations: ExecutableExternDecl[]`
 - `call_edges: CallEdge[]`
 
 Determinism requirements:
 
 - module caps are sorted and deduped,
 - functions are sorted by name,
+- extern declarations are sorted by name,
 - function facts are sorted and deduped,
 - signature parameter order is preserved exactly as constructed,
 - block list order is preserved exactly as constructed,
@@ -75,6 +77,10 @@ Each executable function contains:
 - `facts`
 - `entry_block`
 - `blocks`
+
+Executable KRIR module also contains explicit extern declarations:
+
+- `name`
 
 ### Executable signature v0.1
 
@@ -122,7 +128,9 @@ Supported executable ops:
 
 Semantics:
 
-- direct call only, and only to a defined non-extern executable function,
+- direct call only, and only to:
+  - a defined non-extern executable function, or
+  - an explicitly declared extern target,
 - no arguments yet,
 - no bound result value yet,
 - participates in `call_edges`.
@@ -193,6 +201,9 @@ Executable KRIR validation must reject:
 - functions with parameters,
 - missing entry block,
 - duplicate block labels,
+- duplicate extern declarations,
+- overlap between function names and extern declaration names,
+- calls to undeclared targets,
 - terminator result mismatch.
 
 ## Why this boundary exists

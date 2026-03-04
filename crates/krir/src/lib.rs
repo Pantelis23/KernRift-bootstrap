@@ -206,10 +206,16 @@ pub struct ExecutableFunction {
     pub blocks: Vec<ExecutableBlock>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutableExternDecl {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ExecutableKrirModule {
     pub module_caps: Vec<String>,
     pub functions: Vec<ExecutableFunction>,
+    pub extern_declarations: Vec<ExecutableExternDecl>,
     pub call_edges: Vec<CallEdge>,
 }
 
@@ -219,6 +225,7 @@ impl ExecutableKrirModule {
         self.module_caps.dedup();
 
         self.functions.sort_by(|a, b| a.name.cmp(&b.name));
+        self.extern_declarations.sort_by(|a, b| a.name.cmp(&b.name));
         for function in &mut self.functions {
             function.facts.ctx_ok.sort_by_key(|ctx| ctx.as_str());
             function.facts.ctx_ok.dedup();
@@ -233,7 +240,17 @@ impl ExecutableKrirModule {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut function_names = BTreeSet::new();
+        let mut extern_names = BTreeSet::new();
+
         for function in &self.functions {
+            if !function_names.insert(function.name.as_str()) {
+                return Err(format!(
+                    "executable KRIR has duplicate function '{}'",
+                    function.name
+                ));
+            }
+
             if function.is_extern {
                 return Err(format!(
                     "executable KRIR function '{}' must not be extern",
@@ -282,6 +299,40 @@ impl ExecutableKrirModule {
                     "executable KRIR function '{}' entry block '{}' is missing",
                     function.name, function.entry_block
                 ));
+            }
+        }
+
+        for extern_decl in &self.extern_declarations {
+            if !extern_names.insert(extern_decl.name.as_str()) {
+                return Err(format!(
+                    "executable KRIR has duplicate extern declaration '{}'",
+                    extern_decl.name
+                ));
+            }
+            if function_names.contains(extern_decl.name.as_str()) {
+                return Err(format!(
+                    "executable KRIR extern declaration '{}' duplicates function",
+                    extern_decl.name
+                ));
+            }
+        }
+
+        for function in &self.functions {
+            for block in &function.blocks {
+                for op in &block.ops {
+                    match op {
+                        ExecutableOp::Call { callee } => {
+                            if !function_names.contains(callee.as_str())
+                                && !extern_names.contains(callee.as_str())
+                            {
+                                return Err(format!(
+                                    "executable KRIR function '{}' calls undeclared target '{}'",
+                                    function.name, callee
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1033,6 +1084,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
 
     let mut canonical = module.clone();
     canonical.canonicalize();
+    let extern_names = canonical
+        .extern_declarations
+        .iter()
+        .map(|decl| decl.name.as_str())
+        .collect::<BTreeSet<_>>();
 
     let mut function_offsets = BTreeMap::new();
     let mut function_sizes = BTreeMap::new();
@@ -1062,6 +1118,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             match op {
                 ExecutableOp::Call { callee } => {
                     if !function_offsets.contains_key(callee) {
+                        if !extern_names.contains(callee.as_str()) {
+                            return Err(format!(
+                                "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                                callee, function.name
+                            ));
+                        }
                         unresolved_targets.insert(callee.clone());
                     }
                     code_bytes.push(0xE8);
@@ -1839,13 +1901,13 @@ mod tests {
         CompilerOwnedFixupKind, CompilerOwnedObject, CompilerOwnedObjectFixup,
         CompilerOwnedObjectHeader, CompilerOwnedObjectKind, CompilerOwnedObjectSymbol,
         CompilerOwnedObjectSymbolDefinition, CompilerOwnedObjectSymbolKind, Ctx, Eff,
-        ExecutableBlock, ExecutableFacts, ExecutableFunction, ExecutableKrirModule, ExecutableOp,
-        ExecutableSignature, ExecutableTerminator, ExecutableValue, ExecutableValueType,
-        FunctionAttrs, FutureScalarReturnConvention, TargetEndian, X86_64IntegerRegister,
-        emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
-        export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
-        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
-        lower_executable_krir_to_x86_64_object,
+        ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
+        ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
+        ExecutableValue, ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention,
+        TargetEndian, X86_64IntegerRegister, emit_compiler_owned_object_bytes,
+        emit_x86_64_asm_text, emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
+        export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_compiler_owned_object,
+        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
         validate_compiler_owned_object_for_x86_64_asm_export,
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
@@ -2338,6 +2400,12 @@ mod tests {
         }
     }
 
+    fn executable_extern_decl(name: &str) -> ExecutableExternDecl {
+        ExecutableExternDecl {
+            name: name.to_string(),
+        }
+    }
+
     fn asm_export_fixture_target() -> BackendTargetContract {
         BackendTargetContract::x86_64_sysv()
     }
@@ -2378,6 +2446,7 @@ mod tests {
                 "Mmio".to_string(),
             ],
             functions: vec![executable_function("entry")],
+            extern_declarations: vec![executable_extern_decl("helper")],
             call_edges: vec![
                 CallEdge {
                     caller: "entry".to_string(),
@@ -2397,6 +2466,9 @@ mod tests {
             value,
             json!({
                 "module_caps": ["Mmio", "PhysMap"],
+                "extern_declarations": [{
+                    "name": "helper"
+                }],
                 "functions": [{
                     "name": "entry",
                     "is_extern": false,
@@ -2447,6 +2519,7 @@ mod tests {
                 entry_block: "missing".to_string(),
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2467,6 +2540,7 @@ mod tests {
                 },
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2499,6 +2573,7 @@ mod tests {
                 ],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2525,6 +2600,7 @@ mod tests {
                 },
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2675,6 +2751,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
         module.canonicalize();
@@ -2718,6 +2795,7 @@ mod tests {
                     ..unit_return_function("beta")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2736,6 +2814,7 @@ mod tests {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2775,6 +2854,7 @@ mod tests {
                 ],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2788,7 +2868,7 @@ mod tests {
     }
 
     #[test]
-    fn executable_krir_x86_64_lowering_rejects_undefined_direct_call_target() {
+    fn executable_krir_x86_64_lowering_rejects_declared_external_direct_call_target() {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![ExecutableFunction {
@@ -2803,6 +2883,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("missing")],
             call_edges: vec![],
         };
 
@@ -2830,6 +2911,32 @@ mod tests {
     }
 
     #[test]
+    fn executable_krir_validation_rejects_undeclared_direct_call_target() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "missing".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            extern_declarations: vec![],
+            call_edges: vec![],
+        };
+
+        assert_eq!(
+            module.validate(),
+            Err("executable KRIR function 'entry' calls undeclared target 'missing'".to_string())
+        );
+    }
+
+    #[test]
     fn executable_krir_x86_64_asm_export_is_derived_from_compiler_owned_object() {
         let module = ExecutableKrirModule {
             module_caps: vec![],
@@ -2852,6 +2959,7 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2941,6 +3049,7 @@ mod tests {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("entry")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -2999,6 +3108,7 @@ mod tests {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3060,6 +3170,7 @@ mod tests {
                     ..unit_return_function("beta")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3141,6 +3252,7 @@ mod tests {
                 ],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3172,6 +3284,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -3217,6 +3330,7 @@ mod tests {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("entry")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3356,6 +3470,7 @@ mod tests {
                     ..unit_return_function("beta")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3433,6 +3548,7 @@ mod tests {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3473,6 +3589,7 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3515,6 +3632,7 @@ mod tests {
                 ],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3542,6 +3660,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -3657,6 +3776,10 @@ mod tests {
                     name: "alpha".to_string(),
                     ..unit_return_function("alpha")
                 },
+            ],
+            extern_declarations: vec![
+                executable_extern_decl("ext_a"),
+                executable_extern_decl("ext_b"),
             ],
             call_edges: vec![],
         };
@@ -3808,6 +3931,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -3904,6 +4028,7 @@ mod tests {
                     ..unit_return_function("beta")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -3943,6 +4068,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -3991,6 +4117,10 @@ mod tests {
                     name: "alpha".to_string(),
                     ..unit_return_function("alpha")
                 },
+            ],
+            extern_declarations: vec![
+                executable_extern_decl("ext_a"),
+                executable_extern_decl("ext_b"),
             ],
             call_edges: vec![],
         };
@@ -4051,6 +4181,7 @@ mod tests {
                     ..unit_return_function("beta")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -4101,11 +4232,13 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
         let resolver = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("ext")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -4192,11 +4325,13 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
         let resolver = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("ext")],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -4272,6 +4407,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -4336,6 +4472,7 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -4398,6 +4535,7 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![],
             call_edges: vec![],
         };
 
@@ -4466,6 +4604,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -4532,6 +4671,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -4621,6 +4761,7 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -4694,6 +4835,7 @@ mod tests {
                     ..unit_return_function("alpha")
                 },
             ],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 
@@ -4768,6 +4910,7 @@ mod tests {
                 }],
                 ..executable_function("entry")
             }],
+            extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
         };
 

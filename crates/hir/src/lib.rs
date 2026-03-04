@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use krir::{
-    CallEdge, Ctx, Eff, ExecutableBlock, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
-    ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
-    ExecutableValueType, Function, FunctionAttrs, KrirModule, KrirOp,
+    CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
+    ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
+    ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
+    KrirModule, KrirOp,
 };
 use parser::{FnAst, ModuleAst, RawAttr, Stmt, split_csv};
 use serde::Serialize;
@@ -161,10 +162,16 @@ pub struct CanonicalExecutableFunction {
     pub body: CanonicalExecutableBody,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanonicalExecutableExternDecl {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct CanonicalExecutableModule {
     pub module_caps: Vec<String>,
     pub functions: Vec<CanonicalExecutableFunction>,
+    pub extern_declarations: Vec<CanonicalExecutableExternDecl>,
 }
 
 impl CanonicalExecutableModule {
@@ -173,6 +180,7 @@ impl CanonicalExecutableModule {
         self.module_caps.dedup();
 
         self.functions.sort_by(|a, b| a.name.cmp(&b.name));
+        self.extern_declarations.sort_by(|a, b| a.name.cmp(&b.name));
         for function in &mut self.functions {
             function.facts.ctx_ok.sort_by_key(|ctx| ctx.as_str());
             function.facts.ctx_ok.dedup();
@@ -742,14 +750,18 @@ pub fn lower_to_canonical_executable_with_surface(
 ) -> Result<CanonicalExecutableModule, Vec<String>> {
     let mut errors = Vec::new();
     let mut functions = Vec::new();
+    let mut extern_declarations = Vec::new();
     let mut names = BTreeSet::new();
     let mut executable_names = BTreeSet::new();
+    let mut extern_names = BTreeSet::new();
 
     for item in &ast.items {
         if !names.insert(item.name.clone()) {
             errors.push(format!("duplicate symbol '{}'", item.name));
         }
-        if !item.is_extern {
+        if item.is_extern {
+            extern_names.insert(item.name.clone());
+        } else {
             executable_names.insert(item.name.clone());
         }
     }
@@ -764,10 +776,19 @@ pub fn lower_to_canonical_executable_with_surface(
         };
 
         if item.is_extern {
+            extern_declarations.push(CanonicalExecutableExternDecl {
+                name: item.name.clone(),
+            });
             continue;
         }
 
-        match lower_function_to_canonical_executable(item, &names, &executable_names, facts) {
+        match lower_function_to_canonical_executable(
+            item,
+            &names,
+            &executable_names,
+            &extern_names,
+            facts,
+        ) {
             Ok(function) => functions.push(function),
             Err(errs) => errors.extend(errs),
         }
@@ -780,6 +801,7 @@ pub fn lower_to_canonical_executable_with_surface(
     let mut module = CanonicalExecutableModule {
         module_caps: ast.module_caps.clone(),
         functions,
+        extern_declarations,
     };
     module.canonicalize();
     Ok(module)
@@ -853,6 +875,13 @@ pub fn lower_canonical_executable_to_krir(
     let mut lowered = ExecutableKrirModule {
         module_caps: module.module_caps.clone(),
         functions,
+        extern_declarations: module
+            .extern_declarations
+            .iter()
+            .map(|decl| ExecutableExternDecl {
+                name: decl.name.clone(),
+            })
+            .collect(),
         call_edges,
     };
     lowered.canonicalize();
@@ -864,10 +893,11 @@ pub fn lower_canonical_executable_to_krir(
 
 fn validate_canonical_executable_module(module: &CanonicalExecutableModule) -> Vec<String> {
     let mut errors = Vec::new();
-    let mut names = BTreeSet::new();
+    let mut function_names = BTreeSet::new();
+    let mut extern_names = BTreeSet::new();
 
     for function in &module.functions {
-        if !names.insert(function.name.as_str()) {
+        if !function_names.insert(function.name.as_str()) {
             errors.push(format!(
                 "canonical-exec->krir: duplicate canonical executable function '{}'",
                 function.name
@@ -882,13 +912,30 @@ fn validate_canonical_executable_module(module: &CanonicalExecutableModule) -> V
         }
     }
 
+    for extern_decl in &module.extern_declarations {
+        if !extern_names.insert(extern_decl.name.as_str()) {
+            errors.push(format!(
+                "canonical-exec->krir: duplicate canonical executable extern declaration '{}'",
+                extern_decl.name
+            ));
+        }
+        if function_names.contains(extern_decl.name.as_str()) {
+            errors.push(format!(
+                "canonical-exec->krir: extern declaration '{}' duplicates executable function",
+                extern_decl.name
+            ));
+        }
+    }
+
     for function in &module.functions {
         for op in &function.body.ops {
             match op {
                 CanonicalExecutableOp::Call { callee } => {
-                    if !names.contains(callee.as_str()) {
+                    if !function_names.contains(callee.as_str())
+                        && !extern_names.contains(callee.as_str())
+                    {
                         errors.push(format!(
-                            "canonical-exec->krir: canonical executable function '{}' calls undefined function '{}'",
+                            "canonical-exec->krir: canonical executable function '{}' calls undeclared target '{}'",
                             function.name, callee
                         ));
                     }
@@ -1129,6 +1176,7 @@ fn lower_function_to_canonical_executable(
     item: &FnAst,
     all_names: &BTreeSet<String>,
     executable_names: &BTreeSet<String>,
+    extern_names: &BTreeSet<String>,
     facts: NormalizedFunctionFacts,
 ) -> Result<CanonicalExecutableFunction, Vec<String>> {
     let mut ops = Vec::new();
@@ -1138,6 +1186,7 @@ fn lower_function_to_canonical_executable(
         &item.name,
         all_names,
         executable_names,
+        extern_names,
         &mut ops,
         &mut errors,
     );
@@ -1170,28 +1219,27 @@ fn lower_stmts_to_canonical_executable(
     function_name: &str,
     all_names: &BTreeSet<String>,
     executable_names: &BTreeSet<String>,
+    extern_names: &BTreeSet<String>,
     ops: &mut Vec<CanonicalExecutableOp>,
     errors: &mut Vec<String>,
 ) {
     for stmt in stmts {
         match stmt {
             Stmt::Call(callee) => {
-                if !executable_names.contains(callee) {
-                    if all_names.contains(callee) {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' calls unsupported extern '{}' in v0.1",
-                            function_name, callee
-                        ));
-                    } else {
-                        errors.push(format!(
-                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff/@caps)",
-                        callee
-                    ));
-                    }
-                } else {
+                if executable_names.contains(callee) || extern_names.contains(callee) {
                     ops.push(CanonicalExecutableOp::Call {
                         callee: callee.clone(),
                     });
+                } else if !all_names.contains(callee) {
+                    errors.push(format!(
+                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff/@caps)",
+                        callee
+                    ));
+                } else {
+                    errors.push(format!(
+                        "canonical-exec: function '{}' calls undeclared target '{}'",
+                        function_name, callee
+                    ));
                 }
             }
             Stmt::Critical(_) => errors.push(format!(
@@ -1456,11 +1504,59 @@ mod tests {
         let ast =
             parse_module("fn entry() { ext(); }\nextern @ctx(thread) @eff() @caps() fn ext();")
                 .expect("parse");
+        let lowered = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("extern call target must be accepted");
+        assert_eq!(
+            lowered.extern_declarations,
+            vec![super::CanonicalExecutableExternDecl {
+                name: "ext".to_string(),
+            }]
+        );
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry");
+        assert_eq!(
+            serde_json::to_value(&entry.body.ops).expect("serialize ops"),
+            json!([{"op": "call", "callee": "ext"}])
+        );
+    }
+
+    #[test]
+    fn canonical_executable_rejects_undeclared_call_targets_deterministically() {
+        let ast = parse_module("fn entry() { missing(); }").expect("parse");
         let errs = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
-            .expect_err("extern call target must be rejected");
+            .expect_err("undeclared call target must be rejected");
         assert_eq!(
             errs,
-            vec!["canonical-exec: function 'entry' calls unsupported extern 'ext' in v0.1"]
+            vec!["undefined symbol 'missing': add extern declaration with facts (@ctx/@eff/@caps)"]
+        );
+    }
+
+    #[test]
+    fn canonical_executable_extern_declarations_remain_separate_from_functions() {
+        let ast =
+            parse_module("extern @ctx(thread) @eff() @caps() fn ext();\nfn entry() { ext(); }")
+                .expect("parse");
+        let lowered = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical executable lowering");
+
+        assert_eq!(
+            lowered
+                .functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entry"]
+        );
+        assert_eq!(
+            lowered
+                .extern_declarations
+                .iter()
+                .map(|decl| decl.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ext"]
         );
     }
 
@@ -1512,6 +1608,7 @@ mod tests {
             serde_json::to_value(&lowered).expect("serialize"),
             json!({
                 "module_caps": [],
+                "extern_declarations": [],
                 "functions": [{
                     "name": "entry",
                     "is_extern": false,
@@ -1576,6 +1673,42 @@ mod tests {
     }
 
     #[test]
+    fn canonical_executable_lowers_declared_extern_target_to_executable_krir() {
+        let ast =
+            parse_module("extern @ctx(thread) @eff() @caps() fn ext();\nfn entry() { ext(); }")
+                .expect("parse");
+        let canonical = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical");
+        let lowered =
+            lower_canonical_executable_to_krir(&canonical).expect("lower executable krir");
+
+        assert_eq!(
+            lowered
+                .extern_declarations
+                .iter()
+                .map(|decl| decl.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ext"]
+        );
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry");
+        assert_eq!(
+            serde_json::to_value(&entry.blocks[0].ops).expect("serialize ops"),
+            json!([{"op": "call", "callee": "ext"}])
+        );
+        assert_eq!(
+            lowered.call_edges,
+            vec![krir::CallEdge {
+                caller: "entry".to_string(),
+                callee: "ext".to_string()
+            }]
+        );
+    }
+
+    #[test]
     fn canonical_executable_lowering_keeps_function_order_deterministic() {
         let ast = parse_module("fn zeta() { }\nfn alpha() { }").expect("parse");
         let canonical = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
@@ -1597,6 +1730,7 @@ mod tests {
     fn canonical_executable_lowering_rejects_unsupported_param_shape_deterministically() {
         let module = super::CanonicalExecutableModule {
             module_caps: vec![],
+            extern_declarations: vec![],
             functions: vec![super::CanonicalExecutableFunction {
                 name: "entry".to_string(),
                 signature: super::CanonicalExecutableSignature {
