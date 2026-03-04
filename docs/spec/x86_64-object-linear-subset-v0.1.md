@@ -36,7 +36,7 @@ Supported executable KRIR inputs:
 - terminal `Return { value: Unit }`
 - direct calls to:
   - defined non-extern functions in the same executable KRIR module, or
-  - unresolved external function targets preserved in the compiler-owned object format
+  - unresolved external function targets preserved in the compiler-owned object format from explicit executable KRIR extern declarations
 
 Rejected at this lowering boundary:
 
@@ -86,6 +86,7 @@ Relocations:
 - currently use `R_X86_64_PLT32` for unresolved external direct calls
 - target `.rela.text`
 - are smoke-checked against external ELF tooling using the emitted bytes, not by re-deriving semantics from KRIR
+- arise only from compiler-owned object fixups targeting symbols that came from explicit executable KRIR extern declarations
 
 Symbol ordering and indices are explicit for this subset:
 

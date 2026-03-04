@@ -33,7 +33,7 @@ Supported executable KRIR inputs:
 - terminal `Return { value: Unit }`
 - direct calls to:
   - defined non-extern functions in the same executable KRIR module, or
-  - unresolved external function targets preserved explicitly in the object format
+  - unresolved external function targets preserved explicitly in the object format through declared executable KRIR extern targets
 
 Rejected at this lowering boundary:
 
@@ -113,6 +113,7 @@ When the target symbol is unresolved external:
 - the object still emits `E8 00 00 00 00`
 - the fixup still records the target symbol
 - the unresolved target is preserved as an explicit symbol entry rather than being erased
+- this unresolved target must originate from an explicit executable KRIR extern declaration, not from a missing function definition
 
 ## Determinism rules
 

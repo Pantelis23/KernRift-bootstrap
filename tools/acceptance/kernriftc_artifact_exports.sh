@@ -8,10 +8,13 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kernrift-artifact-exports-XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 FIXTURE="tests/must_pass/basic.kr"
+RELOC_FIXTURE="tests/must_pass/extern_call_object.kr"
 KRBO_OUT="$TMP_DIR/basic.krbo"
 KRBO_META="$TMP_DIR/basic.krbo.json"
 ELF_OUT="$TMP_DIR/basic.o"
 ELF_META="$TMP_DIR/basic.o.json"
+RELOC_ELF_OUT="$TMP_DIR/extern_call_object.o"
+RELOC_ELF_META="$TMP_DIR/extern_call_object.o.json"
 ASM_OUT="$TMP_DIR/basic.s"
 RELINKED_ELF_OUT="$TMP_DIR/basic.relinked.o"
 
@@ -47,7 +50,7 @@ assert_nonempty_file() {
   fi
 }
 
-echo "[1/6] emit krbo + metadata"
+echo "[1/8] emit krbo + metadata"
 cargo run -q -p kernriftc -- \
   --emit=krbo \
   -o "$KRBO_OUT" \
@@ -56,7 +59,7 @@ cargo run -q -p kernriftc -- \
 assert_nonempty_file "$KRBO_OUT"
 assert_nonempty_file "$KRBO_META"
 
-echo "[2/6] emit elfobj + metadata"
+echo "[2/8] emit elfobj + metadata"
 cargo run -q -p kernriftc -- \
   --emit=elfobj \
   -o "$ELF_OUT" \
@@ -65,26 +68,41 @@ cargo run -q -p kernriftc -- \
 assert_nonempty_file "$ELF_OUT"
 assert_nonempty_file "$ELF_META"
 
-echo "[3/6] emit asm"
+echo "[3/8] emit relocation-bearing elfobj + metadata"
+cargo run -q -p kernriftc -- \
+  --emit=elfobj \
+  -o "$RELOC_ELF_OUT" \
+  --meta-out "$RELOC_ELF_META" \
+  "$RELOC_FIXTURE"
+assert_nonempty_file "$RELOC_ELF_OUT"
+assert_nonempty_file "$RELOC_ELF_META"
+
+echo "[4/8] emit asm"
 cargo run -q -p kernriftc -- \
   --emit=asm \
   -o "$ASM_OUT" \
   "$FIXTURE"
 assert_nonempty_file "$ASM_OUT"
 
-echo "[4/6] verify krbo metadata"
+echo "[5/8] verify krbo metadata"
 cargo run -q -p kernriftc -- \
   verify-artifact-meta \
   "$KRBO_OUT" \
   "$KRBO_META"
 
-echo "[5/6] verify elfobj metadata"
+echo "[6/8] verify elfobj metadata"
 cargo run -q -p kernriftc -- \
   verify-artifact-meta \
   "$ELF_OUT" \
   "$ELF_META"
 
-echo "[6/6] smoke-check asm structure"
+echo "[7/8] verify relocation-bearing elfobj metadata"
+cargo run -q -p kernriftc -- \
+  verify-artifact-meta \
+  "$RELOC_ELF_OUT" \
+  "$RELOC_ELF_META"
+
+echo "[8/8] smoke-check asm structure"
 grep -q '^\.text$' "$ASM_OUT"
 grep -q '^bar:$' "$ASM_OUT"
 grep -q '^foo:$' "$ASM_OUT"
@@ -105,6 +123,19 @@ if READELF_TOOL="$(find_readelf)"; then
 
   READELF_RELOCS="$("$READELF_TOOL" -rW "$ELF_OUT")"
   printf '%s\n' "$READELF_RELOCS" | grep -Eq 'There are no relocations in this file\.'
+
+  RELOC_HEADER="$("$READELF_TOOL" -h "$RELOC_ELF_OUT")"
+  printf '%s\n' "$RELOC_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
+  printf '%s\n' "$RELOC_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+
+  RELOC_SYMS="$("$READELF_TOOL" -sW "$RELOC_ELF_OUT")"
+  printf '%s\n' "$RELOC_SYMS" | grep -Eq '[[:space:]]entry$'
+  printf '%s\n' "$RELOC_SYMS" | grep -Eq '[[:space:]]ext$'
+
+  RELOC_RELOCS="$("$READELF_TOOL" -rW "$RELOC_ELF_OUT")"
+  printf '%s\n' "$RELOC_RELOCS" | grep -Eq '\.rela\.text'
+  printf '%s\n' "$RELOC_RELOCS" | grep -Eq 'R_X86_64_PLT32'
+  printf '%s\n' "$RELOC_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'
 fi
 
 if RELOC_LINKER="$(find_reloc_linker)"; then
