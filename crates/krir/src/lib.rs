@@ -1049,6 +1049,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
     out.push('\n');
     for function in &module.functions {
         out.push('\n');
+        out.push_str(".globl ");
+        out.push_str(&function.symbol);
+        out.push('\n');
         out.push_str(&function.symbol);
         out.push_str(":\n");
         for instruction in &function.instructions {
@@ -2758,7 +2761,10 @@ mod tests {
             lower_executable_krir_to_x86_64_asm(&module, &BackendTargetContract::x86_64_sysv())
                 .expect("lower x86_64 asm");
 
-        assert_eq!(emit_x86_64_asm_text(&asm), ".text\n\nentry:\n    ret\n");
+        assert_eq!(
+            emit_x86_64_asm_text(&asm),
+            ".text\n\n.globl entry\nentry:\n    ret\n"
+        );
     }
 
     #[test]
@@ -2803,7 +2809,7 @@ mod tests {
 
         assert_eq!(
             emit_x86_64_asm_text(&asm),
-            ".text\n\nalpha:\n    ret\n\nbeta:\n    ret\n\nentry:\n    call alpha\n    call beta\n    ret\n"
+            ".text\n\n.globl alpha\nalpha:\n    ret\n\n.globl beta\nbeta:\n    ret\n\n.globl entry\nentry:\n    call alpha\n    call beta\n    ret\n"
         );
     }
 
@@ -2901,7 +2907,7 @@ mod tests {
         assert_eq!(wrapped, exported);
         assert_eq!(
             emit_x86_64_asm_text(&exported),
-            ".text\n\nentry:\n    call missing\n    ret\n"
+            ".text\n\n.globl entry\nentry:\n    call missing\n    ret\n"
         );
     }
 
@@ -2968,7 +2974,7 @@ mod tests {
         assert_eq!(wrapped, exported);
         assert_eq!(
             emit_x86_64_asm_text(&exported),
-            ".text\n\nalpha:\n    ret\n\nentry:\n    call alpha\n    ret\n"
+            ".text\n\n.globl alpha\nalpha:\n    ret\n\n.globl entry\nentry:\n    call alpha\n    ret\n"
         );
     }
 

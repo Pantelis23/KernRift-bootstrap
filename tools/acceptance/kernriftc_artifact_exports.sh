@@ -19,9 +19,10 @@ ASM_OUT="$TMP_DIR/basic.s"
 RELOC_ASM_OUT="$TMP_DIR/extern_call_object.s"
 RELOC_ASM_OBJ="$TMP_DIR/extern_call_object.from_asm.o"
 RELINKED_ELF_OUT="$TMP_DIR/basic.relinked.o"
-FINAL_LINK_EXT_SRC="$TMP_DIR/ext.s"
-FINAL_LINK_EXT_OBJ="$TMP_DIR/ext.o"
-FINAL_LINK_OUT="$TMP_DIR/extern_call_object.final"
+FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
+FINAL_RUNTIME_STUB_OBJ="$TMP_DIR/runtime_stub.o"
+FINAL_LINK_ELF_OUT="$TMP_DIR/extern_call_object.final"
+FINAL_LINK_ASM_OUT="$TMP_DIR/extern_call_object.from_asm.final"
 
 find_readelf() {
   if command -v readelf >/dev/null 2>&1; then
@@ -69,6 +70,60 @@ assert_nonempty_file() {
     echo "expected non-empty file: $path" >&2
     exit 1
   fi
+}
+
+inspect_final_linked_artifact() {
+  local readelf_tool="$1"
+  local path="$2"
+
+  local header
+  header="$("$readelf_tool" -h "$path")"
+  printf '%s\n' "$header" | grep -Eq 'Type:[[:space:]]+EXEC'
+  printf '%s\n' "$header" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+
+  local syms
+  syms="$("$readelf_tool" -sW "$path")"
+  printf '%s\n' "$syms" | grep -Eq '[[:space:]]entry$'
+  printf '%s\n' "$syms" | grep -Eq '[[:space:]]ext$'
+  if printf '%s\n' "$syms" | grep -Eq '[[:space:]]UND[[:space:]].*[[:space:]]ext$'; then
+    echo "expected ext to be resolved in final linked artifact" >&2
+    exit 1
+  fi
+
+  local relocs
+  relocs="$("$readelf_tool" -rW "$path")"
+  if printf '%s\n' "$relocs" | grep -Eq '[[:space:]]ext([[:space:]]|$)'; then
+    echo "expected no relocation against ext in final linked artifact" >&2
+    exit 1
+  fi
+}
+
+run_runtime_smoke_or_skip() {
+  local path="$1"
+  local label="$2"
+  local stderr_file="$TMP_DIR/${label}.stderr"
+  local status=0
+
+  chmod +x "$path" || true
+  set +e
+  "$path" >/dev/null 2>"$stderr_file"
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 7 ]]; then
+    return 0
+  fi
+
+  if [[ "$status" -eq 126 ]] && grep -Eq 'Permission denied|Operation not permitted' "$stderr_file"; then
+    echo "[optional] $label runtime smoke skipped: execution unavailable"
+    return 1
+  fi
+
+  echo "expected $label runtime smoke to exit 7, got $status" >&2
+  if [[ -s "$stderr_file" ]]; then
+    cat "$stderr_file" >&2
+  fi
+  exit 1
 }
 
 echo "[1/9] emit krbo + metadata"
@@ -183,46 +238,40 @@ if RELOC_LINKER="$(find_reloc_linker)"; then
 fi
 
 if FINAL_LINKER="$(find_reloc_linker)" && ASM_COMPILER="$(find_asm_compiler)"; then
-  echo "[optional] final-link smoke with $FINAL_LINKER + $ASM_COMPILER"
-  cat > "$FINAL_LINK_EXT_SRC" <<'EOF'
+  echo "[optional] final-link + runtime smoke for emitted elfobj with $FINAL_LINKER + $ASM_COMPILER"
+  cat > "$FINAL_RUNTIME_STUB_SRC" <<'EOF'
 .text
+.globl _start
 .globl ext
+_start:
+    call entry
+    mov $60, %rax
+    mov $99, %rdi
+    syscall
 ext:
-    ret
+    mov $60, %rax
+    mov $7, %rdi
+    syscall
 EOF
 
   case "$ASM_COMPILER" in
     as)
-      "$ASM_COMPILER" -o "$FINAL_LINK_EXT_OBJ" "$FINAL_LINK_EXT_SRC"
+      "$ASM_COMPILER" -o "$FINAL_RUNTIME_STUB_OBJ" "$FINAL_RUNTIME_STUB_SRC"
       ;;
     *)
-      "$ASM_COMPILER" -c "$FINAL_LINK_EXT_SRC" -o "$FINAL_LINK_EXT_OBJ"
+      "$ASM_COMPILER" -c "$FINAL_RUNTIME_STUB_SRC" -o "$FINAL_RUNTIME_STUB_OBJ"
       ;;
   esac
-  assert_nonempty_file "$FINAL_LINK_EXT_OBJ"
+  assert_nonempty_file "$FINAL_RUNTIME_STUB_OBJ"
 
-  "$FINAL_LINKER" -m elf_x86_64 -e entry -o "$FINAL_LINK_OUT" "$RELOC_ELF_OUT" "$FINAL_LINK_EXT_OBJ"
-  assert_nonempty_file "$FINAL_LINK_OUT"
+  "$FINAL_LINKER" -m elf_x86_64 -e _start -o "$FINAL_LINK_ELF_OUT" "$RELOC_ELF_OUT" "$FINAL_RUNTIME_STUB_OBJ"
+  assert_nonempty_file "$FINAL_LINK_ELF_OUT"
 
   if READELF_TOOL="$(find_readelf)"; then
-    FINAL_LINK_HEADER="$("$READELF_TOOL" -h "$FINAL_LINK_OUT")"
-    printf '%s\n' "$FINAL_LINK_HEADER" | grep -Eq 'Type:[[:space:]]+EXEC'
-    printf '%s\n' "$FINAL_LINK_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
-
-    FINAL_LINK_SYMS="$("$READELF_TOOL" -sW "$FINAL_LINK_OUT")"
-    printf '%s\n' "$FINAL_LINK_SYMS" | grep -Eq '[[:space:]]entry$'
-    printf '%s\n' "$FINAL_LINK_SYMS" | grep -Eq '[[:space:]]ext$'
-    if printf '%s\n' "$FINAL_LINK_SYMS" | grep -Eq '[[:space:]]UND[[:space:]].*[[:space:]]ext$'; then
-      echo "expected ext to be resolved in final linked artifact" >&2
-      exit 1
-    fi
-
-    FINAL_LINK_RELOCS="$("$READELF_TOOL" -rW "$FINAL_LINK_OUT")"
-    if printf '%s\n' "$FINAL_LINK_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'; then
-      echo "expected no relocation against ext in final linked artifact" >&2
-      exit 1
-    fi
+    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_LINK_ELF_OUT"
   fi
+
+  run_runtime_smoke_or_skip "$FINAL_LINK_ELF_OUT" "emitted-elfobj"
 else
   missing_tools=()
   if ! FINAL_LINKER="$(find_reloc_linker)"; then
@@ -231,7 +280,7 @@ else
   if ! ASM_COMPILER="$(find_asm_compiler)"; then
     missing_tools+=("as/clang/gcc")
   fi
-  echo "[optional] final-link smoke skipped: ${missing_tools[*]}"
+  echo "[optional] final-link + runtime smoke for emitted elfobj skipped: ${missing_tools[*]}"
 fi
 
 if ASM_COMPILER="$(find_asm_compiler)" && READELF_TOOL="$(find_readelf)"; then
@@ -249,6 +298,62 @@ if ASM_COMPILER="$(find_asm_compiler)" && READELF_TOOL="$(find_readelf)"; then
   RELOC_ASM_RELOCS="$("$READELF_TOOL" -rW "$RELOC_ASM_OBJ")"
   printf '%s\n' "$RELOC_ASM_RELOCS" | grep -Eq '\.rela\.text'
   printf '%s\n' "$RELOC_ASM_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'
+fi
+
+if FINAL_LINKER="$(find_reloc_linker)" && ASM_COMPILER="$(find_asm_compiler)"; then
+  echo "[optional] final-link + runtime smoke for emitted asm with $FINAL_LINKER + $ASM_COMPILER"
+  case "$ASM_COMPILER" in
+    as)
+      "$ASM_COMPILER" -o "$RELOC_ASM_OBJ" "$RELOC_ASM_OUT"
+      ;;
+    *)
+      "$ASM_COMPILER" -c "$RELOC_ASM_OUT" -o "$RELOC_ASM_OBJ"
+      ;;
+  esac
+  assert_nonempty_file "$RELOC_ASM_OBJ"
+  if [[ ! -s "$FINAL_RUNTIME_STUB_OBJ" ]]; then
+    cat > "$FINAL_RUNTIME_STUB_SRC" <<'EOF'
+.text
+.globl _start
+.globl ext
+_start:
+    call entry
+    mov $60, %rax
+    mov $99, %rdi
+    syscall
+ext:
+    mov $60, %rax
+    mov $7, %rdi
+    syscall
+EOF
+    case "$ASM_COMPILER" in
+      as)
+        "$ASM_COMPILER" -o "$FINAL_RUNTIME_STUB_OBJ" "$FINAL_RUNTIME_STUB_SRC"
+        ;;
+      *)
+        "$ASM_COMPILER" -c "$FINAL_RUNTIME_STUB_SRC" -o "$FINAL_RUNTIME_STUB_OBJ"
+        ;;
+    esac
+  fi
+  assert_nonempty_file "$FINAL_RUNTIME_STUB_OBJ"
+
+  "$FINAL_LINKER" -m elf_x86_64 -e _start -o "$FINAL_LINK_ASM_OUT" "$RELOC_ASM_OBJ" "$FINAL_RUNTIME_STUB_OBJ"
+  assert_nonempty_file "$FINAL_LINK_ASM_OUT"
+
+  if READELF_TOOL="$(find_readelf)"; then
+    inspect_final_linked_artifact "$READELF_TOOL" "$FINAL_LINK_ASM_OUT"
+  fi
+
+  run_runtime_smoke_or_skip "$FINAL_LINK_ASM_OUT" "emitted-asm"
+else
+  missing_tools=()
+  if ! FINAL_LINKER="$(find_reloc_linker)"; then
+    missing_tools+=("ld.lld/ld")
+  fi
+  if ! ASM_COMPILER="$(find_asm_compiler)"; then
+    missing_tools+=("as/clang/gcc")
+  fi
+  echo "[optional] final-link + runtime smoke for emitted asm skipped: ${missing_tools[*]}"
 fi
 
 echo "kernriftc artifact export acceptance: PASS"

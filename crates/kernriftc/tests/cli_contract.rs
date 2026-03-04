@@ -338,7 +338,7 @@ fn emit_asm_writes_expected_text_output() {
     let text = fs::read_to_string(&output_path).expect("read asm output");
     assert_eq!(
         text,
-        ".text\n\nbar:\n    ret\n\nfoo:\n    call bar\n    ret\n"
+        ".text\n\n.globl bar\nbar:\n    ret\n\n.globl foo\nfoo:\n    call bar\n    ret\n"
     );
 
     fs::remove_file(&output_path).ok();
@@ -419,7 +419,10 @@ fn emit_asm_supports_declared_extern_call_target_downstream() {
         .arg(fixture.as_os_str());
     cmd.assert().success();
     let text = fs::read_to_string(&output_path).expect("read asm output");
-    assert_eq!(text, ".text\n\nentry:\n    call ext\n    ret\n");
+    assert_eq!(
+        text,
+        ".text\n\n.globl entry\nentry:\n    call ext\n    ret\n"
+    );
 
     fs::remove_file(&output_path).ok();
 }
