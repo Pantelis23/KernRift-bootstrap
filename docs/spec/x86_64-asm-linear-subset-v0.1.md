@@ -51,6 +51,7 @@ Rejected at this export boundary:
 The emitted syntax is deterministic GNU-style text assembly:
 
 - section directive: `.text`
+- function export directive: `.globl <source_symbol>`
 - function label: `<source_symbol>:`
 - direct call: `call <callee_symbol>`
 - return: `ret`
@@ -66,6 +67,7 @@ Indentation:
 
 - section is always `.text`
 - function symbol names are preserved from the executable KRIR function names
+- defined functions are emitted with `.globl <name>` so downstream assemblers/linkers can reference them
 - no implicit symbol prefix is added
 
 ## Prologue/epilogue policy
