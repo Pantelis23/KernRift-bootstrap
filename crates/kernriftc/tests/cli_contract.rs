@@ -5108,6 +5108,28 @@ fn check_rejects_invalid_typed_mmio_arity_fixture() {
 }
 
 #[test]
+fn check_rejects_invalid_typed_mmio_operand_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_invalid_operand.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let first = stderr.lines().next().expect("first stderr line");
+    assert!(
+        first.starts_with(
+            "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at byte "
+        ),
+        "unexpected diagnostic: {}",
+        stderr
+    );
+}
+
+#[test]
 fn check_rejects_critical_block_boundary_direct() {
     let root = repo_root();
     let fixture = root

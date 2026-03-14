@@ -37,6 +37,38 @@ impl MmioScalarType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MmioAddrExpr {
+    Ident(String),
+    IntLiteral(String),
+    IdentPlusOffset { base: String, offset: String },
+}
+
+impl MmioAddrExpr {
+    pub fn as_source(&self) -> String {
+        match self {
+            Self::Ident(name) => name.clone(),
+            Self::IntLiteral(value) => value.clone(),
+            Self::IdentPlusOffset { base, offset } => format!("{base} + {offset}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MmioValueExpr {
+    Ident(String),
+    IntLiteral(String),
+}
+
+impl MmioValueExpr {
+    pub fn as_source(&self) -> String {
+        match self {
+            Self::Ident(name) => name.clone(),
+            Self::IntLiteral(value) => value.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Call(String),
     Critical(Vec<Stmt>),
@@ -47,12 +79,12 @@ pub enum Stmt {
     Release(String),
     MmioRead {
         ty: MmioScalarType,
-        addr: String,
+        addr: MmioAddrExpr,
     },
     MmioWrite {
         ty: MmioScalarType,
-        addr: String,
-        value: String,
+        addr: MmioAddrExpr,
+        value: MmioValueExpr,
     },
 }
 
@@ -504,10 +536,8 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
         if parts.len() != 1 {
             return Err("mmio_read<T>(addr) requires exactly one address argument".to_string());
         }
-        return Ok(Some(Stmt::MmioRead {
-            ty,
-            addr: parts[0].trim().to_string(),
-        }));
+        let addr = parse_mmio_addr_operand(parts[0].trim())?;
+        return Ok(Some(Stmt::MmioRead { ty, addr }));
     }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_write")? {
@@ -518,14 +548,84 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
                     .to_string(),
             );
         }
-        return Ok(Some(Stmt::MmioWrite {
-            ty,
-            addr: parts[0].trim().to_string(),
-            value: parts[1].trim().to_string(),
-        }));
+        let addr = parse_mmio_addr_operand(parts[0].trim())?;
+        let value = parse_mmio_value_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::MmioWrite { ty, addr, value }));
     }
 
     Ok(None)
+}
+
+fn parse_mmio_addr_operand(raw: &str) -> Result<MmioAddrExpr, String> {
+    let operand = raw.trim();
+    if is_ident_token(operand) {
+        return Ok(MmioAddrExpr::Ident(operand.to_string()));
+    }
+    if is_int_literal_token(operand) {
+        return Ok(MmioAddrExpr::IntLiteral(operand.to_string()));
+    }
+
+    if operand.matches('+').count() == 1 {
+        let (base, offset) = operand.split_once('+').expect("single plus");
+        let base = base.trim();
+        let offset = offset.trim();
+        if is_ident_token(base) && is_int_literal_token(offset) {
+            return Ok(MmioAddrExpr::IdentPlusOffset {
+                base: base.to_string(),
+                offset: offset.to_string(),
+            });
+        }
+    }
+
+    Err(format!(
+        "unsupported mmio address operand '{}'; expected identifier, integer literal, or identifier + integer literal",
+        operand
+    ))
+}
+
+fn parse_mmio_value_operand(raw: &str) -> Result<MmioValueExpr, String> {
+    let operand = raw.trim();
+    if is_ident_token(operand) {
+        return Ok(MmioValueExpr::Ident(operand.to_string()));
+    }
+    if is_int_literal_token(operand) {
+        return Ok(MmioValueExpr::IntLiteral(operand.to_string()));
+    }
+    Err(format!(
+        "unsupported mmio value operand '{}'; expected identifier or integer literal",
+        operand
+    ))
+}
+
+fn is_ident_token(raw: &str) -> bool {
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first != '_' && !first.is_ascii_alphabetic() {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn is_int_literal_token(raw: &str) -> bool {
+    if raw.starts_with("0x") || raw.starts_with("0X") {
+        let suffix = &raw[2..];
+        return !suffix.is_empty() && suffix.chars().all(|ch| ch == '_' || ch.is_ascii_hexdigit());
+    }
+
+    let mut saw_digit = false;
+    for ch in raw.chars() {
+        if ch == '_' {
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            continue;
+        }
+        return false;
+    }
+    saw_digit
 }
 
 fn parse_mmio_scalar_from_name(name: &str, base: &str) -> Result<Option<MmioScalarType>, String> {
@@ -591,7 +691,7 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MmioScalarType, Stmt, parse_module};
+    use super::{MmioAddrExpr, MmioScalarType, MmioValueExpr, Stmt, parse_module};
     use proptest::prelude::*;
 
     #[test]
@@ -640,12 +740,53 @@ mod tests {
             vec![
                 Stmt::MmioRead {
                     ty: MmioScalarType::U16,
-                    addr: "uart0".to_string()
+                    addr: MmioAddrExpr::Ident("uart0".to_string())
                 },
                 Stmt::MmioWrite {
                     ty: MmioScalarType::U64,
-                    addr: "uart0".to_string(),
-                    value: "value0".to_string()
+                    addr: MmioAddrExpr::Ident("uart0".to_string()),
+                    value: MmioValueExpr::Ident("value0".to_string())
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_typed_mmio_operands_are_structured() {
+        let src = r#"
+        fn entry() {
+          mmio_read<u32>(0x1000);
+          mmio_read<u32>(uart0 + 0x10);
+          mmio_write<u8>(uart0 + 4, 0xff);
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U32,
+                    addr: MmioAddrExpr::IntLiteral("0x1000".to_string())
+                },
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U32,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "0x10".to_string()
+                    }
+                },
+                Stmt::MmioWrite {
+                    ty: MmioScalarType::U8,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "4".to_string()
+                    },
+                    value: MmioValueExpr::IntLiteral("0xff".to_string())
                 }
             ]
         );
@@ -720,6 +861,41 @@ mod tests {
             err_extra,
             vec![
                 "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 49"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unsupported_typed_mmio_operand_shapes() {
+        let read_add = "fn entry() { mmio_read<u32>(a + b); }";
+        let err_read_add = parse_module(read_add).expect_err("unsupported addr shape should fail");
+        assert_eq!(
+            err_read_add,
+            vec![
+                "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at byte 35"
+                    .to_string()
+            ]
+        );
+
+        let read_chain = "fn entry() { mmio_read<u32>(a + 1 + 2); }";
+        let err_read_chain =
+            parse_module(read_chain).expect_err("unsupported chained addr shape should fail");
+        assert_eq!(
+            err_read_chain,
+            vec![
+                "unsupported mmio address operand 'a + 1 + 2'; expected identifier, integer literal, or identifier + integer literal at byte 39"
+                    .to_string()
+            ]
+        );
+
+        let write_value = "fn entry() { mmio_write<u32>(addr, a + b); }";
+        let err_write_value =
+            parse_module(write_value).expect_err("unsupported value shape should fail");
+        assert_eq!(
+            err_write_value,
+            vec![
+                "unsupported mmio value operand 'a + b'; expected identifier or integer literal at byte 42"
                     .to_string()
             ]
         );

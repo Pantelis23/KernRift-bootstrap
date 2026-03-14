@@ -87,13 +87,47 @@ pub enum KrirOp {
     },
     MmioRead {
         ty: MmioScalarType,
-        addr: String,
+        addr: MmioAddrExpr,
     },
     MmioWrite {
         ty: MmioScalarType,
-        addr: String,
-        value: String,
+        addr: MmioAddrExpr,
+        value: MmioValueExpr,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MmioAddrExpr {
+    Ident { name: String },
+    IntLiteral { value: String },
+    IdentPlusOffset { base: String, offset: String },
+}
+
+impl MmioAddrExpr {
+    pub fn as_source(&self) -> String {
+        match self {
+            Self::Ident { name } => name.clone(),
+            Self::IntLiteral { value } => value.clone(),
+            Self::IdentPlusOffset { base, offset } => format!("{base} + {offset}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MmioValueExpr {
+    Ident { name: String },
+    IntLiteral { value: String },
+}
+
+impl MmioValueExpr {
+    pub fn as_source(&self) -> String {
+        match self {
+            Self::Ident { name } => name.clone(),
+            Self::IntLiteral { value } => value.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2167,19 +2201,35 @@ mod tests {
         assert_eq!(
             serde_json::to_value(super::KrirOp::MmioRead {
                 ty: MmioScalarType::U16,
-                addr: "mmio_base + 2".to_string()
+                addr: super::MmioAddrExpr::IdentPlusOffset {
+                    base: "mmio_base".to_string(),
+                    offset: "2".to_string(),
+                }
             })
             .expect("serialize mmio_read"),
-            json!({"op": "mmio_read", "ty": "u16", "addr": "mmio_base + 2"})
+            json!({
+                "op": "mmio_read",
+                "ty": "u16",
+                "addr": {"kind": "ident_plus_offset", "base": "mmio_base", "offset": "2"}
+            })
         );
         assert_eq!(
             serde_json::to_value(super::KrirOp::MmioWrite {
                 ty: MmioScalarType::U64,
-                addr: "mmio_base + 8".to_string(),
-                value: "payload".to_string()
+                addr: super::MmioAddrExpr::Ident {
+                    name: "mmio_base".to_string(),
+                },
+                value: super::MmioValueExpr::Ident {
+                    name: "payload".to_string(),
+                }
             })
             .expect("serialize mmio_write"),
-            json!({"op": "mmio_write", "ty": "u64", "addr": "mmio_base + 8", "value": "payload"})
+            json!({
+                "op": "mmio_write",
+                "ty": "u64",
+                "addr": {"kind": "ident", "name": "mmio_base"},
+                "value": {"kind": "ident", "name": "payload"}
+            })
         );
     }
 
