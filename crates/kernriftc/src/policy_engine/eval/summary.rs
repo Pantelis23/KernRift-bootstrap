@@ -20,6 +20,9 @@ pub(crate) fn format_contracts_inspect_summary(contracts: &ContractsBundle) -> S
     let yield_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
         symbol.has_eff_transitive("yield")
     });
+    let raw_mmio_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
+        symbol.has_raw_mmio_usage()
+    });
     let cap_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
         !symbol.caps_transitive.is_empty()
     });
@@ -57,6 +60,15 @@ pub(crate) fn format_contracts_inspect_summary(contracts: &ContractsBundle) -> S
             "yield: {} {}",
             yield_symbols.len(),
             format_bracketed_list(&yield_symbols)
+        ),
+        format!(
+            "raw_mmio_symbols: {} {}",
+            raw_mmio_symbols.len(),
+            format_bracketed_list(&raw_mmio_symbols)
+        ),
+        format!(
+            "raw_mmio_sites_count: {}",
+            contracts.report.effects.raw_mmio_sites_count
         ),
         "capabilities:".to_string(),
         format!(

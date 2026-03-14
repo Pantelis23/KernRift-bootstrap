@@ -65,6 +65,12 @@ Compile-time enforcement in KR0.x:
 Contracts v2 semantic split:
 - `facts.symbols[*]`: symbol semantics (`ctx_ok`, `ctx_reachable`, `eff_used`, `eff_transitive`, `eff_provenance`, caps, attrs)
 - `report.*`: aggregate/violation summaries (`max_lock_depth`, `no_yield_spans`, effect site counts, critical findings)
+- MMIO reporting split:
+  - structured `mmio_*` continues to contribute regular `mmio` effect semantics.
+  - `raw_mmio_*` is surfaced explicitly via:
+    - `facts.symbols[*].raw_mmio_used`
+    - `facts.symbols[*].raw_mmio_sites_count`
+    - `report.effects.raw_mmio_sites_count`
 
 Capability semantics in contracts v2:
 - `caps_req`: direct declared capability requirements

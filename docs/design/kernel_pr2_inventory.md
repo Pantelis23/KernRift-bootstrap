@@ -52,7 +52,10 @@ Current mapping:
 - contracts v2 `report.effects.alloc_sites_count` is counted from `KrirOp::AllocPoint`.
 - contracts v2 `report.effects.block_sites_count` is counted from `KrirOp::BlockPoint`.
 - contracts v2 `report.effects.yield_sites_count` continues to count `KrirOp::YieldPoint`.
+- contracts v2 `report.effects.raw_mmio_sites_count` counts `KrirOp::RawMmioRead` + `KrirOp::RawMmioWrite`.
 - report remains aggregate-only; symbol-level semantics stay in `facts.symbols[*]`.
+- contracts v2 `facts.symbols[*].raw_mmio_used` and `raw_mmio_sites_count` distinguish raw MMIO sites
+  from ordinary structured `mmio_*` usage for governance/reporting consumers.
 - contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.

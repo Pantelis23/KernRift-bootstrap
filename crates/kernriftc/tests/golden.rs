@@ -572,6 +572,85 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         raw_mmio_bypass.stderr
     );
 
+    let mixed_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_mixed_structured_raw.kr");
+    let mixed_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-mmio-mixed-contracts-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&mixed_contracts_path).ok();
+    let mixed_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            mixed_contracts_path.display().to_string(),
+            mixed_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        mixed_contracts.code, 0,
+        "mixed structured/raw mmio fixture should emit contracts v2, stderr={}",
+        mixed_contracts.stderr
+    );
+    let mixed_contracts_text =
+        fs::read_to_string(&mixed_contracts_path).expect("read mixed contracts");
+    let mixed_contracts_json: Value =
+        serde_json::from_str(&mixed_contracts_text).expect("parse mixed contracts");
+    let entry = mixed_contracts_json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols")
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("entry symbol");
+    assert_eq!(entry["raw_mmio_used"], Value::Bool(true));
+    assert_eq!(entry["raw_mmio_sites_count"], Value::Number(1_u64.into()));
+    assert_eq!(
+        mixed_contracts_json["report"]["effects"]["raw_mmio_sites_count"],
+        Value::Number(1_u64.into())
+    );
+
+    let inspect_mixed = run_cmd(
+        bin,
+        &root,
+        &[
+            "inspect".to_string(),
+            "--contracts".to_string(),
+            mixed_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        inspect_mixed.code, 0,
+        "inspect should summarize mixed structured/raw mmio contracts, stderr={}",
+        inspect_mixed.stderr
+    );
+    assert!(
+        inspect_mixed
+            .stdout
+            .lines()
+            .any(|line| line == "raw_mmio_symbols: 1 [entry]"),
+        "inspect summary must expose raw mmio symbols, stdout={}",
+        inspect_mixed.stdout
+    );
+    assert!(
+        inspect_mixed
+            .stdout
+            .lines()
+            .any(|line| line == "raw_mmio_sites_count: 1"),
+        "inspect summary must expose raw mmio site count, stdout={}",
+        inspect_mixed.stdout
+    );
+    fs::remove_file(&mixed_contracts_path).ok();
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")
