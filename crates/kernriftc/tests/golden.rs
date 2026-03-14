@@ -356,6 +356,32 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "unexpected invalid typed mmio arity diagnostic: {}",
         arity_fail.stderr
     );
+
+    let operand_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_invalid_operand.kr");
+    let operand_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            operand_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        operand_fail.code, 1,
+        "invalid typed mmio operand fixture should fail, stderr={}",
+        operand_fail.stderr
+    );
+    let first = operand_fail.stderr.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(
+            "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at byte "
+        ),
+        "unexpected invalid typed mmio operand diagnostic: {}",
+        operand_fail.stderr
+    );
 }
 
 fn run_cmd(bin: &Path, cwd: &Path, args: &[String]) -> CmdOut {

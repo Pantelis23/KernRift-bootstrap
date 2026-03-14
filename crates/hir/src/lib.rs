@@ -4,9 +4,13 @@ use krir::{
     CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
     ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
     ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
-    KrirModule, KrirOp, MmioScalarType as KrirMmioScalarType,
+    KrirModule, KrirOp, MmioAddrExpr as KrirMmioAddrExpr, MmioScalarType as KrirMmioScalarType,
+    MmioValueExpr as KrirMmioValueExpr,
 };
-use parser::{FnAst, MmioScalarType as ParserMmioScalarType, ModuleAst, RawAttr, Stmt, split_csv};
+use parser::{
+    FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioScalarType as ParserMmioScalarType,
+    MmioValueExpr as ParserMmioValueExpr, ModuleAst, RawAttr, Stmt, split_csv,
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
@@ -1313,15 +1317,15 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::MmioRead { ty, addr } => {
             ops.push(KrirOp::MmioRead {
                 ty: lower_mmio_scalar_type(*ty),
-                addr: addr.clone(),
+                addr: lower_mmio_addr_expr(addr),
             });
             eff_used.insert(Eff::Mmio);
         }
         Stmt::MmioWrite { ty, addr, value } => {
             ops.push(KrirOp::MmioWrite {
                 ty: lower_mmio_scalar_type(*ty),
-                addr: addr.clone(),
-                value: value.clone(),
+                addr: lower_mmio_addr_expr(addr),
+                value: lower_mmio_value_expr(value),
             });
             eff_used.insert(Eff::Mmio);
         }
@@ -1337,12 +1341,43 @@ fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
     }
 }
 
-fn format_mmio_read_invocation(ty: ParserMmioScalarType, addr: &str) -> String {
-    format!("mmio_read<{}>({})", ty.as_str(), addr)
+fn lower_mmio_addr_expr(expr: &ParserMmioAddrExpr) -> KrirMmioAddrExpr {
+    match expr {
+        ParserMmioAddrExpr::Ident(name) => KrirMmioAddrExpr::Ident { name: name.clone() },
+        ParserMmioAddrExpr::IntLiteral(value) => KrirMmioAddrExpr::IntLiteral {
+            value: value.clone(),
+        },
+        ParserMmioAddrExpr::IdentPlusOffset { base, offset } => KrirMmioAddrExpr::IdentPlusOffset {
+            base: base.clone(),
+            offset: offset.clone(),
+        },
+    }
 }
 
-fn format_mmio_write_invocation(ty: ParserMmioScalarType, addr: &str, value: &str) -> String {
-    format!("mmio_write<{}>({}, {})", ty.as_str(), addr, value)
+fn lower_mmio_value_expr(expr: &ParserMmioValueExpr) -> KrirMmioValueExpr {
+    match expr {
+        ParserMmioValueExpr::Ident(name) => KrirMmioValueExpr::Ident { name: name.clone() },
+        ParserMmioValueExpr::IntLiteral(value) => KrirMmioValueExpr::IntLiteral {
+            value: value.clone(),
+        },
+    }
+}
+
+fn format_mmio_read_invocation(ty: ParserMmioScalarType, addr: &ParserMmioAddrExpr) -> String {
+    format!("mmio_read<{}>({})", ty.as_str(), addr.as_source())
+}
+
+fn format_mmio_write_invocation(
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    value: &ParserMmioValueExpr,
+) -> String {
+    format!(
+        "mmio_write<{}>({}, {})",
+        ty.as_str(),
+        addr.as_source(),
+        value.as_source()
+    )
 }
 
 fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {
@@ -1551,8 +1586,17 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&entry.ops).expect("serialize ops"),
             json!([
-                {"op": "mmio_read", "ty": "u16", "addr": "base + 4"},
-                {"op": "mmio_write", "ty": "u64", "addr": "base + 8", "value": "payload"}
+                {
+                    "op": "mmio_read",
+                    "ty": "u16",
+                    "addr": {"kind": "ident_plus_offset", "base": "base", "offset": "4"}
+                },
+                {
+                    "op": "mmio_write",
+                    "ty": "u64",
+                    "addr": {"kind": "ident_plus_offset", "base": "base", "offset": "8"},
+                    "value": {"kind": "ident", "name": "payload"}
+                }
             ])
         );
         assert_eq!(entry.eff_used, vec![krir::Eff::Mmio]);

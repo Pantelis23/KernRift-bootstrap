@@ -58,6 +58,13 @@ Notes:
   - `yieldpoint()`
   - `mmio_read<T>(addr)` where `T in {u8,u16,u32,u64}`
   - `mmio_write<T>(addr, value)` where `T in {u8,u16,u32,u64}`
+    - `addr` must be one of:
+      - identifier
+      - integer literal
+      - identifier + integer literal
+    - `value` must be one of:
+      - identifier
+      - integer literal
   - `mmio_read()` / `mmio_write()` are rejected as legacy non-addressful forms
   - otherwise `call(callee)`.
 
@@ -82,7 +89,7 @@ Notes:
 - `yieldpoint()` marks a scheduler yield point and contributes to yield analysis.
 - `call()` adds call-graph edges and participates in interprocedural checks.
 - `mmio_read/mmio_write` mark `mmio` effect usage.
-- Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, `addr`, and `value` (write only).
+- Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, structured `addr`, and structured `value` (write only).
 
 ### Check/analyze semantics
 
