@@ -18,12 +18,14 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg, VerifyArgs};
+use crate::policy_engine::{
+    contracts_bundle_schema_version, decode_contracts_bundle, evaluate_policy,
+    format_contracts_inspect_summary, load_policy_file, materialize_kernel_profile_policy,
+    print_policy_violations, validate_json_against_schema_text,
+};
 use crate::{
-    ContractsBundle, ContractsFactSymbol, EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, PolicyFile,
-    PolicyViolation, VERIFY_REPORT_SCHEMA_V1, VERIFY_REPORT_SCHEMA_VERSION,
-    canonicalize_provenance_fields, decode_contracts_bundle, evaluate_policy, load_policy_file,
-    materialize_kernel_profile_policy, print_errors, print_policy_violations, print_usage,
-    validate_json_against_schema_text,
+    EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, VERIFY_REPORT_SCHEMA_V1,
+    VERIFY_REPORT_SCHEMA_VERSION, print_errors, print_usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,10 +189,13 @@ pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
             return ExitCode::from(EXIT_INVALID_INPUT);
         }
     };
-    let mut policy_violations = Vec::<PolicyViolation>::new();
+    let mut policy_violations = Vec::new();
 
     if let Some(profile) = args.profile {
-        let profile_policy = match load_profile_policy(profile) {
+        let profile_policy = match profile {
+            CheckProfile::Kernel => materialize_kernel_profile_policy(),
+        };
+        let profile_policy = match profile_policy {
             Ok(policy) => policy,
             Err(err) => {
                 eprintln!("{}", err);
@@ -330,7 +335,8 @@ pub(crate) fn run_verify(args: &VerifyArgs) -> ExitCode {
             }
         };
         report.contracts.schema_valid = true;
-        report.contracts.schema_version = Some(contracts_bundle.schema_version.clone());
+        report.contracts.schema_version =
+            Some(contracts_bundle_schema_version(&contracts_bundle).to_string());
 
         if let (Some(sig_path), Some(pubkey_path)) =
             (args.sig_path.as_ref(), args.pubkey_path.as_ref())
@@ -827,91 +833,6 @@ fn load_verifying_key_hex(path: &str) -> Result<VerifyingKey, String> {
         .map_err(|e| format!("invalid public key '{}': {}", path, e))
 }
 
-fn load_profile_policy(profile: CheckProfile) -> Result<PolicyFile, String> {
-    match profile {
-        CheckProfile::Kernel => materialize_kernel_profile_policy(),
-    }
-}
-
-fn format_contracts_inspect_summary(contracts: &ContractsBundle) -> String {
-    let irq_reachable = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
-        symbol.has_ctx_reachable("irq")
-    });
-    let critical_functions =
-        collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| symbol.attrs.critical);
-    let alloc_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
-        symbol.has_eff_transitive("alloc")
-    });
-    let block_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
-        symbol.has_eff_transitive("block")
-    });
-    let yield_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
-        symbol.has_eff_transitive("yield")
-    });
-    let cap_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
-        !symbol.caps_transitive.is_empty()
-    });
-
-    let mut critical_violations = contracts.report.critical.violations.clone();
-    critical_violations.sort();
-    critical_violations.dedup();
-
-    let mut lines = vec![
-        format!("schema: {}", contracts.schema_version),
-        format!("symbols: total={}", contracts.facts.symbols.len()),
-        "contexts:".to_string(),
-        format!(
-            "irq_reachable: {} {}",
-            irq_reachable.len(),
-            format_list(&irq_reachable)
-        ),
-        format!(
-            "critical_functions: {} {}",
-            critical_functions.len(),
-            format_list(&critical_functions)
-        ),
-        "effects:".to_string(),
-        format!(
-            "alloc: {} {}",
-            alloc_symbols.len(),
-            format_list(&alloc_symbols)
-        ),
-        format!(
-            "block: {} {}",
-            block_symbols.len(),
-            format_list(&block_symbols)
-        ),
-        format!(
-            "yield: {} {}",
-            yield_symbols.len(),
-            format_list(&yield_symbols)
-        ),
-        "capabilities:".to_string(),
-        format!(
-            "symbols_with_caps: {} {}",
-            cap_symbols.len(),
-            format_list(&cap_symbols)
-        ),
-        "critical_report:".to_string(),
-        format!("violations: {}", critical_violations.len()),
-    ];
-
-    for violation in critical_violations {
-        let (direct, via_callee, via_extern) =
-            canonicalize_provenance_fields(Some(&violation.provenance));
-        lines.push(format!(
-            "violation: function={} effect={} direct={} via_callee={} via_extern={}",
-            violation.function,
-            violation.effect,
-            direct,
-            format_list(&via_callee),
-            format_list(&via_extern)
-        ));
-    }
-
-    lines.join("\n")
-}
-
 fn format_verify_report_inspect_summary(report: &DecodedVerifyReport) -> String {
     let mut lines = vec![
         format!("schema: {}", report.schema_version),
@@ -952,24 +873,6 @@ fn format_verify_report_inspect_summary(report: &DecodedVerifyReport) -> String 
     }
 
     lines.join("\n")
-}
-
-fn collect_sorted_symbol_names_by<F>(symbols: &[ContractsFactSymbol], predicate: F) -> Vec<String>
-where
-    F: Fn(&ContractsFactSymbol) -> bool,
-{
-    let mut out = symbols
-        .iter()
-        .filter(|symbol| predicate(symbol))
-        .map(|symbol| symbol.name.clone())
-        .collect::<Vec<_>>();
-    out.sort();
-    out.dedup();
-    out
-}
-
-fn format_list(items: &[String]) -> String {
-    format!("[{}]", items.join(","))
 }
 
 fn format_option_value(value: Option<&str>) -> &str {
