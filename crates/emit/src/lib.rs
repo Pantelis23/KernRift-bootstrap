@@ -916,6 +916,7 @@ mod tests {
                 "PhysMap".to_string(),
                 "IoPort".to_string(),
             ],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "zeta".to_string(),
@@ -1010,6 +1011,7 @@ mod tests {
     fn krir_json_schema_is_stable_and_functions_are_sorted() {
         let module = KrirModule {
             module_caps: vec!["PhysMap".to_string(), "IoPort".to_string()],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "zeta".to_string(),
@@ -1079,6 +1081,7 @@ mod tests {
                 "IoPort".to_string(),
                 "IoPort".to_string(),
             ],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "zeta".to_string(),
@@ -1240,6 +1243,7 @@ mod tests {
     fn contracts_v2_facts_include_transitive_effects() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),
@@ -1311,6 +1315,7 @@ mod tests {
     fn contracts_v2_effect_provenance_tracks_extern_sources() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1367,6 +1372,7 @@ mod tests {
     fn transitive_effects_handle_recursive_scc() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "a".to_string(),
@@ -1413,6 +1419,7 @@ mod tests {
     fn effect_provenance_direct_only() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![Function {
                 name: "f".to_string(),
                 is_extern: false,
@@ -1438,6 +1445,7 @@ mod tests {
     fn effect_provenance_via_callee_only() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),
@@ -1482,6 +1490,7 @@ mod tests {
     fn effect_provenance_via_extern_only() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1526,6 +1535,7 @@ mod tests {
     fn effect_provenance_mixed_direct_via_callee_and_via_extern() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1592,6 +1602,7 @@ mod tests {
     fn effect_provenance_recursive_and_cyclic_is_deterministic() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1685,6 +1696,7 @@ mod tests {
     fn capability_provenance_direct_only() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![Function {
                 name: "f".to_string(),
                 is_extern: false,
@@ -1710,6 +1722,7 @@ mod tests {
     fn capability_provenance_via_callee_only() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),
@@ -1754,6 +1767,7 @@ mod tests {
     fn capability_provenance_via_extern_only() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "map_io".to_string(),
@@ -1798,6 +1812,7 @@ mod tests {
     fn capability_provenance_mixed_direct_via_callee_and_via_extern() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "map_io".to_string(),
@@ -1865,6 +1880,7 @@ mod tests {
     fn capability_provenance_recursive_and_cyclic_is_deterministic() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "map_io".to_string(),
@@ -1958,6 +1974,7 @@ mod tests {
     fn contracts_v2_report_includes_critical_region_findings() {
         let module = KrirModule {
             module_caps: vec![],
+            mmio_bases: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),

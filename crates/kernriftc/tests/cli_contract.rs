@@ -5130,6 +5130,59 @@ fn check_rejects_invalid_typed_mmio_operand_fixture() {
 }
 
 #[test]
+fn check_accepts_declared_mmio_base_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_declared_base.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_rejects_undeclared_mmio_base_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_undeclared_base.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("undeclared mmio base 'UART0' used in mmio_read<u32>(UART0)")
+    );
+}
+
+#[test]
+fn check_rejects_invalid_mmio_base_declaration_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_invalid_declaration.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let first = stderr.lines().next().expect("first stderr line");
+    assert!(
+        first.starts_with(
+            "invalid mmio base declaration for 'UART0': expected integer literal at byte "
+        ),
+        "unexpected diagnostic: {}",
+        stderr
+    );
+}
+
+#[test]
 fn check_rejects_critical_block_boundary_direct() {
     let root = repo_root();
     let fixture = root

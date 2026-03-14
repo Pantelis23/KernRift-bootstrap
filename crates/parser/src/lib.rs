@@ -96,9 +96,16 @@ pub struct FnAst {
     pub body: Vec<Stmt>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmioBaseDecl {
+    pub name: String,
+    pub addr: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModuleAst {
     pub module_caps: Vec<String>,
+    pub mmio_bases: Vec<MmioBaseDecl>,
     pub items: Vec<FnAst>,
 }
 
@@ -157,10 +164,29 @@ impl<'a> Parser<'a> {
 
     fn parse_module(mut self) -> Result<ModuleAst, Vec<String>> {
         let mut module = ModuleAst::default();
+        let mut mmio_names = std::collections::BTreeSet::new();
 
         while self.skip_ws_comments() {
             if self.eof() {
                 break;
+            }
+
+            if self.consume_keyword("mmio") {
+                match self.parse_mmio_base_decl() {
+                    Ok(decl) => {
+                        if !mmio_names.insert(decl.name.clone()) {
+                            self.errors
+                                .push(format!("duplicate mmio base '{}'", decl.name));
+                        } else {
+                            module.mmio_bases.push(decl);
+                        }
+                    }
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_item();
+                    }
+                }
+                continue;
             }
 
             let mut attrs = Vec::new();
@@ -196,7 +222,7 @@ impl<'a> Parser<'a> {
             }
 
             if !self.consume_keyword("fn") {
-                self.error_here("expected 'fn' or @module_caps(...) at item boundary");
+                self.error_here("expected 'fn', 'mmio', or @module_caps(...) at item boundary");
                 self.recover_to_next_item();
                 continue;
             }
@@ -251,6 +277,53 @@ impl<'a> Parser<'a> {
         } else {
             Err(self.errors)
         }
+    }
+
+    fn parse_mmio_base_decl(&mut self) -> Result<MmioBaseDecl, String> {
+        let Some(name) = self.parse_ident() else {
+            return Err("expected mmio base name after 'mmio'".to_string());
+        };
+
+        self.skip_ws_comments();
+        if !self.consume_char('=') {
+            return Err(format!(
+                "invalid mmio base declaration for '{}': expected '='",
+                name
+            ));
+        }
+
+        self.skip_ws_comments();
+        let value_start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if ch == ';' {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+
+        if self.eof() {
+            return Err(format!(
+                "invalid mmio base declaration for '{}': expected ';'",
+                name
+            ));
+        }
+
+        let value = self.src[value_start..self.pos].trim().to_string();
+        if !self.consume_char(';') {
+            return Err(format!(
+                "invalid mmio base declaration for '{}': expected ';'",
+                name
+            ));
+        }
+
+        if !is_int_literal_token(&value) {
+            return Err(format!(
+                "invalid mmio base declaration for '{}': expected integer literal",
+                name
+            ));
+        }
+
+        Ok(MmioBaseDecl { name, addr: value })
     }
 
     fn parse_body(&mut self) -> Vec<Stmt> {
@@ -473,6 +546,10 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
         return Ok(None);
     }
 
+    if stmt.trim_start().to_ascii_lowercase().starts_with("mmio ") {
+        return Err("mmio declarations are only allowed at module scope".to_string());
+    }
+
     let (name, args) = parse_invocation(stmt)?;
     let lowered = name.to_ascii_lowercase();
 
@@ -691,7 +768,7 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MmioAddrExpr, MmioScalarType, MmioValueExpr, Stmt, parse_module};
+    use super::{MmioAddrExpr, MmioBaseDecl, MmioScalarType, MmioValueExpr, Stmt, parse_module};
     use proptest::prelude::*;
 
     #[test]
@@ -789,6 +866,59 @@ mod tests {
                     value: MmioValueExpr::IntLiteral("0xff".to_string())
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn parse_module_mmio_base_declarations() {
+        let src = r#"
+        mmio UART0 = 0x1000;
+        mmio TIMER = 4096;
+        fn entry() { mmio_read<u32>(UART0 + 0x10); }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        assert_eq!(
+            ast.mmio_bases,
+            vec![
+                MmioBaseDecl {
+                    name: "UART0".to_string(),
+                    addr: "0x1000".to_string()
+                },
+                MmioBaseDecl {
+                    name: "TIMER".to_string(),
+                    addr: "4096".to_string()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_invalid_mmio_base_declaration_rhs() {
+        let src = "mmio UART0 = BASE + 4;";
+        let err = parse_module(src).expect_err("invalid rhs should fail");
+        assert_eq!(
+            err,
+            vec![
+                "invalid mmio base declaration for 'UART0': expected integer literal at byte 22"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_mmio_base_declarations() {
+        let src = "mmio UART0 = 0x1000; mmio UART0 = 0x2000;";
+        let err = parse_module(src).expect_err("duplicate declarations should fail");
+        assert_eq!(err, vec!["duplicate mmio base 'UART0'".to_string()]);
+    }
+
+    #[test]
+    fn parse_rejects_mmio_declaration_inside_function_body() {
+        let src = "fn entry() { mmio UART0 = 0x1000; }";
+        let err = parse_module(src).expect_err("nested declaration should fail");
+        assert_eq!(
+            err,
+            vec!["mmio declarations are only allowed at module scope at byte 33".to_string()]
         );
     }
 

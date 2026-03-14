@@ -1,5 +1,7 @@
+mmio MMIO_STATUS = 0x3000;
+
 @ctx(boot)
-fn helper() { mmio_read<u32>(mmio_status); }
+fn helper() { mmio_read<u32>(MMIO_STATUS); }
 
 @ctx(boot)
 fn entry() {

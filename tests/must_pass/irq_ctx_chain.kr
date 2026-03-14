@@ -1,3 +1,5 @@
+mmio MMIO_STATUS = 0x2000;
+
 @ctx(irq)
 fn isr() { mid(); }
 
@@ -5,4 +7,4 @@ fn isr() { mid(); }
 fn mid() { helper(); }
 
 @ctx(irq)
-fn helper() { mmio_read<u32>(mmio_status); }
+fn helper() { mmio_read<u32>(MMIO_STATUS); }
