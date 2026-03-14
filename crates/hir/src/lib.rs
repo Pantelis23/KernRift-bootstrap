@@ -1092,6 +1092,7 @@ impl MmioOffsetKey {
 }
 
 type MmioRegisterRules = BTreeMap<String, BTreeMap<MmioOffsetKey, MmioRegisterRule>>;
+const MMIO_SYMBOLIC_BASE_ZERO_OFFSET: &str = "0";
 
 fn collect_mmio_registers(
     ast: &ModuleAst,
@@ -1175,15 +1176,28 @@ fn validate_mmio_address_bases_in_stmts(
                         base,
                         format_mmio_read_invocation(*ty, addr)
                     ));
-                } else if let ParserMmioAddrExpr::IdentPlusOffset { base, offset } = addr {
-                    validate_mmio_register_read(
-                        base,
-                        offset,
-                        *ty,
-                        addr,
-                        declared_registers,
-                        errors,
-                    );
+                } else {
+                    match addr {
+                        ParserMmioAddrExpr::Ident(base) => validate_mmio_register_read(
+                            base,
+                            MMIO_SYMBOLIC_BASE_ZERO_OFFSET,
+                            *ty,
+                            addr,
+                            declared_registers,
+                            errors,
+                        ),
+                        ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
+                            validate_mmio_register_read(
+                                base,
+                                offset,
+                                *ty,
+                                addr,
+                                declared_registers,
+                                errors,
+                            );
+                        }
+                        ParserMmioAddrExpr::IntLiteral(_) => {}
+                    }
                 }
             }
             Stmt::MmioWrite { ty, addr, value } => {
@@ -1195,16 +1209,30 @@ fn validate_mmio_address_bases_in_stmts(
                         base,
                         format_mmio_write_invocation(*ty, addr, value)
                     ));
-                } else if let ParserMmioAddrExpr::IdentPlusOffset { base, offset } = addr {
-                    validate_mmio_register_write(
-                        base,
-                        offset,
-                        *ty,
-                        addr,
-                        value,
-                        declared_registers,
-                        errors,
-                    );
+                } else {
+                    match addr {
+                        ParserMmioAddrExpr::Ident(base) => validate_mmio_register_write(
+                            base,
+                            MMIO_SYMBOLIC_BASE_ZERO_OFFSET,
+                            *ty,
+                            addr,
+                            value,
+                            declared_registers,
+                            errors,
+                        ),
+                        ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
+                            validate_mmio_register_write(
+                                base,
+                                offset,
+                                *ty,
+                                addr,
+                                value,
+                                declared_registers,
+                                errors,
+                            );
+                        }
+                        ParserMmioAddrExpr::IntLiteral(_) => {}
+                    }
                 }
             }
             _ => {}
@@ -1876,7 +1904,7 @@ mod tests {
     #[test]
     fn analysis_krir_lowering_resolves_declared_mmio_bases() {
         let ast = parse_module(
-            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 4 : u8 rw;\nfn entry() { mmio_read<u32>(UART0); mmio_write<u8>(UART0 + 4, 0xff); }",
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.SR = 0x00 : u32 ro;\nmmio_reg UART0.DR = 4 : u8 rw;\nfn entry() { mmio_read<u32>(UART0); mmio_write<u8>(UART0 + 4, 0xff); }",
         )
         .expect("parse");
         let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
@@ -1886,6 +1914,74 @@ mod tests {
                 name: "UART0".to_string(),
                 addr: "0x1000".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_allows_symbolic_mmio_base_as_offset_zero_register() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 0x00 : u32 rw;\nfn entry() { mmio_write<u32>(UART0, value); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([{
+                "op": "mmio_write",
+                "ty": "u32",
+                "addr": {"kind": "ident", "name": "UART0"},
+                "value": {"kind": "ident", "name": "value"}
+            }])
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_symbolic_mmio_base_without_offset_zero_register() {
+        let ast = parse_module("mmio UART0 = 0x1000;\nfn entry() { mmio_write<u32>(UART0, x); }")
+            .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec!["undeclared mmio register offset '0' for base 'UART0'".to_string()]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_symbolic_mmio_base_offset_zero_access_mismatch() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.SR = 0 : u32 ro;\nfn entry() { mmio_write<u32>(UART0, x); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "mmio_write<u32>(UART0, x) violates register access: 'UART0.SR' is read-only"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_symbolic_mmio_base_offset_zero_width_mismatch() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.CR = 0x00 : u16 rw;\nfn entry() { mmio_write<u32>(UART0, x); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "mmio_write<u32>(UART0, x) width mismatch: register 'UART0.CR' is u16".to_string()
+            ]
         );
     }
 
