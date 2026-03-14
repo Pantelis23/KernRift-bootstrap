@@ -4,9 +4,9 @@ use krir::{
     CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
     ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
     ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
-    KrirModule, KrirOp,
+    KrirModule, KrirOp, MmioScalarType as KrirMmioScalarType,
 };
-use parser::{FnAst, ModuleAst, RawAttr, Stmt, split_csv};
+use parser::{FnAst, MmioScalarType as ParserMmioScalarType, ModuleAst, RawAttr, Stmt, split_csv};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
@@ -1266,13 +1266,15 @@ fn lower_stmts_to_canonical_executable(
                 "canonical-exec: function '{}' contains unsupported release({})",
                 function_name, lock_class
             )),
-            Stmt::MmioRead => errors.push(format!(
-                "canonical-exec: function '{}' contains unsupported mmio_read()",
-                function_name
+            Stmt::MmioRead(ty) => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_mmio_invocation("mmio_read", *ty)
             )),
-            Stmt::MmioWrite => errors.push(format!(
-                "canonical-exec: function '{}' contains unsupported mmio_write()",
-                function_name
+            Stmt::MmioWrite(ty) => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_mmio_invocation("mmio_write", *ty)
             )),
         }
     }
@@ -1308,15 +1310,35 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::Release(lock_class) => ops.push(KrirOp::Release {
             lock_class: lock_class.clone(),
         }),
-        Stmt::MmioRead => {
-            ops.push(KrirOp::MmioRead);
+        Stmt::MmioRead(ty) => {
+            ops.push(KrirOp::MmioRead {
+                ty: lower_mmio_scalar_type(*ty),
+            });
             eff_used.insert(Eff::Mmio);
         }
-        Stmt::MmioWrite => {
-            ops.push(KrirOp::MmioWrite);
+        Stmt::MmioWrite(ty) => {
+            ops.push(KrirOp::MmioWrite {
+                ty: lower_mmio_scalar_type(*ty),
+            });
             eff_used.insert(Eff::Mmio);
         }
     }
+}
+
+fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
+    match ty {
+        ParserMmioScalarType::U8 => KrirMmioScalarType::U8,
+        ParserMmioScalarType::U16 => KrirMmioScalarType::U16,
+        ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
+        ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
+    }
+}
+
+fn format_mmio_invocation(op: &str, ty: ParserMmioScalarType) -> String {
+    if ty == ParserMmioScalarType::U32 {
+        return format!("{}()", op);
+    }
+    format!("{}<{}>()", op, ty.as_str())
 }
 
 fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {
@@ -1497,6 +1519,37 @@ mod tests {
             errs,
             vec!["canonical-exec: function 'entry' contains unsupported critical region"]
         );
+    }
+
+    #[test]
+    fn canonical_executable_rejects_typed_mmio_deterministically() {
+        let ast = parse_module("fn entry() { mmio_read<u16>(); }").expect("parse");
+        let errs = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect_err("typed mmio must be rejected in canonical executable lowering");
+        assert_eq!(
+            errs,
+            vec!["canonical-exec: function 'entry' contains unsupported mmio_read<u16>()"]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_preserves_typed_mmio_ops() {
+        let ast =
+            parse_module("fn entry() { mmio_read<u16>(); mmio_write<u64>(); }").expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([
+                {"op": "mmio_read", "ty": "u16"},
+                {"op": "mmio_write", "ty": "u64"}
+            ])
+        );
+        assert_eq!(entry.eff_used, vec![krir::Eff::Mmio]);
     }
 
     #[test]

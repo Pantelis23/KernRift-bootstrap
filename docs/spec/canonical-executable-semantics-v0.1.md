@@ -93,8 +93,8 @@ Canonical executable semantics v0.1 rejects the following in executable function
 - `blockpoint()`
 - `acquire(...)`
 - `release(...)`
-- `mmio_read()`
-- `mmio_write()`
+- `mmio_read()` / `mmio_write()`
+- `mmio_read<T>()` / `mmio_write<T>()` where `T` is a typed MMIO scalar
 
 Also out of scope:
 

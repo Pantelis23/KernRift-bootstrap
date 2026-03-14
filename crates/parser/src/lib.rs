@@ -4,6 +4,38 @@ pub struct RawAttr {
     pub args: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioScalarType {
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl MmioScalarType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "u8" => Ok(Self::U8),
+            "u16" => Ok(Self::U16),
+            "u32" => Ok(Self::U32),
+            "u64" => Ok(Self::U64),
+            other => Err(format!(
+                "unsupported mmio element type '{}'; expected one of: u8, u16, u32, u64",
+                other
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Call(String),
@@ -13,8 +45,8 @@ pub enum Stmt {
     BlockPoint,
     Acquire(String),
     Release(String),
-    MmioRead,
-    MmioWrite,
+    MmioRead(MmioScalarType),
+    MmioWrite(MmioScalarType),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -442,15 +474,68 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
         return Ok(Some(Stmt::Release(lock.to_string())));
     }
 
-    if lowered == "mmio_read" {
-        return Ok(Some(Stmt::MmioRead));
-    }
-
-    if lowered == "mmio_write" {
-        return Ok(Some(Stmt::MmioWrite));
+    if let Some(stmt) = parse_typed_mmio_stmt(&name, &args)? {
+        return Ok(Some(stmt));
     }
 
     Ok(Some(Stmt::Call(name)))
+}
+
+fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String> {
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
+        if !args.trim().is_empty() {
+            return Err("mmio_read<T>() must have no arguments".to_string());
+        }
+        return Ok(Some(Stmt::MmioRead(ty)));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_write")? {
+        if !args.trim().is_empty() {
+            return Err("mmio_write<T>() must have no arguments".to_string());
+        }
+        return Ok(Some(Stmt::MmioWrite(ty)));
+    }
+
+    Ok(None)
+}
+
+fn parse_mmio_scalar_from_name(name: &str, base: &str) -> Result<Option<MmioScalarType>, String> {
+    let lowered = name.to_ascii_lowercase();
+    if !lowered.starts_with(base) {
+        return Ok(None);
+    }
+
+    let suffix = &lowered[base.len()..];
+    if suffix.is_empty() {
+        return Ok(Some(MmioScalarType::U32));
+    }
+
+    if suffix.starts_with('<') {
+        if !suffix.ends_with('>') {
+            return Err(format!(
+                "malformed {} typed invocation '{}'; expected {}<T>()",
+                base, name, base
+            ));
+        }
+        if suffix.len() < 3 {
+            return Err(format!(
+                "malformed {} typed invocation '{}'; expected {}<T>()",
+                base, name, base
+            ));
+        }
+        let ty = &name[base.len() + 1..name.len() - 1];
+        return MmioScalarType::parse(ty).map(Some);
+    }
+
+    // Keep non-mmio identifiers such as `mmio_reader()` as ordinary calls.
+    if matches!(suffix.chars().next(), Some(ch) if ch == '_' || ch.is_ascii_alphanumeric()) {
+        return Ok(None);
+    }
+
+    Err(format!(
+        "malformed {} invocation '{}'; expected {}() or {}<T>()",
+        base, name, base, base
+    ))
 }
 
 fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
@@ -481,7 +566,7 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Stmt, parse_module};
+    use super::{MmioScalarType, Stmt, parse_module};
     use proptest::prelude::*;
 
     #[test]
@@ -509,6 +594,73 @@ mod tests {
             }
             other => panic!("expected critical statement, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_typed_mmio_statements() {
+        let src = r#"
+        fn entry() {
+          mmio_read<u16>();
+          mmio_write<u64>();
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::MmioRead(MmioScalarType::U16),
+                Stmt::MmioWrite(MmioScalarType::U64)
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_untyped_mmio_defaults_to_u32() {
+        let src = "fn entry() { mmio_read(); mmio_write(); }";
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::MmioRead(MmioScalarType::U32),
+                Stmt::MmioWrite(MmioScalarType::U32)
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unsupported_typed_mmio_element() {
+        let src = "fn entry() { mmio_read<u128>(); }";
+        let err = parse_module(src).expect_err("invalid mmio element type should fail");
+        assert_eq!(
+            err,
+            vec![
+                "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at byte 31"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_typed_mmio_invocation() {
+        let src = "fn entry() { mmio_write<u32( ); }";
+        let err = parse_module(src).expect_err("malformed mmio invocation should fail");
+        assert_eq!(
+            err,
+            vec![
+                "malformed mmio_write typed invocation 'mmio_write<u32'; expected mmio_write<T>() at byte 31"
+                    .to_string()
+            ]
+        );
     }
 
     proptest! {

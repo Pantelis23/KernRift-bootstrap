@@ -79,8 +79,28 @@ pub enum KrirOp {
     BlockPoint,
     Acquire { lock_class: String },
     Release { lock_class: String },
-    MmioRead,
-    MmioWrite,
+    MmioRead { ty: MmioScalarType },
+    MmioWrite { ty: MmioScalarType },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MmioScalarType {
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl MmioScalarType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1905,7 +1925,7 @@ mod tests {
         ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
         ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
         ExecutableValue, ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention,
-        TargetEndian, X86_64IntegerRegister, emit_compiler_owned_object_bytes,
+        MmioScalarType, TargetEndian, X86_64IntegerRegister, emit_compiler_owned_object_bytes,
         emit_x86_64_asm_text, emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
         export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_compiler_owned_object,
         lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
@@ -2127,6 +2147,24 @@ mod tests {
                 path.display()
             ),
         }
+    }
+
+    #[test]
+    fn krir_mmio_ops_encode_scalar_type_deterministically() {
+        assert_eq!(
+            serde_json::to_value(super::KrirOp::MmioRead {
+                ty: MmioScalarType::U16
+            })
+            .expect("serialize mmio_read"),
+            json!({"op": "mmio_read", "ty": "u16"})
+        );
+        assert_eq!(
+            serde_json::to_value(super::KrirOp::MmioWrite {
+                ty: MmioScalarType::U64
+            })
+            .expect("serialize mmio_write"),
+            json!({"op": "mmio_write", "ty": "u64"})
+        );
     }
 
     #[derive(Debug, PartialEq, Eq)]

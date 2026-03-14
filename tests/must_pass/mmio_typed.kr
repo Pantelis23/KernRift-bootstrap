@@ -1,0 +1,4 @@
+fn entry() {
+  mmio_read<u32>();
+  mmio_write<u32>();
+}
