@@ -464,6 +464,24 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         reg_pass.stderr
     );
 
+    let reg_base_zero_pass_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_base_zero_declared.kr");
+    let reg_base_zero_pass = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_base_zero_pass_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_base_zero_pass.code, 0,
+        "base-zero symbolic mmio register fixture should pass, stderr={}",
+        reg_base_zero_pass.stderr
+    );
+
     let reg_mixed_offset_fixture = root
         .join("tests")
         .join("must_pass")
@@ -502,6 +520,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         reg_offset_fail.stderr.lines().next(),
         Some("undeclared mmio register offset '0x44' for base 'UART0'")
+    );
+
+    let reg_base_zero_missing_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_base_zero_missing.kr");
+    let reg_base_zero_missing = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_base_zero_missing_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_base_zero_missing.code, 1,
+        "base-zero symbolic missing register fixture should fail, stderr={}",
+        reg_base_zero_missing.stderr
+    );
+    assert_eq!(
+        reg_base_zero_missing.stderr.lines().next(),
+        Some("undeclared mmio register offset '0' for base 'UART0'")
     );
 
     let reg_duplicate_offset_fixture = root
@@ -548,6 +588,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         Some("mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
     );
 
+    let reg_base_zero_access_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_base_zero_access_mismatch.kr");
+    let reg_base_zero_access = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_base_zero_access_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_base_zero_access.code, 1,
+        "base-zero symbolic access mismatch fixture should fail, stderr={}",
+        reg_base_zero_access.stderr
+    );
+    assert_eq!(
+        reg_base_zero_access.stderr.lines().next(),
+        Some("mmio_write<u32>(UART0, x) violates register access: 'UART0.SR' is read-only")
+    );
+
     let reg_width_fail_fixture = root
         .join("tests")
         .join("must_fail")
@@ -568,6 +630,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         reg_width_fail.stderr.lines().next(),
         Some("mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16")
+    );
+
+    let reg_base_zero_width_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_base_zero_width_mismatch.kr");
+    let reg_base_zero_width = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_base_zero_width_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_base_zero_width.code, 1,
+        "base-zero symbolic width mismatch fixture should fail, stderr={}",
+        reg_base_zero_width.stderr
+    );
+    assert_eq!(
+        reg_base_zero_width.stderr.lines().next(),
+        Some("mmio_write<u32>(UART0, x) width mismatch: register 'UART0.CR' is u16")
     );
 
     let reg_base_fail_fixture = root

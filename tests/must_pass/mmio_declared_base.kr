@@ -1,4 +1,5 @@
 mmio UART0 = 0x1000;
+mmio_reg UART0.B0 = 0x00 : u32 ro;
 mmio_reg UART0.SR = 0x10 : u32 ro;
 mmio_reg UART0.DR = 4 : u8 rw;
 
