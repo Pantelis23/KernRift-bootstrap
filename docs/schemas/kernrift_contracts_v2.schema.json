@@ -108,7 +108,8 @@
           "required": [
             "yield_sites_count",
             "alloc_sites_count",
-            "block_sites_count"
+            "block_sites_count",
+            "raw_mmio_sites_count"
           ],
           "properties": {
             "yield_sites_count": {
@@ -120,6 +121,10 @@
               "minimum": 0
             },
             "block_sites_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "raw_mmio_sites_count": {
               "type": "integer",
               "minimum": 0
             }
@@ -237,6 +242,8 @@
         "eff_used",
         "eff_transitive",
         "eff_provenance",
+        "raw_mmio_used",
+        "raw_mmio_sites_count",
         "caps_req",
         "caps_transitive",
         "caps_provenance",
@@ -282,6 +289,13 @@
           "items": {
             "$ref": "#/$defs/effect_provenance"
           }
+        },
+        "raw_mmio_used": {
+          "type": "boolean"
+        },
+        "raw_mmio_sites_count": {
+          "type": "integer",
+          "minimum": 0
         },
         "caps_req": {
           "type": "array",

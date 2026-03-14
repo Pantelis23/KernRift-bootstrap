@@ -3264,6 +3264,8 @@ fn inspect_contracts_v2_summary_is_stable_and_exact() {
             "alloc: 1 [entry]",
             "block: 0 []",
             "yield: 0 []",
+            "raw_mmio_symbols: 0 []",
+            "raw_mmio_sites_count: 0",
             "capabilities:",
             "symbols_with_caps: 1 [entry]",
             "critical_report:",
@@ -5938,10 +5940,159 @@ fn contracts_v2_contains_effect_and_critical_report_fields() {
     );
     assert!(json["report"]["effects"]["alloc_sites_count"].is_u64());
     assert!(json["report"]["effects"]["block_sites_count"].is_u64());
+    assert!(json["report"]["effects"]["raw_mmio_sites_count"].is_u64());
     assert!(json["report"]["critical"]["depth_max"].is_u64());
     assert!(json["report"]["critical"]["violations"].is_array());
 
     fs::remove_file(&out_path).ok();
+}
+
+#[test]
+fn contracts_v2_raw_mmio_reporting_distinguishes_raw_and_structured_usage() {
+    let root = repo_root();
+    let raw_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let structured_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_offset_mixed_literal.kr");
+    let mixed_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_mixed_structured_raw.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let raw_out = std::env::temp_dir().join(format!("kernrift-contracts-v2-raw-only-{}.json", ts));
+    let structured_out =
+        std::env::temp_dir().join(format!("kernrift-contracts-v2-structured-only-{}.json", ts));
+    let mixed_out = std::env::temp_dir().join(format!("kernrift-contracts-v2-mixed-{}.json", ts));
+    fs::remove_file(&raw_out).ok();
+    fs::remove_file(&structured_out).ok();
+    fs::remove_file(&mixed_out).ok();
+
+    for (fixture, out) in [
+        (&raw_fixture, &raw_out),
+        (&structured_fixture, &structured_out),
+        (&mixed_fixture, &mixed_out),
+    ] {
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root)
+            .arg("check")
+            .arg("--contracts-schema")
+            .arg("v2")
+            .arg("--contracts-out")
+            .arg(out.as_os_str())
+            .arg(fixture.as_os_str());
+        cmd.assert().success();
+    }
+
+    let raw_json: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_out).expect("raw json")).expect("raw value");
+    let structured_json: Value =
+        serde_json::from_str(&fs::read_to_string(&structured_out).expect("structured json"))
+            .expect("structured value");
+    let mixed_json: Value =
+        serde_json::from_str(&fs::read_to_string(&mixed_out).expect("mixed json"))
+            .expect("mixed value");
+    validate_contracts_schema_v2(&raw_json);
+    validate_contracts_schema_v2(&structured_json);
+    validate_contracts_schema_v2(&mixed_json);
+
+    let raw_entry = raw_json["facts"]["symbols"]
+        .as_array()
+        .expect("raw symbols")
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("raw entry");
+    let structured_entry = structured_json["facts"]["symbols"]
+        .as_array()
+        .expect("structured symbols")
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("structured entry");
+    let mixed_entry = mixed_json["facts"]["symbols"]
+        .as_array()
+        .expect("mixed symbols")
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("mixed entry");
+
+    assert_eq!(raw_entry["raw_mmio_used"], Value::Bool(true));
+    assert_eq!(
+        raw_entry["raw_mmio_sites_count"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        raw_json["report"]["effects"]["raw_mmio_sites_count"],
+        Value::Number(1_u64.into())
+    );
+
+    assert_eq!(structured_entry["raw_mmio_used"], Value::Bool(false));
+    assert_eq!(
+        structured_entry["raw_mmio_sites_count"],
+        Value::Number(0_u64.into())
+    );
+    assert_eq!(
+        structured_json["report"]["effects"]["raw_mmio_sites_count"],
+        Value::Number(0_u64.into())
+    );
+
+    assert_eq!(mixed_entry["raw_mmio_used"], Value::Bool(true));
+    assert_eq!(
+        mixed_entry["raw_mmio_sites_count"],
+        Value::Number(1_u64.into())
+    );
+    assert!(
+        mixed_entry["eff_used"]
+            .as_array()
+            .expect("mixed eff_used")
+            .contains(&Value::String("mmio".to_string())),
+        "mixed fixture should preserve ordinary mmio effect signal"
+    );
+    assert_eq!(
+        mixed_json["report"]["effects"]["raw_mmio_sites_count"],
+        Value::Number(1_u64.into())
+    );
+
+    fs::remove_file(&raw_out).ok();
+    fs::remove_file(&structured_out).ok();
+    fs::remove_file(&mixed_out).ok();
+}
+
+#[test]
+fn inspect_contracts_v2_summary_includes_raw_mmio_signals() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_mixed_structured_raw.kr");
+    let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-summary");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert!(
+        lines.contains(&"raw_mmio_symbols: 1 [entry]"),
+        "expected raw_mmio symbol summary line, got:\n{}",
+        stdout
+    );
+    assert!(
+        lines.contains(&"raw_mmio_sites_count: 1"),
+        "expected raw_mmio site count summary line, got:\n{}",
+        stdout
+    );
+
+    fs::remove_file(&contracts_path).ok();
 }
 
 #[test]

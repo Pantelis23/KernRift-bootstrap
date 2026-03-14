@@ -113,7 +113,21 @@ struct ContractsReport {
     max_lock_depth: u64,
     no_yield_spans: BTreeMap<String, ContractsNoYieldSpan>,
     #[serde(default)]
+    effects: ContractsReportEffects,
+    #[serde(default)]
     critical: ContractsReportCritical,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContractsReportEffects {
+    #[serde(default)]
+    _yield_sites_count: u64,
+    #[serde(default)]
+    _alloc_sites_count: u64,
+    #[serde(default)]
+    _block_sites_count: u64,
+    #[serde(default)]
+    raw_mmio_sites_count: u64,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -136,6 +150,10 @@ struct ContractsFactSymbol {
     caps_transitive: Vec<String>,
     #[serde(default)]
     caps_provenance: Vec<ContractsCapabilityProvenance>,
+    #[serde(default)]
+    raw_mmio_used: bool,
+    #[serde(default)]
+    raw_mmio_sites_count: u64,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -169,6 +187,10 @@ impl ContractsFactSymbol {
             .iter()
             .find(|entry| entry.capability == cap)
             .map(|entry| &entry.provenance)
+    }
+
+    fn has_raw_mmio_usage(&self) -> bool {
+        self.raw_mmio_used || self.raw_mmio_sites_count > 0
     }
 }
 

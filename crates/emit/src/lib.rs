@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use krir::{Ctx, Eff, KrirModule, KrirOp};
+use krir::{Ctx, Eff, Function, KrirModule, KrirOp};
 use passes::{AnalysisReport, NoYieldSpan};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -317,6 +317,17 @@ fn facts_manifest_value(
                     .collect::<Vec<_>>();
                 symbol.insert("eff_provenance".to_string(), Value::Array(entries));
             }
+            if schema == ContractsSchema::V2 {
+                let raw_mmio_sites_count = function_raw_mmio_sites_count(f);
+                symbol.insert(
+                    "raw_mmio_used".to_string(),
+                    Value::Bool(raw_mmio_sites_count > 0),
+                );
+                symbol.insert(
+                    "raw_mmio_sites_count".to_string(),
+                    Value::Number(raw_mmio_sites_count.into()),
+                );
+            }
             symbol.insert(
                 "caps_req".to_string(),
                 Value::Array(f.caps_req.iter().cloned().map(Value::String).collect()),
@@ -397,6 +408,12 @@ fn report_v2_value(
         .flat_map(|f| f.ops.iter())
         .filter(|op| matches!(op, KrirOp::BlockPoint))
         .count() as u64;
+    let raw_mmio_sites_count = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern)
+        .map(function_raw_mmio_sites_count)
+        .sum::<u64>();
 
     let mut effects = Map::new();
     effects.insert(
@@ -410,6 +427,10 @@ fn report_v2_value(
     effects.insert(
         "block_sites_count".to_string(),
         Value::Number(block_sites_count.into()),
+    );
+    effects.insert(
+        "raw_mmio_sites_count".to_string(),
+        Value::Number(raw_mmio_sites_count.into()),
     );
 
     let (critical_depth_max, critical_violations) =
@@ -450,6 +471,14 @@ fn report_v2_value(
     report_obj.insert("effects".to_string(), Value::Object(effects));
     report_obj.insert("critical".to_string(), Value::Object(critical));
     Value::Object(report_obj)
+}
+
+fn function_raw_mmio_sites_count(function: &Function) -> u64 {
+    function
+        .ops
+        .iter()
+        .filter(|op| matches!(op, KrirOp::RawMmioRead { .. } | KrirOp::RawMmioWrite { .. }))
+        .count() as u64
 }
 
 fn effect_provenance_value(provenance: &EffectProvenance) -> Value {
@@ -878,7 +907,10 @@ fn ctx_reachable_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use krir::{CallEdge, Ctx, Eff, Function, FunctionAttrs, KrirModule};
+    use krir::{
+        CallEdge, Ctx, Eff, Function, FunctionAttrs, KrirModule, MmioAddrExpr, MmioScalarType,
+        MmioValueExpr,
+    };
     use passes::LockEdge;
 
     #[test]
@@ -1370,6 +1402,79 @@ mod tests {
                 "via_callee": [],
                 "via_extern": ["kmalloc"],
             })
+        );
+    }
+
+    #[test]
+    fn contracts_v2_distinguishes_raw_mmio_from_structured_mmio() {
+        let module = KrirModule {
+            module_caps: vec!["MmioRaw".to_string()],
+            mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
+            functions: vec![
+                Function {
+                    name: "structured".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Mmio],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::MmioWrite {
+                        ty: MmioScalarType::U32,
+                        addr: MmioAddrExpr::IntLiteral {
+                            value: "0x1000".to_string(),
+                        },
+                        value: MmioValueExpr::Ident {
+                            name: "x".to_string(),
+                        },
+                    }],
+                },
+                Function {
+                    name: "raw".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Mmio],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::RawMmioWrite {
+                        ty: MmioScalarType::U32,
+                        addr: MmioAddrExpr::IntLiteral {
+                            value: "0x1004".to_string(),
+                        },
+                        value: MmioValueExpr::Ident {
+                            name: "x".to_string(),
+                        },
+                    }],
+                },
+            ],
+            call_edges: vec![],
+        };
+        let report = AnalysisReport::default();
+
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse contracts");
+
+        let symbols = value["facts"]["symbols"].as_array().expect("symbols");
+        let structured = symbols
+            .iter()
+            .find(|sym| sym["name"] == "structured")
+            .expect("structured symbol");
+        let raw = symbols
+            .iter()
+            .find(|sym| sym["name"] == "raw")
+            .expect("raw symbol");
+
+        assert_eq!(structured["raw_mmio_used"], Value::Bool(false));
+        assert_eq!(
+            structured["raw_mmio_sites_count"],
+            Value::Number(0_u64.into())
+        );
+        assert_eq!(raw["raw_mmio_used"], Value::Bool(true));
+        assert_eq!(raw["raw_mmio_sites_count"], Value::Number(1_u64.into()));
+        assert_eq!(
+            value["report"]["effects"]["raw_mmio_sites_count"],
+            Value::Number(1_u64.into())
         );
     }
 

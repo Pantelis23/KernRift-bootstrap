@@ -241,6 +241,8 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
             "eff_used".to_string(),
             "is_extern".to_string(),
             "name".to_string(),
+            "raw_mmio_sites_count".to_string(),
+            "raw_mmio_used".to_string(),
         ]),
         "v2 fact symbol keys drifted"
     );
@@ -312,6 +314,16 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
     assert!(
         contracts["report"]["critical"]["violations"].is_array(),
         "critical violations field must remain an array"
+    );
+    assert_eq!(
+        object_keys(&contracts["report"]["effects"]),
+        BTreeSet::from([
+            "alloc_sites_count".to_string(),
+            "block_sites_count".to_string(),
+            "raw_mmio_sites_count".to_string(),
+            "yield_sites_count".to_string(),
+        ]),
+        "v2 report.effects keys drifted"
     );
 }
 
