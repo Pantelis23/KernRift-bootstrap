@@ -291,6 +291,47 @@ fn golden_check_and_verify_contracts() {
     }
 }
 
+#[test]
+fn golden_mmio_typed_slice_checks_are_stable() {
+    let root = repo_root();
+    let bin = assert_cmd::cargo::cargo_bin!("kernriftc");
+
+    let pass_fixture = root.join("tests").join("must_pass").join("mmio_typed.kr");
+    let pass = run_cmd(
+        bin,
+        &root,
+        &["check".to_string(), pass_fixture.display().to_string()],
+    );
+    assert_eq!(
+        pass.code, 0,
+        "typed mmio pass fixture should succeed, stderr={}",
+        pass.stderr
+    );
+
+    let fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_invalid_type.kr");
+    let fail = run_cmd(
+        bin,
+        &root,
+        &["check".to_string(), fail_fixture.display().to_string()],
+    );
+    assert_eq!(
+        fail.code, 1,
+        "invalid typed mmio fixture should fail, stderr={}",
+        fail.stderr
+    );
+    let first = fail.stderr.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(
+            "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at byte "
+        ),
+        "unexpected invalid typed mmio diagnostic: {}",
+        fail.stderr
+    );
+}
+
 fn run_cmd(bin: &Path, cwd: &Path, args: &[String]) -> CmdOut {
     let output = Command::new(bin)
         .current_dir(cwd)
