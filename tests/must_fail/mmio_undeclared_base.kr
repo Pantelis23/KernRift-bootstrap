@@ -1,0 +1,3 @@
+fn entry() {
+  mmio_read<u32>(UART0);
+}

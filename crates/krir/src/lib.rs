@@ -162,6 +162,12 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct MmioBaseDecl {
+    pub name: String,
+    pub addr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct CallEdge {
     pub caller: String,
     pub callee: String,
@@ -170,6 +176,8 @@ pub struct CallEdge {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct KrirModule {
     pub module_caps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mmio_bases: Vec<MmioBaseDecl>,
     pub functions: Vec<Function>,
     pub call_edges: Vec<CallEdge>,
 }
@@ -178,6 +186,8 @@ impl KrirModule {
     pub fn canonicalize(&mut self) {
         self.module_caps.sort();
         self.module_caps.dedup();
+        self.mmio_bases.sort_by(|a, b| a.name.cmp(&b.name));
+        self.mmio_bases.dedup();
 
         self.functions.sort_by(|a, b| a.name.cmp(&b.name));
         for f in &mut self.functions {
@@ -2229,6 +2239,38 @@ mod tests {
                 "ty": "u64",
                 "addr": {"kind": "ident", "name": "mmio_base"},
                 "value": {"kind": "ident", "name": "payload"}
+            })
+        );
+    }
+
+    #[test]
+    fn krir_module_mmio_bases_encode_deterministically() {
+        let mut module = super::KrirModule {
+            module_caps: vec!["Mmio".to_string()],
+            mmio_bases: vec![
+                super::MmioBaseDecl {
+                    name: "UART0".to_string(),
+                    addr: "0x1000".to_string(),
+                },
+                super::MmioBaseDecl {
+                    name: "APIC".to_string(),
+                    addr: "0xfee00000".to_string(),
+                },
+            ],
+            functions: Vec::new(),
+            call_edges: Vec::new(),
+        };
+        module.canonicalize();
+        assert_eq!(
+            serde_json::to_value(&module).expect("serialize module"),
+            json!({
+                "module_caps": ["Mmio"],
+                "mmio_bases": [
+                    {"name": "APIC", "addr": "0xfee00000"},
+                    {"name": "UART0", "addr": "0x1000"}
+                ],
+                "functions": [],
+                "call_edges": []
             })
         );
     }

@@ -4,12 +4,13 @@ use krir::{
     CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
     ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
     ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
-    KrirModule, KrirOp, MmioAddrExpr as KrirMmioAddrExpr, MmioScalarType as KrirMmioScalarType,
-    MmioValueExpr as KrirMmioValueExpr,
+    KrirModule, KrirOp, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
+    MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
 };
 use parser::{
-    FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioScalarType as ParserMmioScalarType,
-    MmioValueExpr as ParserMmioValueExpr, ModuleAst, RawAttr, Stmt, split_csv,
+    FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
+    MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
+    RawAttr, Stmt, split_csv,
 };
 use serde::Serialize;
 
@@ -962,11 +963,17 @@ pub fn lower_to_krir_with_surface(
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
+    let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(ast);
+    errors.extend(mmio_errors);
 
     for item in &ast.items {
         if !names.insert(item.name.clone()) {
             errors.push(format!("duplicate symbol '{}'", item.name));
         }
+    }
+
+    for item in &ast.items {
+        validate_mmio_address_bases_in_stmts(&item.body, &mmio_base_names, &mut errors);
     }
 
     for item in &ast.items {
@@ -1005,6 +1012,7 @@ pub fn lower_to_krir_with_surface(
 
     let mut module = KrirModule {
         module_caps: ast.module_caps.clone(),
+        mmio_bases,
         functions,
         call_edges,
     };
@@ -1030,6 +1038,70 @@ fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Funct
         attrs: facts.attrs,
         ops,
     })
+}
+
+fn collect_mmio_bases(ast: &ModuleAst) -> (Vec<KrirMmioBaseDecl>, BTreeSet<String>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut errors = Vec::new();
+
+    for ParserMmioBaseDecl { name, addr } in &ast.mmio_bases {
+        if !names.insert(name.clone()) {
+            errors.push(format!("duplicate mmio base '{}'", name));
+            continue;
+        }
+        out.push(KrirMmioBaseDecl {
+            name: name.clone(),
+            addr: addr.clone(),
+        });
+    }
+
+    (out, names, errors)
+}
+
+fn validate_mmio_address_bases_in_stmts(
+    stmts: &[Stmt],
+    declared_bases: &BTreeSet<String>,
+    errors: &mut Vec<String>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Critical(inner) => {
+                validate_mmio_address_bases_in_stmts(inner, declared_bases, errors)
+            }
+            Stmt::MmioRead { ty, addr } => {
+                if let Some(base) = mmio_addr_base_name(addr)
+                    && !declared_bases.contains(base)
+                {
+                    errors.push(format!(
+                        "undeclared mmio base '{}' used in {}",
+                        base,
+                        format_mmio_read_invocation(*ty, addr)
+                    ));
+                }
+            }
+            Stmt::MmioWrite { ty, addr, value } => {
+                if let Some(base) = mmio_addr_base_name(addr)
+                    && !declared_bases.contains(base)
+                {
+                    errors.push(format!(
+                        "undeclared mmio base '{}' used in {}",
+                        base,
+                        format_mmio_write_invocation(*ty, addr, value)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn mmio_addr_base_name(addr: &ParserMmioAddrExpr) -> Option<&str> {
+    match addr {
+        ParserMmioAddrExpr::Ident(name) => Some(name.as_str()),
+        ParserMmioAddrExpr::IdentPlusOffset { base, .. } => Some(base.as_str()),
+        ParserMmioAddrExpr::IntLiteral(_) => None,
+    }
 }
 
 fn normalize_function_facts(
@@ -1574,7 +1646,7 @@ mod tests {
     #[test]
     fn analysis_krir_lowering_preserves_typed_mmio_ops() {
         let ast = parse_module(
-            "fn entry() { mmio_read<u16>(base + 4); mmio_write<u64>(base + 8, payload); }",
+            "mmio base = 0x1000;\nfn entry() { mmio_read<u16>(base + 4); mmio_write<u64>(base + 8, payload); }",
         )
         .expect("parse");
         let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
@@ -1600,6 +1672,57 @@ mod tests {
             ])
         );
         assert_eq!(entry.eff_used, vec![krir::Eff::Mmio]);
+    }
+
+    #[test]
+    fn analysis_krir_lowering_resolves_declared_mmio_bases() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nfn entry() { mmio_read<u32>(UART0); mmio_write<u8>(UART0 + 4, 0xff); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        assert_eq!(
+            lowered.mmio_bases,
+            vec![krir::MmioBaseDecl {
+                name: "UART0".to_string(),
+                addr: "0x1000".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_undeclared_mmio_bases() {
+        let ast =
+            parse_module("fn entry() { mmio_read<u32>(UART0); mmio_write<u8>(UART0 + 4, 0xff); }")
+                .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "undeclared mmio base 'UART0' used in mmio_read<u32>(UART0)".to_string(),
+                "undeclared mmio base 'UART0' used in mmio_write<u8>(UART0 + 4, 0xff)".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_allows_int_literal_mmio_address_without_declaration() {
+        let ast = parse_module("fn entry() { mmio_read<u32>(0x1000); }").expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([{
+                "op": "mmio_read",
+                "ty": "u32",
+                "addr": {"kind": "int_literal", "value": "0x1000"}
+            }])
+        );
     }
 
     #[test]

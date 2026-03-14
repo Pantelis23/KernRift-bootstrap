@@ -95,6 +95,7 @@ Canonical executable semantics v0.1 rejects the following in executable function
 - `release(...)`
 - `mmio_read<T>(addr)` / `mmio_write<T>(addr, value)` where `T` is a typed MMIO scalar and
   `addr`/`value` use KR0 MMIO operand forms (`ident`, integer literal, or `ident + integer literal` for addresses)
+- module-level `mmio NAME = INT_LITERAL;` declarations (used by analysis KRIR MMIO-base resolution)
 
 Also out of scope:
 

@@ -52,6 +52,10 @@ Notes:
 
 - Only empty parameter lists `()` are supported.
 - Comments use `// ...` to end-of-line.
+- Module-level MMIO base declarations are supported in KR0 typed MMIO slice:
+  - `mmio NAME = INT_LITERAL;`
+  - `NAME` must be unique across module MMIO declarations.
+  - RHS must be an integer literal (decimal or hex).
 - Statement forms are lowered by callee name:
   - `acquire(LockClass)`
   - `release(LockClass)`
@@ -73,6 +77,7 @@ Notes:
 ### Module semantics
 
 - `@module_caps(...)` defines module-wide available capabilities.
+- `mmio NAME = INT_LITERAL;` defines module-level symbolic MMIO base declarations.
 - All function cap checks are evaluated against module caps in KR0.x.
 
 ### Function fact semantics
@@ -90,6 +95,8 @@ Notes:
 - `call()` adds call-graph edges and participates in interprocedural checks.
 - `mmio_read/mmio_write` mark `mmio` effect usage.
 - Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, structured `addr`, and structured `value` (write only).
+- When an MMIO address uses an identifier base (`IDENT` or `IDENT + OFFSET`), that base must resolve to a declared module MMIO base.
+- Integer-literal MMIO addresses remain valid without declaration.
 
 ### Check/analyze semantics
 
@@ -99,6 +106,8 @@ Notes:
   - `max_lock_depth`,
   - per-function `no_yield_spans` in thread context.
 - Recursion is rejected in KR0.1 analysis.
+- KRIR module JSON includes deterministic `mmio_bases` metadata when non-empty:
+  - `[{ "name": "<IDENT>", "addr": "<INT_LITERAL>" }, ...]`
 
 ## Contracts ABI (v1)
 

@@ -382,6 +382,72 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "unexpected invalid typed mmio operand diagnostic: {}",
         operand_fail.stderr
     );
+
+    let declared_base_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_declared_base.kr");
+    let declared_base = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            declared_base_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        declared_base.code, 0,
+        "declared mmio base fixture should pass, stderr={}",
+        declared_base.stderr
+    );
+
+    let undeclared_base_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_undeclared_base.kr");
+    let undeclared_base = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            undeclared_base_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        undeclared_base.code, 1,
+        "undeclared mmio base fixture should fail, stderr={}",
+        undeclared_base.stderr
+    );
+    assert_eq!(
+        undeclared_base.stderr.lines().next(),
+        Some("undeclared mmio base 'UART0' used in mmio_read<u32>(UART0)")
+    );
+
+    let invalid_decl_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_invalid_declaration.kr");
+    let invalid_decl = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            invalid_decl_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        invalid_decl.code, 1,
+        "invalid mmio declaration fixture should fail, stderr={}",
+        invalid_decl.stderr
+    );
+    let first = invalid_decl.stderr.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(
+            "invalid mmio base declaration for 'UART0': expected integer literal at byte "
+        ),
+        "unexpected invalid mmio declaration diagnostic: {}",
+        invalid_decl.stderr
+    );
 }
 
 fn run_cmd(bin: &Path, cwd: &Path, args: &[String]) -> CmdOut {

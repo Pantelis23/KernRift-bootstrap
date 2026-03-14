@@ -73,6 +73,14 @@ Each function in KRIR carries:
 - `caps_req: CapSet`
 - region attrs: `@noyield`, `lock_budget(N)`, optional `@leaf`, optional `@hotpath`
 
+### Module MMIO Bases (KR0 typed MMIO slice)
+
+`KrirModule` may carry deterministic module-level MMIO base metadata:
+
+- `mmio_bases: [{ name, addr }]`
+
+where each entry comes from source `mmio NAME = INT_LITERAL;` declarations.
+
 ### Defaults (MVP)
 
 If a function has no explicit annotations for these facts:

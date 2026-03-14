@@ -1089,6 +1089,7 @@ mod tests {
     fn test_module(functions: Vec<Function>) -> KrirModule {
         KrirModule {
             module_caps: Vec::new(),
+            mmio_bases: Vec::new(),
             functions,
             call_edges: Vec::new(),
         }
