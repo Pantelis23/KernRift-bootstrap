@@ -84,6 +84,7 @@ fn policy_enablement_probe_enabled(policy: &PolicyFile, probe: PolicyEnablementP
         PolicyEnablementProbe::KernelRawMmioSymbolAllowlistConfigured => {
             !policy.kernel.allow_raw_mmio_symbols.is_empty()
         }
+        PolicyEnablementProbe::KernelForbidRawMmioInIrq => policy.kernel.forbid_raw_mmio_in_irq,
         PolicyEnablementProbe::CapsAllowModuleNonEmpty => !policy.caps.allow_module.is_empty(),
         PolicyEnablementProbe::KernelCriticalEffectPresent(effect) => policy
             .kernel

@@ -60,6 +60,7 @@ Current mapping:
   - deny-all raw MMIO
   - per-symbol raw-MMIO allowlists
   - aggregate raw-MMIO site caps
+  - irq-context raw-MMIO deny by intersecting `facts.symbols[*].ctx_reachable` with raw-MMIO symbol facts
 - contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.

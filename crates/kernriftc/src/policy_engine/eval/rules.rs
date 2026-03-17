@@ -4,8 +4,9 @@ use super::super::{
     CONTRACTS_SCHEMA_VERSION_V2, ContractsBundle, ContractsFactSymbol, ContractsNoYieldSpan,
     ContractsProvenance, PolicyConditionDescriptor, PolicyFamily, PolicyFile, PolicyRule,
     PolicyViolation, policy_family_specs, policy_rule_conditions, policy_rule_effect_condition,
-    policy_rule_forbidden_lock_edges, policy_rule_irq_capability_lists, policy_rule_is_enabled,
-    policy_rule_max_lock_depth, policy_rule_max_no_yield_span, policy_rule_module_cap_allowlist,
+    policy_rule_forbid_raw_mmio_in_irq, policy_rule_forbidden_lock_edges,
+    policy_rule_irq_capability_lists, policy_rule_is_enabled, policy_rule_max_lock_depth,
+    policy_rule_max_no_yield_span, policy_rule_module_cap_allowlist,
     policy_rule_raw_mmio_allow_global, policy_rule_raw_mmio_site_limit,
     policy_rule_raw_mmio_symbol_allowlist, policy_rule_spec,
 };
@@ -204,6 +205,16 @@ pub(super) fn evaluate_effect_rules(
                         ));
                     }
                 }
+                PolicyConditionDescriptor::IrqRawMmioObserved if kernel_v2_allowed => {
+                    for observation in
+                        policy_rule_irq_raw_mmio_forbid_violations(policy, view, spec.rule)
+                    {
+                        violations.push(bind_effect_rule_violation(
+                            spec.rule,
+                            EffectRuleObservation::IrqRawMmioForbidden(observation),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -320,6 +331,9 @@ pub(super) struct IrqEffectObservation<'a> {
 pub(super) struct RawMmioForbiddenObservation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct IrqRawMmioForbiddenObservation;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RawMmioSiteLimitObservation {
     pub(super) observed: u64,
     pub(super) limit: u64,
@@ -358,6 +372,7 @@ pub(super) enum EffectRuleObservation<'a> {
     RawMmioForbidden(RawMmioForbiddenObservation),
     RawMmioSiteLimit(RawMmioSiteLimitObservation),
     RawMmioSymbol(RawMmioSymbolObservation<'a>),
+    IrqRawMmioForbidden(IrqRawMmioForbiddenObservation),
 }
 
 pub(super) enum CapabilityRuleObservation<'a> {
@@ -542,6 +557,27 @@ fn policy_rule_raw_mmio_symbol_violations<'a>(
         .copied()
         .filter(|symbol_name| !allowed.contains(symbol_name))
         .map(|symbol_name| RawMmioSymbolObservation { symbol_name })
+        .collect()
+}
+
+fn policy_rule_irq_raw_mmio_forbid_violations(
+    policy: &PolicyFile,
+    view: &PolicyEvalView<'_>,
+    rule: PolicyRule,
+) -> Vec<IrqRawMmioForbiddenObservation> {
+    if !policy_rule_forbid_raw_mmio_in_irq(policy, rule) {
+        return Vec::new();
+    }
+
+    view.irq_symbol_names
+        .iter()
+        .any(|symbol_name| {
+            view.symbol_by_name
+                .get(*symbol_name)
+                .is_some_and(|symbol| symbol.has_raw_mmio_usage())
+        })
+        .then_some(IrqRawMmioForbiddenObservation)
+        .into_iter()
         .collect()
 }
 

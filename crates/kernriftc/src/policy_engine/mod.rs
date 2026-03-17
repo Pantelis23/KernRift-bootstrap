@@ -74,6 +74,8 @@ struct PolicyKernel {
     #[serde(default)]
     allow_raw_mmio_symbols: Vec<String>,
     #[serde(default)]
+    forbid_raw_mmio_in_irq: bool,
+    #[serde(default)]
     forbid_alloc_in_irq: bool,
     #[serde(default)]
     forbid_block_in_irq: bool,
@@ -273,6 +275,7 @@ enum PolicyRule {
     KernelRawMmioForbid,
     KernelRawMmioSiteLimit,
     KernelRawMmioSymbolAllowlist,
+    KernelIrqRawMmioForbid,
     KernelPolicyRequiresV2,
     LimitMaxLockDepth,
     LockForbidEdge,
@@ -291,6 +294,7 @@ const RULE_KERNEL_IRQ_CAP_FORBID: &str = "KERNEL_IRQ_CAP_FORBID";
 const RULE_KERNEL_RAW_MMIO_FORBID: &str = "KERNEL_RAW_MMIO_FORBID";
 const RULE_KERNEL_RAW_MMIO_SITE_LIMIT: &str = "KERNEL_RAW_MMIO_SITE_LIMIT";
 const RULE_KERNEL_RAW_MMIO_SYMBOL_ALLOWLIST: &str = "KERNEL_RAW_MMIO_SYMBOL_ALLOWLIST";
+const RULE_KERNEL_IRQ_RAW_MMIO_FORBID: &str = "KERNEL_IRQ_RAW_MMIO_FORBID";
 const RULE_KERNEL_POLICY_REQUIRES_V2: &str = "KERNEL_POLICY_REQUIRES_V2";
 const RULE_LIMIT_MAX_LOCK_DEPTH: &str = "LIMIT_MAX_LOCK_DEPTH";
 const RULE_LOCK_FORBID_EDGE: &str = "LOCK_FORBID_EDGE";
@@ -317,6 +321,7 @@ enum PolicyEnablementProbe {
     KernelRawMmioForbidConfigured,
     KernelRawMmioSiteLimitConfigured,
     KernelRawMmioSymbolAllowlistConfigured,
+    KernelForbidRawMmioInIrq,
     CapsAllowModuleNonEmpty,
     KernelCriticalEffectPresent(&'static str),
     KernelForbidYieldInCriticalFlag,
@@ -340,6 +345,7 @@ enum PolicyTriggerKind {
     RawMmioForbidden,
     RawMmioSiteCountExceeded,
     RawMmioSymbolNotAllowed,
+    IrqRawMmioForbidden,
     SchemaCompatibility,
     LockDepthExceeded,
     ForbiddenLockEdgePresent,
@@ -356,6 +362,7 @@ enum PolicyConditionDescriptor {
     RawMmioObserved,
     RawMmioSitesCountAboveConfiguredLimit,
     RawMmioSymbolNotAllowed,
+    IrqRawMmioObserved,
     SchemaVersionRequiresV2,
     LockDepthAboveConfiguredLimit,
     ForbiddenLockEdgeObserved,
@@ -374,6 +381,7 @@ enum PolicyViolationBinderKind {
     RawMmioForbidden,
     RawMmioSiteLimit,
     RawMmioSymbol,
+    IrqRawMmioForbidden,
     CriticalRegionViolation,
     ModuleCapability,
     IrqCapability,
@@ -429,6 +437,8 @@ const ENABLE_IF_KERNEL_RAW_MMIO_SITE_LIMIT_CONFIGURED: &[PolicyEnablementProbe] 
     &[PolicyEnablementProbe::KernelRawMmioSiteLimitConfigured];
 const ENABLE_IF_KERNEL_RAW_MMIO_SYMBOL_ALLOWLIST_CONFIGURED: &[PolicyEnablementProbe] =
     &[PolicyEnablementProbe::KernelRawMmioSymbolAllowlistConfigured];
+const ENABLE_IF_KERNEL_FORBID_RAW_MMIO_IN_IRQ: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelForbidRawMmioInIrq];
 const ENABLE_IF_CAPS_ALLOW_MODULE_NON_EMPTY: &[PolicyEnablementProbe] =
     &[PolicyEnablementProbe::CapsAllowModuleNonEmpty];
 const ENABLE_IF_KERNEL_CRITICAL_EFFECT_ALLOC: &[PolicyEnablementProbe] =
@@ -459,6 +469,10 @@ const ENABLE_IF_LIMIT_FORBID_UNBOUNDED_NO_YIELD: &[PolicyEnablementProbe] =
     &[PolicyEnablementProbe::LimitForbidUnboundedNoYield];
 const DEPENDS_ON_FACTS_SYMBOLS_RAW_MMIO: &[PolicyArtifactDependency] =
     &[PolicyArtifactDependency::FactsSymbolsRawMmio];
+const DEPENDS_ON_IRQ_RAW_MMIO: &[PolicyArtifactDependency] = &[
+    PolicyArtifactDependency::FactsSymbolsCtxReachable,
+    PolicyArtifactDependency::FactsSymbolsRawMmio,
+];
 const DEPENDS_ON_REPORT_EFFECTS_RAW_MMIO_SITES: &[PolicyArtifactDependency] =
     &[PolicyArtifactDependency::ReportEffectsRawMmioSitesCount];
 const DEPENDS_ON_POLICY_SCHEMA_VERSION: &[PolicyArtifactDependency] =
@@ -510,6 +524,8 @@ const CONDITIONS_RAW_MMIO_SITE_LIMIT: &[PolicyConditionDescriptor] =
     &[PolicyConditionDescriptor::RawMmioSitesCountAboveConfiguredLimit];
 const CONDITIONS_RAW_MMIO_SYMBOL_ALLOWLIST: &[PolicyConditionDescriptor] =
     &[PolicyConditionDescriptor::RawMmioSymbolNotAllowed];
+const CONDITIONS_IRQ_RAW_MMIO_FORBID: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::IrqRawMmioObserved];
 const CONDITIONS_SCHEMA_VERSION_REQUIRES_V2: &[PolicyConditionDescriptor] =
     &[PolicyConditionDescriptor::SchemaVersionRequiresV2];
 const CONDITIONS_LOCK_DEPTH_ABOVE_LIMIT: &[PolicyConditionDescriptor] =
@@ -538,7 +554,7 @@ struct PolicyRuleSpec {
     binder_kind: PolicyViolationBinderKind,
 }
 
-const POLICY_RULE_CATALOG: [PolicyRuleSpec; 16] = [
+const POLICY_RULE_CATALOG: [PolicyRuleSpec; 17] = [
     PolicyRuleSpec {
         rule: PolicyRule::CapModuleAllowlist,
         code: RULE_CAP_MODULE_ALLOWLIST,
@@ -705,6 +721,21 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 16] = [
         binder_kind: PolicyViolationBinderKind::RawMmioSymbol,
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelIrqRawMmioForbid,
+        code: RULE_KERNEL_IRQ_RAW_MMIO_FORBID,
+        family: PolicyFamily::Effect,
+        sort_rank: 116,
+        requires_v2: true,
+        default_enabled_in_profile_kernel: false,
+        diagnostic_template_id: "kernel.irq.raw_mmio.forbid",
+        materialization_actions: MATERIALIZE_NONE,
+        enablement_probes: ENABLE_IF_KERNEL_FORBID_RAW_MMIO_IN_IRQ,
+        trigger_kind: PolicyTriggerKind::IrqRawMmioForbidden,
+        artifact_dependencies: DEPENDS_ON_IRQ_RAW_MMIO,
+        condition_descriptors: CONDITIONS_IRQ_RAW_MMIO_FORBID,
+        binder_kind: PolicyViolationBinderKind::IrqRawMmioForbidden,
+    },
+    PolicyRuleSpec {
         rule: PolicyRule::KernelPolicyRequiresV2,
         code: RULE_KERNEL_POLICY_REQUIRES_V2,
         family: PolicyFamily::Context,
@@ -782,7 +813,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 16] = [
 ];
 
 #[cfg(test)]
-const EMITTED_POLICY_RULES: [PolicyRule; 16] = [
+const EMITTED_POLICY_RULES: [PolicyRule; 17] = [
     PolicyRule::CapModuleAllowlist,
     PolicyRule::KernelCriticalRegionAlloc,
     PolicyRule::KernelCriticalRegionBlock,
@@ -794,6 +825,7 @@ const EMITTED_POLICY_RULES: [PolicyRule; 16] = [
     PolicyRule::KernelRawMmioForbid,
     PolicyRule::KernelRawMmioSiteLimit,
     PolicyRule::KernelRawMmioSymbolAllowlist,
+    PolicyRule::KernelIrqRawMmioForbid,
     PolicyRule::KernelPolicyRequiresV2,
     PolicyRule::LimitMaxLockDepth,
     PolicyRule::LockForbidEdge,
@@ -968,6 +1000,13 @@ fn policy_rule_raw_mmio_symbol_allowlist(
         .then_some(policy.kernel.allow_raw_mmio_symbols.as_slice())
 }
 
+fn policy_rule_forbid_raw_mmio_in_irq(policy: &PolicyFile, rule: PolicyRule) -> bool {
+    policy_rule_conditions(rule)
+        .iter()
+        .any(|descriptor| matches!(descriptor, PolicyConditionDescriptor::IrqRawMmioObserved))
+        && policy.kernel.forbid_raw_mmio_in_irq
+}
+
 fn policy_rule_irq_capability_lists(
     policy: &PolicyFile,
     rule: PolicyRule,
@@ -1001,6 +1040,7 @@ enum PolicyConditionHelperPath {
     RawMmioForbidden,
     RawMmioSiteLimit,
     RawMmioSymbolAllowlist,
+    IrqRawMmioForbidden,
     CriticalRegionEffectMap,
     ModuleCapabilityAllowlist,
     IrqCapabilityPrecedence,
@@ -1018,6 +1058,7 @@ enum PolicyConditionObservationKind {
     RawMmioForbidden,
     RawMmioSiteLimit,
     RawMmioSymbol,
+    IrqRawMmioForbidden,
     CriticalRegionRule,
     ModuleCapability,
     IrqCapability,
@@ -1044,6 +1085,9 @@ fn policy_condition_helper_path(
         }
         PolicyConditionDescriptor::RawMmioSymbolNotAllowed => {
             PolicyConditionHelperPath::RawMmioSymbolAllowlist
+        }
+        PolicyConditionDescriptor::IrqRawMmioObserved => {
+            PolicyConditionHelperPath::IrqRawMmioForbidden
         }
         PolicyConditionDescriptor::SchemaVersionRequiresV2 => {
             PolicyConditionHelperPath::SchemaCompatibility
@@ -1087,6 +1131,9 @@ fn policy_condition_observation_kind(
         PolicyConditionHelperPath::RawMmioSymbolAllowlist => {
             PolicyConditionObservationKind::RawMmioSymbol
         }
+        PolicyConditionHelperPath::IrqRawMmioForbidden => {
+            PolicyConditionObservationKind::IrqRawMmioForbidden
+        }
         PolicyConditionHelperPath::CriticalRegionEffectMap => {
             PolicyConditionObservationKind::CriticalRegionRule
         }
@@ -1121,6 +1168,9 @@ fn policy_observation_binder_kind(
             PolicyViolationBinderKind::RawMmioSiteLimit
         }
         PolicyConditionObservationKind::RawMmioSymbol => PolicyViolationBinderKind::RawMmioSymbol,
+        PolicyConditionObservationKind::IrqRawMmioForbidden => {
+            PolicyViolationBinderKind::IrqRawMmioForbidden
+        }
         PolicyConditionObservationKind::CriticalRegionRule => {
             PolicyViolationBinderKind::CriticalRegionViolation
         }
@@ -1148,6 +1198,7 @@ fn policy_family_allowed_binder_kinds(
             PolicyViolationBinderKind::RawMmioForbidden,
             PolicyViolationBinderKind::RawMmioSiteLimit,
             PolicyViolationBinderKind::RawMmioSymbol,
+            PolicyViolationBinderKind::IrqRawMmioForbidden,
         ],
         PolicyFamily::Region => &[PolicyViolationBinderKind::CriticalRegionViolation],
         PolicyFamily::Capability => &[
@@ -1266,6 +1317,7 @@ mod tests {
                 PolicyRule::KernelRawMmioForbid,
                 PolicyRule::KernelRawMmioSiteLimit,
                 PolicyRule::KernelRawMmioSymbolAllowlist,
+                PolicyRule::KernelIrqRawMmioForbid,
             ])
         );
     }
@@ -1499,6 +1551,9 @@ mod tests {
                         DEPENDS_ON_FACTS_SYMBOLS_RAW_MMIO
                     );
                 }
+                PolicyTriggerKind::IrqRawMmioForbidden => {
+                    assert_eq!(spec.artifact_dependencies, DEPENDS_ON_IRQ_RAW_MMIO);
+                }
                 PolicyTriggerKind::SchemaCompatibility => {
                     assert_eq!(
                         spec.rule,
@@ -1590,6 +1645,10 @@ mod tests {
                         assert_eq!(spec.family, PolicyFamily::Effect);
                         assert_eq!(spec.rule, PolicyRule::KernelRawMmioSymbolAllowlist);
                     }
+                    PolicyConditionDescriptor::IrqRawMmioObserved => {
+                        assert_eq!(spec.family, PolicyFamily::Effect);
+                        assert_eq!(spec.rule, PolicyRule::KernelIrqRawMmioForbid);
+                    }
                     PolicyConditionDescriptor::SchemaVersionRequiresV2 => {
                         assert_eq!(spec.rule, PolicyRule::KernelPolicyRequiresV2);
                         assert_eq!(spec.family, PolicyFamily::Context);
@@ -1626,6 +1685,7 @@ mod tests {
                     | PolicyConditionHelperPath::RawMmioForbidden
                     | PolicyConditionHelperPath::RawMmioSiteLimit
                     | PolicyConditionHelperPath::RawMmioSymbolAllowlist
+                    | PolicyConditionHelperPath::IrqRawMmioForbidden
                     | PolicyConditionHelperPath::CriticalRegionEffectMap
                     | PolicyConditionHelperPath::ModuleCapabilityAllowlist
                     | PolicyConditionHelperPath::IrqCapabilityPrecedence => {}
@@ -1649,6 +1709,7 @@ mod tests {
                     | PolicyConditionObservationKind::RawMmioForbidden
                     | PolicyConditionObservationKind::RawMmioSiteLimit
                     | PolicyConditionObservationKind::RawMmioSymbol
+                    | PolicyConditionObservationKind::IrqRawMmioForbidden
                     | PolicyConditionObservationKind::CriticalRegionRule
                     | PolicyConditionObservationKind::ModuleCapability
                     | PolicyConditionObservationKind::IrqCapability => {}
@@ -1670,6 +1731,7 @@ mod tests {
                 | PolicyViolationBinderKind::RawMmioForbidden
                 | PolicyViolationBinderKind::RawMmioSiteLimit
                 | PolicyViolationBinderKind::RawMmioSymbol
+                | PolicyViolationBinderKind::IrqRawMmioForbidden
                 | PolicyViolationBinderKind::CriticalRegionViolation
                 | PolicyViolationBinderKind::ModuleCapability
                 | PolicyViolationBinderKind::IrqCapability => {}
@@ -1833,6 +1895,12 @@ mod tests {
                 PolicyRule::KernelRawMmioSymbolAllowlist => {
                     assert_eq!(spec.binder_kind, PolicyViolationBinderKind::RawMmioSymbol)
                 }
+                PolicyRule::KernelIrqRawMmioForbid => {
+                    assert_eq!(
+                        spec.binder_kind,
+                        PolicyViolationBinderKind::IrqRawMmioForbidden
+                    )
+                }
                 PolicyRule::KernelIrqCapForbid => {
                     assert_eq!(spec.binder_kind, PolicyViolationBinderKind::IrqCapability)
                 }
@@ -1903,6 +1971,10 @@ mod tests {
                         PolicyViolationBinderKind::RawMmioSymbol,
                     )
                     | (
+                        PolicyConditionObservationKind::IrqRawMmioForbidden,
+                        PolicyViolationBinderKind::IrqRawMmioForbidden,
+                    )
+                    | (
                         PolicyConditionObservationKind::CriticalRegionRule,
                         PolicyViolationBinderKind::CriticalRegionViolation,
                     )
@@ -1962,6 +2034,7 @@ mod tests {
                             | PolicyViolationBinderKind::RawMmioForbidden
                             | PolicyViolationBinderKind::RawMmioSiteLimit
                             | PolicyViolationBinderKind::RawMmioSymbol
+                            | PolicyViolationBinderKind::IrqRawMmioForbidden
                     ),
                     "{:?} should use an effect binder kind",
                     spec.rule
@@ -2073,6 +2146,9 @@ mod tests {
                     .kernel
                     .allow_raw_mmio_symbols
                     .push("entry".to_string());
+            }
+            PolicyEnablementProbe::KernelForbidRawMmioInIrq => {
+                policy.kernel.forbid_raw_mmio_in_irq = true;
             }
             PolicyEnablementProbe::CapsAllowModuleNonEmpty => {
                 policy.caps.allow_module.push("PhysMap".to_string());

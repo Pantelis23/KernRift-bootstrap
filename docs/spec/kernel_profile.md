@@ -33,6 +33,8 @@ Current `kernel` profile defaults (materialized from canonical policy rule defin
   - `[kernel] allow_raw_mmio = true` reopens raw MMIO globally
   - `[kernel] allow_raw_mmio_symbols = ["entry", ...]` reopens raw MMIO only for named symbols
   - `[kernel] max_raw_mmio_sites = N` caps aggregate raw-MMIO sites independently
+  - `[kernel] forbid_raw_mmio_in_irq = true` denies raw MMIO only when it appears in irq-reachable symbols
+    - this rule is not default-enabled in `--profile kernel` because `allow_raw_mmio = false` already denies all raw MMIO there
 
 Planned kernel subset rules (next phases):
 
@@ -82,6 +84,8 @@ Contracts v2 semantic split:
     - allow all raw MMIO (`allow_raw_mmio = true`)
     - allow only selected raw-MMIO symbols (`allow_raw_mmio_symbols = [...]`)
     - cap aggregate raw-MMIO sites (`max_raw_mmio_sites = N`)
+    - deny raw MMIO only in irq-reachable symbols (`forbid_raw_mmio_in_irq = true`)
+      - this consumes the intersection of `facts.symbols[*].ctx_reachable` and raw-MMIO symbol facts
 
 Capability semantics in contracts v2:
 - `caps_req`: direct declared capability requirements
