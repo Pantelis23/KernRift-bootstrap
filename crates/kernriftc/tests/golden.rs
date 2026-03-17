@@ -830,6 +830,171 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     fs::remove_file(&raw_symbol_contracts_path).ok();
     fs::remove_file(&raw_symbol_policy_path).ok();
 
+    let raw_irq_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let raw_irq_helper_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let structured_irq_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("irq_ctx_chain.kr");
+    let raw_irq_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-{}.toml",
+        std::process::id()
+    ));
+    let raw_irq_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    let raw_irq_helper_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-helper-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    let structured_irq_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-structured-mmio-irq-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&raw_irq_policy_path).ok();
+    fs::remove_file(&raw_irq_contracts_path).ok();
+    fs::remove_file(&raw_irq_helper_contracts_path).ok();
+    fs::remove_file(&structured_irq_contracts_path).ok();
+    fs::write(
+        &raw_irq_policy_path,
+        "[kernel]\nallow_raw_mmio = true\nforbid_raw_mmio_in_irq = true\n",
+    )
+    .expect("write raw irq policy");
+
+    let raw_irq_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+            raw_irq_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_contracts.code, 0,
+        "raw irq contracts emission should succeed before policy evaluation, stderr={}",
+        raw_irq_contracts.stderr
+    );
+    let raw_irq_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_deny.code, 1,
+        "irq raw-mmio policy should reject direct irq raw usage, stderr={}",
+        raw_irq_deny.stderr
+    );
+    assert_eq!(
+        raw_irq_deny.stderr.lines().next(),
+        Some("policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context")
+    );
+
+    let raw_irq_helper_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            raw_irq_helper_contracts_path.display().to_string(),
+            raw_irq_helper_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_helper_contracts.code, 0,
+        "raw irq helper contracts emission should succeed before policy evaluation, stderr={}",
+        raw_irq_helper_contracts.stderr
+    );
+    let raw_irq_helper_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_helper_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_helper_deny.code, 1,
+        "irq raw-mmio policy should reject irq-reachable helper raw usage, stderr={}",
+        raw_irq_helper_deny.stderr
+    );
+    assert_eq!(
+        raw_irq_helper_deny.stderr.lines().next(),
+        Some("policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context")
+    );
+
+    let structured_irq_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            structured_irq_contracts_path.display().to_string(),
+            structured_irq_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        structured_irq_contracts.code, 0,
+        "structured irq mmio contracts emission should succeed before policy evaluation, stderr={}",
+        structured_irq_contracts.stderr
+    );
+    let structured_irq_pass = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            structured_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        structured_irq_pass.code, 0,
+        "irq raw-mmio policy should not reject structured irq mmio, stderr={}",
+        structured_irq_pass.stderr
+    );
+
+    fs::remove_file(&raw_irq_policy_path).ok();
+    fs::remove_file(&raw_irq_contracts_path).ok();
+    fs::remove_file(&raw_irq_helper_contracts_path).ok();
+    fs::remove_file(&structured_irq_contracts_path).ok();
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")

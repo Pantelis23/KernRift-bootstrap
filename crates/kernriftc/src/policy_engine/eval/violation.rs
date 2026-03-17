@@ -8,9 +8,10 @@ use super::common::{
 };
 use super::rules::{
     CapabilityRuleObservation, EffectRuleObservation, IrqCapabilityObservation,
-    IrqEffectObservation, LockDepthObservation, LockRuleObservation, ModuleCapabilityObservation,
-    NoYieldLimitObservation, NoYieldUnboundedObservation, RawMmioForbiddenObservation,
-    RawMmioSiteLimitObservation, RawMmioSymbolObservation, SchemaMismatchObservation,
+    IrqEffectObservation, IrqRawMmioForbiddenObservation, LockDepthObservation,
+    LockRuleObservation, ModuleCapabilityObservation, NoYieldLimitObservation,
+    NoYieldUnboundedObservation, RawMmioForbiddenObservation, RawMmioSiteLimitObservation,
+    RawMmioSymbolObservation, SchemaMismatchObservation,
 };
 
 pub(super) fn bind_context_rule_violation(
@@ -109,6 +110,15 @@ pub(super) fn bind_effect_rule_violation(
             match binder_kind {
                 PolicyViolationBinderKind::RawMmioSymbol => {
                     bind_raw_mmio_symbol_observation(observation)
+                }
+                _ => unreachable!("unexpected binder kind for {:?}", rule),
+            }
+        }
+        EffectRuleObservation::IrqRawMmioForbidden(observation) => {
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::IrqRawMmioForbidden);
+            match binder_kind {
+                PolicyViolationBinderKind::IrqRawMmioForbidden => {
+                    bind_irq_raw_mmio_forbidden_observation(observation)
                 }
                 _ => unreachable!("unexpected binder kind for {:?}", rule),
             }
@@ -248,6 +258,12 @@ fn bind_raw_mmio_symbol_observation(observation: RawMmioSymbolObservation<'_>) -
     violation_kernel_raw_mmio_symbol_allowlist(observation.symbol_name)
 }
 
+fn bind_irq_raw_mmio_forbidden_observation(
+    _observation: IrqRawMmioForbiddenObservation,
+) -> PolicyViolation {
+    violation_kernel_irq_raw_mmio_forbid()
+}
+
 fn bind_critical_region_violation(
     rule: PolicyRule,
     violation: &ContractsCriticalViolation,
@@ -381,6 +397,13 @@ fn violation_kernel_raw_mmio_symbol_allowlist(symbol_name: &str) -> PolicyViolat
     policy_violation(
         PolicyRule::KernelRawMmioSymbolAllowlist,
         format!("raw_mmio symbol '{}' is not allowed", symbol_name),
+    )
+}
+
+fn violation_kernel_irq_raw_mmio_forbid() -> PolicyViolation {
+    policy_violation(
+        PolicyRule::KernelIrqRawMmioForbid,
+        "raw_mmio is not allowed in irq context".to_string(),
     )
 }
 
