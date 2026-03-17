@@ -278,9 +278,9 @@ fn bind_raw_mmio_symbol_observation(observation: RawMmioSymbolObservation<'_>) -
 }
 
 fn bind_irq_raw_mmio_forbidden_observation(
-    _observation: IrqRawMmioForbiddenObservation,
+    observation: IrqRawMmioForbiddenObservation<'_>,
 ) -> PolicyViolation {
-    violation_kernel_irq_raw_mmio_forbid()
+    violation_kernel_irq_raw_mmio_forbid(observation.symbol_name, observation.irq_source_symbol)
 }
 
 fn bind_irq_raw_mmio_site_limit_observation(
@@ -292,7 +292,10 @@ fn bind_irq_raw_mmio_site_limit_observation(
 fn bind_irq_raw_mmio_symbol_observation(
     observation: IrqRawMmioSymbolObservation<'_>,
 ) -> PolicyViolation {
-    violation_kernel_irq_raw_mmio_symbol_allowlist(observation.symbol_name)
+    violation_kernel_irq_raw_mmio_symbol_allowlist(
+        observation.symbol_name,
+        observation.irq_source_symbol,
+    )
 }
 
 fn bind_critical_region_violation(
@@ -431,10 +434,20 @@ fn violation_kernel_raw_mmio_symbol_allowlist(symbol_name: &str) -> PolicyViolat
     )
 }
 
-fn violation_kernel_irq_raw_mmio_forbid() -> PolicyViolation {
-    policy_violation(
+fn violation_kernel_irq_raw_mmio_forbid(
+    symbol_name: &str,
+    irq_source_symbol: &str,
+) -> PolicyViolation {
+    policy_violation_with_evidence(
         PolicyRule::KernelIrqRawMmioForbid,
-        "raw_mmio is not allowed in irq context".to_string(),
+        format!(
+            "raw_mmio is not allowed in irq context (reachable from irq symbol '{}')",
+            irq_source_symbol
+        ),
+        vec![
+            evidence_line("symbol", symbol_name.to_string()),
+            evidence_line("irq_source_symbol", irq_source_symbol.to_string()),
+        ],
     )
 }
 
@@ -448,10 +461,20 @@ fn violation_kernel_irq_raw_mmio_site_limit(observed: u64, limit: u64) -> Policy
     )
 }
 
-fn violation_kernel_irq_raw_mmio_symbol_allowlist(symbol_name: &str) -> PolicyViolation {
-    policy_violation(
+fn violation_kernel_irq_raw_mmio_symbol_allowlist(
+    symbol_name: &str,
+    irq_source_symbol: &str,
+) -> PolicyViolation {
+    policy_violation_with_evidence(
         PolicyRule::KernelIrqRawMmioSymbolAllowlist,
-        format!("irq raw_mmio symbol '{}' is not allowed", symbol_name),
+        format!(
+            "irq raw_mmio symbol '{}' is not allowed (reachable from irq symbol '{}')",
+            symbol_name, irq_source_symbol
+        ),
+        vec![
+            evidence_line("symbol", symbol_name.to_string()),
+            evidence_line("irq_source_symbol", irq_source_symbol.to_string()),
+        ],
     )
 }
 

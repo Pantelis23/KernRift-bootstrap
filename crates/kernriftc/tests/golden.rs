@@ -915,7 +915,9 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         raw_irq_deny.stderr.lines().next(),
-        Some("policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context")
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (reachable from irq symbol 'entry')"
+        )
     );
 
     let raw_irq_helper_contracts = run_cmd(
@@ -953,7 +955,9 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         raw_irq_helper_deny.stderr.lines().next(),
-        Some("policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context")
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (reachable from irq symbol 'entry')"
+        )
     );
 
     let structured_irq_contracts = run_cmd(
@@ -1119,7 +1123,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         raw_irq_helper_symbol_allowlist_deny.stderr.lines().next(),
         Some(
-            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed"
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (reachable from irq symbol 'entry')"
         )
     );
 
@@ -1159,7 +1163,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         raw_irq_symbol_allowlist_direct_deny.stderr.lines().next(),
         Some(
-            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed"
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed (reachable from irq symbol 'entry')"
         )
     );
 

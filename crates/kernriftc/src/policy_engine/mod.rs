@@ -155,6 +155,8 @@ struct ContractsFactSymbol {
     #[serde(default)]
     ctx_reachable: Vec<String>,
     #[serde(default)]
+    ctx_provenance: Vec<ContractsContextProvenance>,
+    #[serde(default)]
     eff_transitive: Vec<String>,
     #[serde(default)]
     eff_provenance: Vec<ContractsEffectProvenance>,
@@ -204,6 +206,13 @@ impl ContractsFactSymbol {
     fn has_raw_mmio_usage(&self) -> bool {
         self.raw_mmio_used || self.raw_mmio_sites_count > 0
     }
+
+    fn ctx_sources(&self, ctx: &str) -> Option<&[String]> {
+        self.ctx_provenance
+            .iter()
+            .find(|entry| entry.ctx == ctx)
+            .map(|entry| entry.sources.as_slice())
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -235,6 +244,13 @@ struct ContractsProvenance {
 struct ContractsEffectProvenance {
     effect: String,
     provenance: ContractsProvenance,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ContractsContextProvenance {
+    ctx: String,
+    #[serde(default)]
+    sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]

@@ -354,7 +354,10 @@ pub(super) struct IrqEffectObservation<'a> {
 pub(super) struct RawMmioForbiddenObservation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct IrqRawMmioForbiddenObservation;
+pub(super) struct IrqRawMmioForbiddenObservation<'a> {
+    pub(super) symbol_name: &'a str,
+    pub(super) irq_source_symbol: &'a str,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RawMmioSiteLimitObservation {
@@ -371,6 +374,7 @@ pub(super) struct IrqRawMmioSiteLimitObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct IrqRawMmioSymbolObservation<'a> {
     pub(super) symbol_name: &'a str,
+    pub(super) irq_source_symbol: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -406,7 +410,7 @@ pub(super) enum EffectRuleObservation<'a> {
     RawMmioForbidden(RawMmioForbiddenObservation),
     RawMmioSiteLimit(RawMmioSiteLimitObservation),
     RawMmioSymbol(RawMmioSymbolObservation<'a>),
-    IrqRawMmioForbidden(IrqRawMmioForbiddenObservation),
+    IrqRawMmioForbidden(IrqRawMmioForbiddenObservation<'a>),
     IrqRawMmioSiteLimit(IrqRawMmioSiteLimitObservation),
     IrqRawMmioSymbol(IrqRawMmioSymbolObservation<'a>),
 }
@@ -596,23 +600,32 @@ fn policy_rule_raw_mmio_symbol_violations<'a>(
         .collect()
 }
 
-fn policy_rule_irq_raw_mmio_forbid_violations(
+fn policy_rule_irq_raw_mmio_forbid_violations<'a>(
     policy: &PolicyFile,
-    view: &PolicyEvalView<'_>,
+    view: &'a PolicyEvalView<'a>,
     rule: PolicyRule,
-) -> Vec<IrqRawMmioForbiddenObservation> {
+) -> Vec<IrqRawMmioForbiddenObservation<'a>> {
     if !policy_rule_forbid_raw_mmio_in_irq(policy, rule) {
         return Vec::new();
     }
 
     view.irq_symbol_names
         .iter()
-        .any(|symbol_name| {
-            view.symbol_by_name
-                .get(*symbol_name)
-                .is_some_and(|symbol| symbol.has_raw_mmio_usage())
+        .find_map(|symbol_name| {
+            let symbol = view.symbol_by_name.get(*symbol_name)?;
+            if !symbol.has_raw_mmio_usage() {
+                return None;
+            }
+            let irq_source_symbol = symbol
+                .ctx_sources("irq")
+                .and_then(|sources| sources.first())
+                .map(|source| source.as_str())
+                .unwrap_or(*symbol_name);
+            Some(IrqRawMmioForbiddenObservation {
+                symbol_name,
+                irq_source_symbol,
+            })
         })
-        .then_some(IrqRawMmioForbiddenObservation)
         .into_iter()
         .collect()
 }
@@ -654,13 +667,21 @@ fn policy_rule_irq_raw_mmio_symbol_violations<'a>(
     view.irq_symbol_names
         .iter()
         .filter_map(|symbol_name| {
-            view.symbol_by_name
-                .get(*symbol_name)
-                .filter(|symbol| symbol.has_raw_mmio_usage())
-                .map(|_| *symbol_name)
+            let symbol = view.symbol_by_name.get(*symbol_name)?;
+            if !symbol.has_raw_mmio_usage() {
+                return None;
+            }
+            let irq_source_symbol = symbol
+                .ctx_sources("irq")
+                .and_then(|sources| sources.first())
+                .map(|source| source.as_str())
+                .unwrap_or(*symbol_name);
+            Some(IrqRawMmioSymbolObservation {
+                symbol_name,
+                irq_source_symbol,
+            })
         })
-        .filter(|symbol_name| !allowed.contains(symbol_name))
-        .map(|symbol_name| IrqRawMmioSymbolObservation { symbol_name })
+        .filter(|observation| !allowed.contains(observation.symbol_name))
         .collect()
 }
 
