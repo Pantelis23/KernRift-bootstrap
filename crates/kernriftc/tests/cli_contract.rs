@@ -30,6 +30,25 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
+fn assert_json_transport(stdout: &str, stderr: &str, schema_version: &str) {
+    assert!(
+        stderr.is_empty(),
+        "json mode must not write stderr: {}",
+        stderr
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "json mode output must end with trailing newline: {:?}",
+        stdout
+    );
+    let json: Value = serde_json::from_str(stdout).expect("json stdout");
+    assert_eq!(
+        json["schema_version"],
+        json!(schema_version),
+        "json mode must include stable schema_version"
+    );
+}
+
 fn object_keys(value: &Value) -> BTreeSet<String> {
     value
         .as_object()
@@ -784,6 +803,27 @@ fn inspect_artifact_json_output_is_byte_stable() {
     let first = inspect_artifact_output(&root, &artifact_path, Some("json"));
     let second = inspect_artifact_output(&root, &artifact_path, Some("json"));
     assert_eq!(first, second, "inspect-artifact JSON must be byte-stable");
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_json_transport_is_stdout_only_and_newline_terminated() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-json-transport", "krbo");
+    emit_backend_artifact(&root, "krbo", &fixture, &artifact_path, false);
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-artifact")
+        .arg(artifact_path.as_os_str())
+        .arg("--format")
+        .arg("json");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_inspect_artifact_v1");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -1998,6 +2038,30 @@ fn verify_artifact_meta_json_reports_invalid_input_with_schema_marker() {
         })
     );
     assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_json_transport_is_stdout_only_and_newline_terminated() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-json-transport", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-json-transport", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg("--format")
+        .arg("json")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_verify_artifact_meta_v1");
 
     fs::remove_file(&artifact_path).ok();
     fs::remove_file(&meta_path).ok();
@@ -6959,6 +7023,7 @@ fn policy_json_irq_raw_mmio_forbid_is_exact_and_structured() {
         "json policy mode must not write stderr: {}",
         stderr
     );
+    assert_json_transport(&stdout, &stderr, "kernrift_policy_violations_v1");
     assert_eq!(
         stdout,
         concat!(
@@ -7063,6 +7128,7 @@ fn policy_json_irq_raw_mmio_allowlist_deep_path_is_exact_and_structured() {
         "json policy mode must not write stderr: {}",
         stderr
     );
+    assert_json_transport(&stdout, &stderr, "kernrift_policy_violations_v1");
     assert_eq!(
         stdout,
         concat!(
@@ -7237,6 +7303,11 @@ fn check_json_policy_irq_raw_mmio_forbid_matches_policy_json_contract_exactly() 
         "check json policy deny must not write stderr: {}",
         check_stderr
     );
+    assert_json_transport(
+        &check_stdout,
+        &check_stderr,
+        "kernrift_policy_violations_v1",
+    );
     assert_eq!(
         check_stdout, policy_stdout,
         "check json policy deny must reuse exact policy JSON envelope"
@@ -7319,6 +7390,11 @@ fn check_json_policy_irq_raw_mmio_allowlist_helper_path_matches_policy_json_cont
         check_stderr.is_empty(),
         "check json policy deny must not write stderr: {}",
         check_stderr
+    );
+    assert_json_transport(
+        &check_stdout,
+        &check_stderr,
+        "kernrift_policy_violations_v1",
     );
     assert_eq!(
         check_stdout, policy_stdout,

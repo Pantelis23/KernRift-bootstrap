@@ -219,6 +219,30 @@ Output write safety matches other guarded outputs:
 - refuses overwrite when destination exists,
 - stages writes through temp files and commits via rename.
 
+## Structured Output Conventions
+
+These transport rules apply to commands that already expose structured JSON output.
+
+Current JSON-capable command surfaces:
+
+- `kernriftc inspect-artifact <artifact> --format json`
+- `kernriftc verify-artifact-meta --format json <artifact> <meta.json>`
+- `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>`
+- `kernriftc check --format json --policy <policy.toml> <file.kr>`
+  - today this emits structured JSON only for policy denials, reusing
+    `kernrift_policy_violations_v1`
+
+Transport invariants:
+
+- structured JSON payload is written to `stdout` only
+- `stderr` remains empty when a structured payload is emitted
+- structured JSON output ends with a trailing newline
+- commands must not mix human text lines with JSON payload bytes in JSON mode
+- exit codes remain command-specific and are authoritative alongside the payload
+- when the payload has a versioned schema, `schema_version` must be present
+
+These rules lock transport behavior only. They do not redefine command payload schemas.
+
 ## Verify Exit Codes
 
 | Exit | Meaning |
