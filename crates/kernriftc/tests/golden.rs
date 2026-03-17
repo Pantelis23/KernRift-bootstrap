@@ -919,6 +919,34 @@ fn golden_mmio_typed_slice_checks_are_stable() {
             "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via entry)"
         )
     );
+    let raw_irq_deny_with_evidence = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--evidence".to_string(),
+            "--policy".to_string(),
+            raw_irq_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_deny_with_evidence.code, 1,
+        "irq raw-mmio evidence output should reject direct irq raw usage, stderr={}",
+        raw_irq_deny_with_evidence.stderr
+    );
+    assert_eq!(
+        raw_irq_deny_with_evidence
+            .stderr
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via entry)",
+            "evidence: symbol=entry",
+            "evidence: irq_path=[entry]",
+        ]
+    );
 
     let raw_irq_helper_contracts = run_cmd(
         bin,
@@ -1282,6 +1310,34 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         Some(
             "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (via entry -> dispatch -> helper)"
         )
+    );
+    let helper_deep_path_allowlist_deny_with_evidence = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--evidence".to_string(),
+            "--policy".to_string(),
+            raw_irq_symbol_allowlist_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            helper_deep_path_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        helper_deep_path_allowlist_deny_with_evidence.code, 1,
+        "irq raw-mmio allowlist evidence output should render deep helper path, stderr={}",
+        helper_deep_path_allowlist_deny_with_evidence.stderr
+    );
+    assert_eq!(
+        helper_deep_path_allowlist_deny_with_evidence
+            .stderr
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (via entry -> dispatch -> helper)",
+            "evidence: symbol=helper",
+            "evidence: irq_path=[entry,dispatch,helper]",
+        ]
     );
 
     fs::remove_file(&raw_irq_policy_path).ok();

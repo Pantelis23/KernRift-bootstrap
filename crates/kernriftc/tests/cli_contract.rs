@@ -6461,6 +6461,96 @@ fn policy_formats_irq_raw_mmio_forbid_with_multihop_contract_path() {
 }
 
 #[test]
+fn policy_evidence_irq_raw_mmio_forbid_is_structured_and_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-forbid-evidence-direct");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-forbid-evidence-direct",
+        "[kernel]\nallow_raw_mmio = true\nforbid_raw_mmio_in_irq = true\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via entry)",
+            "evidence: symbol=entry",
+            "evidence: irq_path=[entry]",
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_evidence_irq_raw_mmio_forbid_multihop_path_is_structured() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let emitted_contracts =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-forbid-evidence-multihop");
+    let mut contracts: Value =
+        serde_json::from_str(&fs::read_to_string(&emitted_contracts).expect("contracts text"))
+            .expect("contracts json");
+    let helper = contracts["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols")
+        .iter_mut()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    helper["ctx_path_provenance"] = json!([{
+        "ctx": "irq",
+        "path": ["entry", "dispatch", "helper"]
+    }]);
+    let contracts_path =
+        write_temp_contracts_file("raw-mmio-irq-forbid-evidence-multihop", &contracts);
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-forbid-evidence-multihop",
+        "[kernel]\nallow_raw_mmio = true\nforbid_raw_mmio_in_irq = true\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via entry -> dispatch -> helper)",
+            "evidence: symbol=helper",
+            "evidence: irq_path=[entry,dispatch,helper]",
+        ]
+    );
+
+    fs::remove_file(&emitted_contracts).ok();
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn policy_irq_raw_mmio_site_limit_ignores_non_irq_raw_mmio() {
     let root = repo_root();
     let fixture = root
@@ -6779,6 +6869,46 @@ fn policy_formats_irq_raw_mmio_symbol_allowlist_with_deep_contract_path() {
     );
 
     fs::remove_file(&emitted_contracts).ok();
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_evidence_irq_raw_mmio_symbol_allowlist_is_structured_and_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let contracts_path = write_v2_contracts_for_fixture(
+        &root,
+        &fixture,
+        "raw-mmio-irq-symbol-allowlist-evidence-helper",
+    );
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-symbol-allowlist-evidence-helper",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (via helper)",
+            "evidence: symbol=helper",
+            "evidence: irq_path=[helper]",
+        ]
+    );
+
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&policy_path).ok();
 }

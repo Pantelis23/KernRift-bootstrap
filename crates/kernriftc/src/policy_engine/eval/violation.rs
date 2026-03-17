@@ -4,7 +4,8 @@ use super::super::{
     policy_rule_spec,
 };
 use super::common::{
-    canonicalize_provenance_fields, format_optional_provenance, format_provenance,
+    canonicalize_provenance_fields, format_bracketed_list, format_optional_provenance,
+    format_provenance,
 };
 use super::rules::{
     CapabilityRuleObservation, EffectRuleObservation, IrqCapabilityObservation,
@@ -436,10 +437,7 @@ fn violation_kernel_irq_raw_mmio_forbid(symbol_name: &str, irq_path: &[String]) 
     policy_violation_with_evidence(
         PolicyRule::KernelIrqRawMmioForbid,
         format!("raw_mmio is not allowed in irq context (via {})", path_text),
-        vec![
-            evidence_line("symbol", symbol_name.to_string()),
-            evidence_line("irq_path", path_text),
-        ],
+        evidence_lines_irq_path(symbol_name, irq_path),
     )
 }
 
@@ -464,10 +462,7 @@ fn violation_kernel_irq_raw_mmio_symbol_allowlist(
             "irq raw_mmio symbol '{}' is not allowed (via {})",
             symbol_name, path_text
         ),
-        vec![
-            evidence_line("symbol", symbol_name.to_string()),
-            evidence_line("irq_path", path_text),
-        ],
+        evidence_lines_irq_path(symbol_name, irq_path),
     )
 }
 
@@ -523,6 +518,13 @@ fn violation_kernel_irq_cap_forbid(
 
 fn evidence_line(key: &str, value: String) -> String {
     format!("evidence: {}={}", key, value)
+}
+
+fn evidence_lines_irq_path(symbol_name: &str, irq_path: &[String]) -> Vec<String> {
+    vec![
+        evidence_line("symbol", symbol_name.to_string()),
+        evidence_line("irq_path", format_bracketed_list(irq_path)),
+    ]
 }
 
 fn evidence_lines_irq_effect(
