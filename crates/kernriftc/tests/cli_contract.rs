@@ -6518,6 +6518,175 @@ fn policy_irq_raw_mmio_site_limit_does_not_affect_structured_irq_mmio() {
 }
 
 #[test]
+fn policy_irq_raw_mmio_symbol_allowlist_ignores_non_irq_raw_mmio() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_two_symbols.kr");
+    let contracts_path = write_v2_contracts_for_fixture(
+        &root,
+        &fixture,
+        "raw-mmio-irq-symbol-allowlist-non-irq-pass",
+    );
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-symbol-allowlist-non-irq-pass",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"nobody\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_allows_irq_raw_mmio_when_symbol_is_allowlisted() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-symbol-allowlist-pass");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-symbol-allowlist-pass",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_denies_irq_raw_mmio_when_symbol_is_not_allowlisted() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let contracts_path = write_v2_contracts_for_fixture(
+        &root,
+        &fixture,
+        "raw-mmio-irq-symbol-allowlist-direct-deny",
+    );
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-symbol-allowlist-direct-deny",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"helper\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_denies_irq_reachable_raw_mmio_helper_when_not_allowlisted() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let contracts_path = write_v2_contracts_for_fixture(
+        &root,
+        &fixture,
+        "raw-mmio-irq-symbol-allowlist-helper-deny",
+    );
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-symbol-allowlist-helper-deny",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_irq_raw_mmio_symbol_allowlist_does_not_affect_structured_irq_mmio() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("irq_ctx_chain.kr");
+    let contracts_path = write_v2_contracts_for_fixture(
+        &root,
+        &fixture,
+        "raw-mmio-irq-symbol-allowlist-structured-pass",
+    );
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-symbol-allowlist-structured-pass",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn check_with_policy_denies_raw_mmio_and_suppresses_contract_output() {
     let root = repo_root();
     let fixture = root

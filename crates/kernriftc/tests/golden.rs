@@ -1068,8 +1068,122 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         structured_irq_site_limit_pass.stderr
     );
 
+    let raw_irq_symbol_allowlist_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-symbol-allowlist-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&raw_irq_symbol_allowlist_policy_path).ok();
+    fs::write(
+        &raw_irq_symbol_allowlist_policy_path,
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    )
+    .expect("write raw irq symbol allowlist policy");
+
+    let raw_irq_symbol_allowlist_pass = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_symbol_allowlist_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_symbol_allowlist_pass.code, 0,
+        "irq raw-mmio symbol allowlist should allow listed direct irq raw usage, stderr={}",
+        raw_irq_symbol_allowlist_pass.stderr
+    );
+
+    let raw_irq_helper_symbol_allowlist_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_symbol_allowlist_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_helper_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_helper_symbol_allowlist_deny.code, 1,
+        "irq raw-mmio symbol allowlist should reject non-listed irq helper raw usage, stderr={}",
+        raw_irq_helper_symbol_allowlist_deny.stderr
+    );
+    assert_eq!(
+        raw_irq_helper_symbol_allowlist_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed"
+        )
+    );
+
+    let raw_irq_symbol_allowlist_direct_deny_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-symbol-allowlist-direct-deny-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&raw_irq_symbol_allowlist_direct_deny_policy_path).ok();
+    fs::write(
+        &raw_irq_symbol_allowlist_direct_deny_policy_path,
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"helper\"]\n",
+    )
+    .expect("write raw irq symbol direct-deny policy");
+
+    let raw_irq_symbol_allowlist_direct_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_symbol_allowlist_direct_deny_policy_path
+                .display()
+                .to_string(),
+            "--contracts".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_symbol_allowlist_direct_deny.code, 1,
+        "irq raw-mmio symbol allowlist should reject non-listed direct irq raw usage, stderr={}",
+        raw_irq_symbol_allowlist_direct_deny.stderr
+    );
+    assert_eq!(
+        raw_irq_symbol_allowlist_direct_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed"
+        )
+    );
+
+    let structured_irq_symbol_allowlist_pass = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_symbol_allowlist_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            structured_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        structured_irq_symbol_allowlist_pass.code, 0,
+        "irq raw-mmio symbol allowlist should not reject structured irq mmio, stderr={}",
+        structured_irq_symbol_allowlist_pass.stderr
+    );
+
     fs::remove_file(&raw_irq_policy_path).ok();
     fs::remove_file(&raw_irq_site_limit_policy_path).ok();
+    fs::remove_file(&raw_irq_symbol_allowlist_policy_path).ok();
+    fs::remove_file(&raw_irq_symbol_allowlist_direct_deny_policy_path).ok();
     fs::remove_file(&raw_irq_contracts_path).ok();
     fs::remove_file(&raw_irq_helper_contracts_path).ok();
     fs::remove_file(&structured_irq_contracts_path).ok();

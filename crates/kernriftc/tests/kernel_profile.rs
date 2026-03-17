@@ -310,6 +310,11 @@ fn kernel_profile_does_not_need_irq_specific_raw_mmio_rule_by_default() {
         "kernel profile should not enable irq raw-mmio site-limit rule by default, got:\n{}",
         stderr
     );
+    assert!(
+        !stderr.contains("KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST"),
+        "kernel profile should not enable irq raw-mmio symbol allowlist rule by default, got:\n{}",
+        stderr
+    );
 }
 
 #[test]
