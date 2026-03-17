@@ -6317,7 +6317,9 @@ fn policy_denies_raw_mmio_in_irq_context() {
         .collect::<Vec<_>>();
     assert_eq!(
         lines,
-        vec!["policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context"]
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (reachable from irq symbol 'entry')"
+        ]
     );
 
     fs::remove_file(&contracts_path).ok();
@@ -6380,7 +6382,9 @@ fn policy_denies_irq_reachable_helper_that_uses_raw_mmio() {
         .collect::<Vec<_>>();
     assert_eq!(
         lines,
-        vec!["policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context"]
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (reachable from irq symbol 'entry')"
+        ]
     );
 
     fs::remove_file(&contracts_path).ok();
@@ -6607,7 +6611,7 @@ fn policy_denies_irq_raw_mmio_when_symbol_is_not_allowlisted() {
     assert_eq!(
         lines,
         vec![
-            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed"
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed (reachable from irq symbol 'entry')"
         ]
     );
 
@@ -6648,7 +6652,7 @@ fn policy_denies_irq_reachable_raw_mmio_helper_when_not_allowlisted() {
     assert_eq!(
         lines,
         vec![
-            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed"
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (reachable from irq symbol 'entry')"
         ]
     );
 
@@ -7682,6 +7686,13 @@ fn contracts_v2_semantic_fields_coexist_and_validate_schema() {
         .find(|sym| sym["name"] == "entry")
         .expect("entry symbol");
     assert_eq!(entry["ctx_reachable"], json!(["irq"]));
+    assert_eq!(
+        entry["ctx_provenance"],
+        json!([{
+            "ctx": "irq",
+            "sources": ["entry"]
+        }])
+    );
     assert_eq!(entry["eff_transitive"], json!(["alloc"]));
     assert_eq!(
         entry["eff_provenance"],

@@ -239,6 +239,7 @@
         "is_extern",
         "ctx_ok",
         "ctx_reachable",
+        "ctx_provenance",
         "eff_used",
         "eff_transitive",
         "eff_provenance",
@@ -269,6 +270,12 @@
             "$ref": "#/$defs/context"
           },
           "uniqueItems": true
+        },
+        "ctx_provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/context_provenance"
+          }
         },
         "eff_used": {
           "type": "array",
@@ -335,6 +342,26 @@
         },
         "provenance": {
           "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "context_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ctx",
+        "sources"
+      ],
+      "properties": {
+        "ctx": {
+          "$ref": "#/$defs/context"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
         }
       }
     },

@@ -235,6 +235,7 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
             "caps_req".to_string(),
             "caps_transitive".to_string(),
             "ctx_ok".to_string(),
+            "ctx_provenance".to_string(),
             "ctx_reachable".to_string(),
             "eff_provenance".to_string(),
             "eff_transitive".to_string(),
@@ -249,6 +250,10 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
     assert!(
         entry["ctx_reachable"].is_array(),
         "ctx_reachable must be array"
+    );
+    assert!(
+        entry["ctx_provenance"].is_array(),
+        "ctx_provenance must be array"
     );
     assert!(
         entry["eff_transitive"].is_array(),
@@ -305,6 +310,16 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
             "via_extern".to_string(),
         ]),
         "caps provenance object keys drifted"
+    );
+    let ctx_prov = entry["ctx_provenance"]
+        .as_array()
+        .expect("ctx_provenance array")
+        .first()
+        .expect("at least one ctx provenance entry");
+    assert_eq!(
+        object_keys(ctx_prov),
+        BTreeSet::from(["ctx".to_string(), "sources".to_string()]),
+        "ctx_provenance entry keys drifted"
     );
 
     assert!(

@@ -13,7 +13,8 @@ Parsed in `crates/hir/src/lib.rs`:
 
 `@ctx(...)` is lowered through HIR into KRIR `ctx_ok` and emitted in contracts `facts.symbols[*].ctx_ok`.
 contracts v2 additionally emits `facts.symbols[*].ctx_reachable`, computed by call-graph
-reachability closure from declared context roots.
+reachability closure from declared context roots, plus `facts.symbols[*].ctx_provenance[]`
+with deterministic source symbols per reachable context.
 report-level context lists were removed; policy consumes `facts.symbols[*].ctx_reachable` directly.
 
 ### Effect facts (`@eff(...)`)
@@ -61,10 +62,11 @@ Current mapping:
   - per-symbol raw-MMIO allowlists
   - aggregate raw-MMIO site caps
   - irq-context raw-MMIO deny by intersecting `facts.symbols[*].ctx_reachable` with raw-MMIO symbol facts
+    and reporting a source irq symbol from `facts.symbols[*].ctx_provenance`
   - irq-context raw-MMIO site caps by summing `facts.symbols[*].raw_mmio_sites_count` only over
     irq-reachable symbols
   - irq-context raw-MMIO symbol allowlists by filtering irq-reachable raw-MMIO symbols through
-    configured names
+    configured names and reporting a source irq symbol from `facts.symbols[*].ctx_provenance`
 - contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.

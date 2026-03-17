@@ -174,8 +174,8 @@ fn contracts_value(
     } else {
         None
     };
-    let ctx_reachable = if schema == ContractsSchema::V2 {
-        Some(ctx_reachable_by_function(&canonical))
+    let ctx_reachability = if schema == ContractsSchema::V2 {
+        Some(ctx_reachability_by_function(&canonical))
     } else {
         None
     };
@@ -215,7 +215,7 @@ fn contracts_value(
             schema,
             effect_semantics.as_ref(),
             capability_semantics.as_ref(),
-            ctx_reachable.as_ref(),
+            ctx_reachability.as_ref(),
         ),
     );
     root.insert("lockgraph".to_string(), lockgraph_value);
@@ -229,7 +229,7 @@ fn facts_manifest_value(
     schema: ContractsSchema,
     effect_semantics: Option<&BTreeMap<String, FunctionEffectSemantics>>,
     capability_semantics: Option<&BTreeMap<String, FunctionCapabilitySemantics>>,
-    ctx_reachable: Option<&BTreeMap<String, BTreeSet<Ctx>>>,
+    ctx_reachability: Option<&BTreeMap<String, FunctionContextReachability>>,
 ) -> Value {
     let symbols = module
         .functions
@@ -262,11 +262,10 @@ fn facts_manifest_value(
                         .collect(),
                 ),
             );
-            if let Some(ctx_map) = ctx_reachable {
-                let mut ctxs = ctx_map
-                    .get(&f.name)
-                    .cloned()
-                    .unwrap_or_default()
+            if let Some(ctx_map) = ctx_reachability {
+                let semantics = ctx_map.get(&f.name).cloned().unwrap_or_default();
+                let mut ctxs = semantics
+                    .reachable
                     .into_iter()
                     .map(|ctx| ctx.as_str().to_string())
                     .collect::<Vec<_>>();
@@ -276,6 +275,20 @@ fn facts_manifest_value(
                     "ctx_reachable".to_string(),
                     Value::Array(ctxs.into_iter().map(Value::String).collect()),
                 );
+                let entries = semantics
+                    .provenance
+                    .into_iter()
+                    .map(|(ctx, sources)| {
+                        let mut entry = Map::new();
+                        entry.insert("ctx".to_string(), Value::String(ctx.as_str().to_string()));
+                        entry.insert(
+                            "sources".to_string(),
+                            Value::Array(sources.into_iter().map(Value::String).collect()),
+                        );
+                        Value::Object(entry)
+                    })
+                    .collect::<Vec<_>>();
+                symbol.insert("ctx_provenance".to_string(), Value::Array(entries));
             }
             symbol.insert(
                 "eff_used".to_string(),
@@ -533,6 +546,12 @@ struct FunctionEffectSemantics {
 struct FunctionCapabilitySemantics {
     transitive: BTreeSet<String>,
     provenance: BTreeMap<String, EffectProvenance>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FunctionContextReachability {
+    reachable: BTreeSet<Ctx>,
+    provenance: BTreeMap<Ctx, Vec<String>>,
 }
 
 fn critical_region_findings(
@@ -851,7 +870,9 @@ fn capability_semantics_by_function(
     by_name
 }
 
-fn ctx_reachable_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<Ctx>> {
+fn ctx_reachability_by_function(
+    module: &KrirModule,
+) -> BTreeMap<String, FunctionContextReachability> {
     let names = module
         .functions
         .iter()
@@ -879,9 +900,16 @@ fn ctx_reachable_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<C
         .collect::<Vec<_>>();
 
     let mut ctx_sets = vec![BTreeSet::<Ctx>::new(); names.len()];
+    let mut source_sets = vec![BTreeMap::<Ctx, BTreeSet<String>>::new(); names.len()];
     for function in &module.functions {
         if let Some(&idx) = index_by_name.get(&function.name) {
             ctx_sets[idx].extend(function.ctx_ok.iter().copied());
+            for ctx in &function.ctx_ok {
+                source_sets[idx]
+                    .entry(*ctx)
+                    .or_default()
+                    .insert(function.name.clone());
+            }
         }
     }
 
@@ -891,15 +919,46 @@ fn ctx_reachable_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<C
         for &callee_idx in &outgoing[caller_idx] {
             let before = ctx_sets[callee_idx].len();
             ctx_sets[callee_idx].extend(caller_ctx.iter().copied());
-            if ctx_sets[callee_idx].len() != before {
+            let mut changed = false;
+            for ctx in &caller_ctx {
+                let before_sources = source_sets[callee_idx]
+                    .get(ctx)
+                    .map(|set| set.len())
+                    .unwrap_or(0);
+                let caller_sources = source_sets[caller_idx]
+                    .get(ctx)
+                    .cloned()
+                    .unwrap_or_default();
+                source_sets[callee_idx]
+                    .entry(*ctx)
+                    .or_default()
+                    .extend(caller_sources);
+                let after_sources = source_sets[callee_idx]
+                    .get(ctx)
+                    .map(|set| set.len())
+                    .unwrap_or(0);
+                if after_sources != before_sources {
+                    changed = true;
+                }
+            }
+            if ctx_sets[callee_idx].len() != before || changed {
                 work.push_back(callee_idx);
             }
         }
     }
 
-    let mut by_name = BTreeMap::<String, BTreeSet<Ctx>>::new();
+    let mut by_name = BTreeMap::<String, FunctionContextReachability>::new();
     for (idx, name) in names.iter().enumerate() {
-        by_name.insert(name.clone(), ctx_sets[idx].clone());
+        by_name.insert(
+            name.clone(),
+            FunctionContextReachability {
+                reachable: ctx_sets[idx].clone(),
+                provenance: source_sets[idx]
+                    .iter()
+                    .map(|(ctx, sources)| (*ctx, sources.iter().cloned().collect::<Vec<_>>()))
+                    .collect(),
+            },
+        );
     }
     by_name
 }
@@ -1344,6 +1403,76 @@ mod tests {
                 "via_callee": ["helper"],
                 "via_extern": [],
             })
+        );
+        assert_eq!(
+            isr["ctx_provenance"],
+            serde_json::json!([{
+                "ctx": "irq",
+                "sources": ["isr"],
+            }])
+        );
+    }
+
+    #[test]
+    fn contracts_v2_ctx_provenance_tracks_irq_source_symbols() {
+        let module = KrirModule {
+            module_caps: vec![],
+            mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
+            functions: vec![
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Irq],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: Vec::new(),
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "helper".to_string(),
+            }],
+        };
+        let report = AnalysisReport::default();
+
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse contracts");
+        let symbols = value["facts"]["symbols"].as_array().expect("symbols array");
+        let helper = symbols
+            .iter()
+            .find(|sym| sym["name"] == "helper")
+            .expect("helper symbol");
+
+        assert_eq!(
+            helper["ctx_reachable"],
+            serde_json::json!(["irq", "thread"])
+        );
+        assert_eq!(
+            helper["ctx_provenance"],
+            serde_json::json!([
+                {
+                    "ctx": "irq",
+                    "sources": ["entry"],
+                },
+                {
+                    "ctx": "thread",
+                    "sources": ["helper"],
+                }
+            ])
         );
     }
 
