@@ -9,10 +9,10 @@ use emit::{
     emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    CanonicalFixPreviewResult, CanonicalFixResult, SurfaceProfile, analyze,
-    canonical_edit_plan_file_with_surface, canonical_fix_file_with_surface,
-    canonical_fix_preview_file_with_surface, check_file, compile_file,
-    frontend_migration_features_for_profile, migrate_preview_file_with_surface,
+    CanonicalFixPreviewResult, CanonicalFixResult, CanonicalFixSourceResult, SurfaceProfile,
+    analyze, canonical_edit_plan_file_with_surface, canonical_fix_file_with_surface,
+    canonical_fix_preview_file_with_surface, canonical_fix_source_file_with_surface, check_file,
+    compile_file, frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -89,6 +89,7 @@ struct FixArgs {
     canonical: bool,
     write: bool,
     dry_run: bool,
+    stdout: bool,
     format: FixFormat,
     input_path: String,
 }
@@ -498,6 +499,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     let mut canonical = false;
     let mut write = false;
     let mut dry_run = false;
+    let mut stdout = false;
     let mut format = FixFormat::Text;
     let mut format_set = false;
     let mut input_path = None::<String>;
@@ -546,6 +548,12 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
                 }
                 dry_run = true;
             }
+            "--stdout" => {
+                if stdout {
+                    return Err("invalid fix mode: duplicate --stdout".to_string());
+                }
+                stdout = true;
+            }
             other if other.starts_with('-') => {
                 return Err(format!("invalid fix mode: unexpected argument '{}'", other));
             }
@@ -562,10 +570,25 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     if !canonical {
         return Err("invalid fix mode: missing --canonical".to_string());
     }
-    if write == dry_run {
+    if write && dry_run {
         return Err(
             "invalid fix mode: exactly one of --write or --dry-run must be specified".to_string(),
         );
+    }
+    if stdout && write {
+        return Err("invalid fix mode: --stdout cannot be combined with --write".to_string());
+    }
+    if stdout && dry_run {
+        return Err("invalid fix mode: --stdout cannot be combined with --dry-run".to_string());
+    }
+    if !write && !dry_run && !stdout {
+        return Err(
+            "invalid fix mode: exactly one of --write, --dry-run, or --stdout must be specified"
+                .to_string(),
+        );
+    }
+    if stdout && format_set {
+        return Err("invalid fix mode: --stdout does not accept --format".to_string());
     }
 
     let Some(input_path) = input_path else {
@@ -577,6 +600,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
         canonical,
         write,
         dry_run,
+        stdout,
         format,
         input_path,
     })
@@ -713,10 +737,20 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
 }
 
 fn run_fix(args: &FixArgs) -> ExitCode {
-    debug_assert!(args.canonical && (args.write ^ args.dry_run));
+    debug_assert!(args.canonical);
+    debug_assert_eq!(
+        [args.write, args.dry_run, args.stdout]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count(),
+        1
+    );
 
     if args.dry_run {
         return run_fix_dry_run(args);
+    }
+    if args.stdout {
+        return run_fix_stdout(args);
     }
 
     let result = match canonical_fix_file_with_surface(Path::new(&args.input_path), args.surface) {
@@ -750,6 +784,21 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             }
         },
     }
+}
+
+fn run_fix_stdout(args: &FixArgs) -> ExitCode {
+    debug_assert!(args.stdout);
+    let result =
+        match canonical_fix_source_file_with_surface(Path::new(&args.input_path), args.surface) {
+            Ok(result) => result,
+            Err(errs) => {
+                print_errors(&errs);
+                return ExitCode::from(1);
+            }
+        };
+
+    emit_canonical_fix_stdout(&result);
+    ExitCode::SUCCESS
 }
 
 fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
@@ -897,6 +946,10 @@ fn emit_canonical_fix_preview_json(
     let mut text = serde_json::to_string_pretty(&report)?;
     text.push('\n');
     Ok(text)
+}
+
+fn emit_canonical_fix_stdout(result: &CanonicalFixSourceResult) {
+    print!("{}", result.rewritten_source);
 }
 
 fn run_selftest() -> ExitCode {
@@ -1428,6 +1481,8 @@ fn print_usage() {
     eprintln!("  kernriftc fix --canonical --dry-run <file.kr>");
     eprintln!("  kernriftc fix --canonical --dry-run --surface experimental <file.kr>");
     eprintln!("  kernriftc fix --canonical --dry-run --format json <file.kr>");
+    eprintln!("  kernriftc fix --canonical --stdout <file.kr>");
+    eprintln!("  kernriftc fix --canonical --stdout --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");
