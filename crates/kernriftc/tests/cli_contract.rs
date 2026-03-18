@@ -34,6 +34,7 @@ const KR0_AUTHORING_REFERENCE_TEXT: &str =
     include_str!("../../../docs/spec/kr0-canonical-authoring-reference.md");
 const KRIR_SPEC_TEXT: &str = include_str!("../../../docs/spec/krir-v0.1.md");
 const KERNEL_PROFILE_SPEC_TEXT: &str = include_str!("../../../docs/spec/kernel_profile.md");
+const README_TEXT: &str = include_str!("../../../README.md");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -163,6 +164,14 @@ fn structured_output_new_json_command_checklist_is_present() {
             line
         );
     }
+}
+
+#[test]
+fn readme_points_to_full_serial_low_memory_validation_wrapper() {
+    assert!(
+        README_TEXT.contains("bash tools/validation/full_serial.sh"),
+        "README must point contributors at the repo-owned full serialized validation wrapper"
+    );
 }
 
 #[test]
