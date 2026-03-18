@@ -250,6 +250,15 @@ Contributor lock for future JSON-capable commands:
   newline termination, and `schema_version` presence when the payload is
   versioned
 
+### Structured Output Command Matrix
+
+| Command surface | JSON mode flag | Schema / payload | Transport expectations | Exit code behavior | Structured output is emitted on |
+|---|---|---|---|---|---|
+| `kernriftc inspect-artifact <artifact> --format json` | `--format json` | `kernrift_inspect_artifact_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful inspection, `1` on unsupported or malformed artifact bytes | success only |
+| `kernriftc verify-artifact-meta --format json <artifact> <meta.json>` | `--format json` | `kernrift_verify_artifact_meta_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` mismatch / deny, `2` invalid input | pass, deny, invalid input |
+| `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | `--format json` | `kernrift_policy_violations_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` deny, `2` invalid input | pass and deny |
+| `kernriftc check --format json --policy <policy.toml> <file.kr>` | `--format json` | `kernrift_policy_violations_v1` on policy denial | `stdout` only, empty `stderr`, trailing newline, `schema_version` present when JSON is emitted | `1` on policy deny with JSON payload; other check failures remain command-specific | policy deny only today |
+
 These rules lock transport behavior only. They do not redefine command payload schemas.
 
 ## Verify Exit Codes
