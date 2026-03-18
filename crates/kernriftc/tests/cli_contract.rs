@@ -78,6 +78,33 @@ fn structured_output_conventions_spec_locks_future_json_command_transport_tests(
     );
 }
 
+#[test]
+fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
+    for surface in [
+        "kernriftc inspect-artifact <artifact> --format json",
+        "kernriftc verify-artifact-meta --format json <artifact> <meta.json>",
+        "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>",
+        "kernriftc check --format json --policy <policy.toml> <file.kr>",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(surface),
+            "structured output command matrix must list '{}'",
+            surface
+        );
+    }
+    for schema in [
+        "kernrift_inspect_artifact_v1",
+        "kernrift_verify_artifact_meta_v1",
+        "kernrift_policy_violations_v1",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(schema),
+            "structured output command matrix must mention schema '{}'",
+            schema
+        );
+    }
+}
+
 fn object_keys(value: &Value) -> BTreeSet<String> {
     value
         .as_object()
