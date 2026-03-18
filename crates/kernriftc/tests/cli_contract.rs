@@ -688,6 +688,8 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc fix --canonical --write --format json <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --dry-run <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --dry-run --format json <file.kr>"));
+    assert!(stderr.contains("kernriftc fix --canonical --stdout <file.kr>"));
+    assert!(stderr.contains("kernriftc fix --canonical --stdout --surface experimental <file.kr>"));
 }
 
 #[test]
@@ -4903,6 +4905,101 @@ fn fix_canonical_dry_run_json_is_empty_for_canonical_source() {
 }
 
 #[test]
+fn fix_canonical_stdout_rewrites_legacy_unary_shorthands_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("migration_preview_legacy_unary.kr");
+    let temp_fixture = copy_fixture_to_temp("fix-canonical-stdout-legacy-unary", &fixture);
+    let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg(temp_fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix stdout mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout,
+        "@eff(alloc)\nfn alloc_worker() { }\n\n@eff(block)\nfn block_worker() { }\n\n@ctx(irq)\nfn irq_entry() { }\n\n@ctx(thread, boot)\nfn noirq_worker() { }\n\n@eff(preempt_off)\nfn preempt_guarded() { }\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
+        original
+    );
+}
+
+#[test]
+fn fix_canonical_stdout_rewrites_accepted_aliases_under_experimental_surface_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("canonical_check_aliases.kr");
+    let temp_fixture = copy_fixture_to_temp("fix-canonical-stdout-aliases", &fixture);
+    let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(temp_fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix stdout mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout,
+        "@eff(block)\nfn blocker() { }\n\n@ctx(irq)\nfn isr() { }\n\n@ctx(thread)\nfn worker() { }\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
+        original
+    );
+}
+
+#[test]
+fn fix_canonical_stdout_noops_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let temp_fixture = copy_fixture_to_temp("fix-canonical-stdout-noop", &fixture);
+    let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg(temp_fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix stdout mode must keep stderr empty on success"
+    );
+    assert_eq!(stdout, original);
+    assert_eq!(
+        fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
+        original
+    );
+}
+
+#[test]
 fn fix_canonical_rejects_conflicting_write_and_dry_run_flags() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -4922,6 +5019,40 @@ fn fix_canonical_rejects_conflicting_write_and_dry_run_flags() {
 }
 
 #[test]
+fn fix_canonical_rejects_conflicting_write_and_stdout_flags() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--write")
+        .arg("--stdout")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("invalid fix mode: --stdout cannot be combined with --write"));
+}
+
+#[test]
+fn fix_canonical_rejects_conflicting_dry_run_and_stdout_flags() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdout")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("invalid fix mode: --stdout cannot be combined with --dry-run"));
+}
+
+#[test]
 fn fix_canonical_rejects_duplicate_dry_run_flag() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -4936,6 +5067,23 @@ fn fix_canonical_rejects_duplicate_dry_run_flag() {
     let assert = cmd.assert().failure().code(2);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert!(stderr.contains("invalid fix mode: duplicate --dry-run"));
+}
+
+#[test]
+fn fix_canonical_rejects_duplicate_stdout_flag() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg("--stdout")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("invalid fix mode: duplicate --stdout"));
 }
 
 #[test]

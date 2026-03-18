@@ -40,6 +40,13 @@ pub struct CanonicalFixPreviewResult {
     pub rewrites: Vec<FrontendCanonicalRewrite>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalFixSourceResult {
+    pub changed: bool,
+    pub rewritten_source: String,
+    pub rewrites: Vec<FrontendCanonicalRewrite>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendArtifactKind {
     Krbo,
@@ -211,31 +218,30 @@ pub fn canonical_fix_file_with_surface(
 ) -> Result<CanonicalFixResult, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    let rewrites = canonical_rewrites_for_source_with_surface(&src, surface_profile)?;
+    let result = canonical_fix_source_with_surface(&src, surface_profile)?;
 
-    if rewrites.is_empty() {
+    if !result.changed {
         return Ok(CanonicalFixResult {
             changed: false,
             rewrites: Vec::new(),
         });
     }
 
-    let rewritten = apply_canonical_rewrites(&src, &rewrites)?;
-    let rewritten_ast = parse_module(&rewritten)?;
-    let remaining_findings = frontend_canonical_findings(&rewritten_ast, surface_profile);
-    if !remaining_findings.is_empty() {
-        return Err(vec![format!(
-            "canonical fix validation failed: rewritten file still contains {} canonical finding(s)",
-            remaining_findings.len()
-        )]);
-    }
-
-    write_atomic_file(path, &rewritten)?;
+    write_atomic_file(path, &result.rewritten_source)?;
 
     Ok(CanonicalFixResult {
         changed: true,
-        rewrites,
+        rewrites: result.rewrites,
     })
+}
+
+pub fn canonical_fix_source_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+) -> Result<CanonicalFixSourceResult, Vec<String>> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
+    canonical_fix_source_with_surface(&src, surface_profile)
 }
 
 pub fn canonical_fix_preview_file_with_surface(
@@ -257,6 +263,37 @@ fn canonical_rewrites_for_source_with_surface(
 ) -> Result<Vec<FrontendCanonicalRewrite>, Vec<String>> {
     let ast = parse_module(src)?;
     Ok(frontend_canonical_rewrites(&ast, surface_profile))
+}
+
+fn canonical_fix_source_with_surface(
+    src: &str,
+    surface_profile: SurfaceProfile,
+) -> Result<CanonicalFixSourceResult, Vec<String>> {
+    let rewrites = canonical_rewrites_for_source_with_surface(src, surface_profile)?;
+
+    if rewrites.is_empty() {
+        return Ok(CanonicalFixSourceResult {
+            changed: false,
+            rewritten_source: src.to_string(),
+            rewrites: Vec::new(),
+        });
+    }
+
+    let rewritten = apply_canonical_rewrites(src, &rewrites)?;
+    let rewritten_ast = parse_module(&rewritten)?;
+    let remaining_findings = frontend_canonical_findings(&rewritten_ast, surface_profile);
+    if !remaining_findings.is_empty() {
+        return Err(vec![format!(
+            "canonical fix validation failed: rewritten file still contains {} canonical finding(s)",
+            remaining_findings.len()
+        )]);
+    }
+
+    Ok(CanonicalFixSourceResult {
+        changed: true,
+        rewritten_source: rewritten,
+        rewrites,
+    })
 }
 
 fn apply_canonical_rewrites(
