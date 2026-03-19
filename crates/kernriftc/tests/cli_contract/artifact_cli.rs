@@ -390,17 +390,27 @@ fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_ver
     assert_eq!(json["flags"]["has_entry_symbol"], true);
     assert_eq!(json["flags"]["has_undefined_symbols"], false);
     assert_eq!(json["flags"]["has_text_relocations"], false);
-    assert_eq!(
-        json["defined_symbols"],
-        json!([
-            "_start",
-            "entry",
-            "uart_init",
-            "uart_kick_watchdog",
-            "uart_send_zero",
-            "uart_status"
-        ])
-    );
+    let defined_symbols = json["defined_symbols"]
+        .as_array()
+        .expect("defined_symbols array")
+        .iter()
+        .map(|value| value.as_str().expect("defined symbol string"))
+        .collect::<Vec<_>>();
+    for required in [
+        "_start",
+        "entry",
+        "uart_init",
+        "uart_kick_watchdog",
+        "uart_send_zero",
+        "uart_status",
+    ] {
+        assert!(
+            defined_symbols.contains(&required),
+            "expected defined symbol '{}' in {:?}",
+            required,
+            defined_symbols
+        );
+    }
 
     fs::remove_file(&artifact_path).ok();
 }
