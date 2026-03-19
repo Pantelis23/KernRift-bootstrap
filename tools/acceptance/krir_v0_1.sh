@@ -17,7 +17,9 @@ MALFORMED_REPORT="$TMP_DIR/malformed.report.json"
 MALFORMED_STDOUT="$TMP_DIR/malformed.inspect.stdout"
 MALFORMED_STDERR="$TMP_DIR/malformed.inspect.stderr"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
-PROOF_ASM_OUT="$TMP_DIR/uart_console_probe.s"
+PROOF_ELFOBJ_OUT="$TMP_DIR/uart_console_probe.o"
+PROOF_META_OUT="$TMP_DIR/uart_console_probe.meta.json"
+PROOF_INSPECT_JSON="$TMP_DIR/uart_console_probe.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -77,14 +79,26 @@ if [[ "$status" -ne 1 ]]; then
   exit 1
 fi
 
-echo "[6/6] smoke: proof program emits backend asm"
+echo "[6/6] smoke: proof program emits backend elf object"
 cargo run -q -p kernriftc -- \
-  --emit=asm \
-  -o "$PROOF_ASM_OUT" \
+  --emit=elfobj \
+  -o "$PROOF_ELFOBJ_OUT" \
+  --meta-out "$PROOF_META_OUT" \
   "$PROOF_FIXTURE"
 
-grep -q "call platform_barrier" "$PROOF_ASM_OUT"
-grep -q 'movabs \$0x1014, %rax' "$PROOF_ASM_OUT"
-grep -q 'movl \$0xdeadbeef, %ecx' "$PROOF_ASM_OUT"
+cargo run -q -p kernriftc -- \
+  verify-artifact-meta \
+  "$PROOF_ELFOBJ_OUT" \
+  "$PROOF_META_OUT"
+
+cargo run -q -p kernriftc -- \
+  inspect-artifact \
+  "$PROOF_ELFOBJ_OUT" \
+  --format json > "$PROOF_INSPECT_JSON"
+
+grep -q '"artifact_kind": "elf_relocatable"' "$PROOF_INSPECT_JSON"
+grep -q '"machine": "x86_64"' "$PROOF_INSPECT_JSON"
+grep -q '"name": "entry"' "$PROOF_INSPECT_JSON"
+grep -q '"name": "platform_barrier"' "$PROOF_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"
