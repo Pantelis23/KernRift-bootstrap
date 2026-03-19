@@ -10,6 +10,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 FIXTURE="tests/must_pass/locks_ok.kr"
 PROOF_FIXTURE="examples/uart_console_executable.kr"
 VALUE_FLOW_FIXTURE="examples/uart_console_value_flow.kr"
+EXPLICIT_SLOT_FIXTURE="examples/uart_console_explicit_slot.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -22,6 +23,8 @@ PROOF_ELFEXE_OUT="$TMP_DIR/uart_console_executable.elf"
 PROOF_INSPECT_JSON="$TMP_DIR/uart_console_executable.inspect.json"
 VALUE_FLOW_ELFEXE_OUT="$TMP_DIR/uart_console_value_flow.elf"
 VALUE_FLOW_INSPECT_JSON="$TMP_DIR/uart_console_value_flow.inspect.json"
+EXPLICIT_SLOT_ELFEXE_OUT="$TMP_DIR/uart_console_explicit_slot.elf"
+EXPLICIT_SLOT_INSPECT_JSON="$TMP_DIR/uart_console_explicit_slot.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -97,7 +100,7 @@ grep -q '"machine": "x86_64"' "$PROOF_INSPECT_JSON"
 grep -q '"has_entry_symbol": true' "$PROOF_INSPECT_JSON"
 grep -q '"has_undefined_symbols": false' "$PROOF_INSPECT_JSON"
 
-echo "[7/7] smoke: value-flow proof program emits backend elf executable"
+echo "[7/8] smoke: value-flow proof program emits backend elf executable"
 cargo run -q -p kernriftc -- \
   --emit=elfexe \
   -o "$VALUE_FLOW_ELFEXE_OUT" \
@@ -114,5 +117,23 @@ grep -q '"has_entry_symbol": true' "$VALUE_FLOW_INSPECT_JSON"
 grep -q '"has_undefined_symbols": false' "$VALUE_FLOW_INSPECT_JSON"
 grep -q '"mirror_status"' "$VALUE_FLOW_INSPECT_JSON"
 grep -q '"mirror_watchdog"' "$VALUE_FLOW_INSPECT_JSON"
+
+echo "[8/8] smoke: explicit-slot proof program emits backend elf executable"
+cargo run -q -p kernriftc -- \
+  --emit=elfexe \
+  -o "$EXPLICIT_SLOT_ELFEXE_OUT" \
+  "$EXPLICIT_SLOT_FIXTURE"
+
+cargo run -q -p kernriftc -- \
+  inspect-artifact \
+  "$EXPLICIT_SLOT_ELFEXE_OUT" \
+  --format json > "$EXPLICIT_SLOT_INSPECT_JSON"
+
+grep -q '"artifact_kind": "elf_executable"' "$EXPLICIT_SLOT_INSPECT_JSON"
+grep -q '"machine": "x86_64"' "$EXPLICIT_SLOT_INSPECT_JSON"
+grep -q '"has_entry_symbol": true' "$EXPLICIT_SLOT_INSPECT_JSON"
+grep -q '"has_undefined_symbols": false' "$EXPLICIT_SLOT_INSPECT_JSON"
+grep -q '"mirror_status"' "$EXPLICIT_SLOT_INSPECT_JSON"
+grep -q '"mirror_watchdog"' "$EXPLICIT_SLOT_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"

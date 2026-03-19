@@ -1550,14 +1550,14 @@ fn validate_mmio_address_bases_in_stmts(
                 module_allows_raw_mmio_literals,
                 errors,
             ),
-            Stmt::MmioRead { ty, addr } => {
+            Stmt::MmioRead { ty, addr, capture } => {
                 if let Some(base) = mmio_addr_base_name(addr)
                     && !declared_bases.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
                         base,
-                        format_mmio_read_invocation(*ty, addr)
+                        format_mmio_read_invocation(*ty, addr, capture.as_deref())
                     ));
                 } else {
                     match addr {
@@ -1566,6 +1566,7 @@ fn validate_mmio_address_bases_in_stmts(
                             MMIO_SYMBOLIC_BASE_ZERO_OFFSET,
                             *ty,
                             addr,
+                            capture.as_deref(),
                             declared_registers,
                             errors,
                         ),
@@ -1575,6 +1576,7 @@ fn validate_mmio_address_bases_in_stmts(
                                 offset,
                                 *ty,
                                 addr,
+                                capture.as_deref(),
                                 declared_registers,
                                 errors,
                             );
@@ -1584,6 +1586,7 @@ fn validate_mmio_address_bases_in_stmts(
                                 literal,
                                 *ty,
                                 addr,
+                                capture.as_deref(),
                                 declared_absolute_registers,
                                 errors,
                             );
@@ -1600,11 +1603,11 @@ fn validate_mmio_address_bases_in_stmts(
                     }
                 }
             }
-            Stmt::RawMmioRead { ty, addr } => {
+            Stmt::RawMmioRead { ty, addr, capture } => {
                 if !module_allows_raw_mmio_literals {
                     errors.push(format!(
                         "{} requires @module_caps({})",
-                        format_raw_mmio_read_invocation(*ty, addr),
+                        format_raw_mmio_read_invocation(*ty, addr, capture.as_deref()),
                         MMIO_RAW_MODULE_CAP
                     ));
                     continue;
@@ -1615,7 +1618,7 @@ fn validate_mmio_address_bases_in_stmts(
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
                         base,
-                        format_raw_mmio_read_invocation(*ty, addr)
+                        format_raw_mmio_read_invocation(*ty, addr, capture.as_deref())
                     ));
                 }
             }
@@ -1701,10 +1704,11 @@ fn validate_mmio_register_read(
     offset: &str,
     ty: ParserMmioScalarType,
     addr: &ParserMmioAddrExpr,
+    capture: Option<&str>,
     declared_registers: &MmioRegisterRules,
     errors: &mut Vec<String>,
 ) {
-    let invocation = format_mmio_read_invocation(ty, addr);
+    let invocation = format_mmio_read_invocation(ty, addr, capture);
     let normalized_offset = MmioOffsetKey::from_literal(offset);
     let Some(rule) = declared_registers
         .get(base)
@@ -1749,6 +1753,7 @@ fn validate_mmio_register_read_absolute(
     literal: &str,
     ty: ParserMmioScalarType,
     addr: &ParserMmioAddrExpr,
+    capture: Option<&str>,
     declared_absolute_registers: &MmioAbsoluteRegisterRules,
     errors: &mut Vec<String>,
 ) -> bool {
@@ -1758,7 +1763,7 @@ fn validate_mmio_register_read_absolute(
     let Some(rule) = declared_absolute_registers.get(&addr_numeric) else {
         return false;
     };
-    let invocation = format_mmio_read_invocation(ty, addr);
+    let invocation = format_mmio_read_invocation(ty, addr, capture);
     validate_mmio_read_rule(rule, &invocation, ty, errors);
     true
 }
@@ -2135,20 +2140,20 @@ fn lower_stmts_to_canonical_executable(
                 "canonical-exec: function '{}' contains unsupported release({})",
                 function_name, lock_class
             )),
-            Stmt::MmioRead { ty, addr } => errors.push(format!(
+            Stmt::MmioRead { ty, addr, capture } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
-                format_mmio_read_invocation(*ty, addr)
+                format_mmio_read_invocation(*ty, addr, capture.as_deref())
             )),
             Stmt::MmioWrite { ty, addr, value } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
                 format_mmio_write_invocation(*ty, addr, value)
             )),
-            Stmt::RawMmioRead { ty, addr } => errors.push(format!(
+            Stmt::RawMmioRead { ty, addr, capture } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
-                format_raw_mmio_read_invocation(*ty, addr)
+                format_raw_mmio_read_invocation(*ty, addr, capture.as_deref())
             )),
             Stmt::RawMmioWrite { ty, addr, value } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
@@ -2189,10 +2194,11 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::Release(lock_class) => ops.push(KrirOp::Release {
             lock_class: lock_class.clone(),
         }),
-        Stmt::MmioRead { ty, addr } => {
+        Stmt::MmioRead { ty, addr, capture } => {
             ops.push(KrirOp::MmioRead {
                 ty: lower_mmio_scalar_type(*ty),
                 addr: lower_mmio_addr_expr(addr),
+                capture_slot: capture.clone(),
             });
             eff_used.insert(Eff::Mmio);
         }
@@ -2204,10 +2210,11 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
             });
             eff_used.insert(Eff::Mmio);
         }
-        Stmt::RawMmioRead { ty, addr } => {
+        Stmt::RawMmioRead { ty, addr, capture } => {
             ops.push(KrirOp::RawMmioRead {
                 ty: lower_mmio_scalar_type(*ty),
                 addr: lower_mmio_addr_expr(addr),
+                capture_slot: capture.clone(),
             });
             eff_used.insert(Eff::Mmio);
         }
@@ -2261,8 +2268,20 @@ fn lower_mmio_value_expr(expr: &ParserMmioValueExpr) -> KrirMmioValueExpr {
     }
 }
 
-fn format_mmio_read_invocation(ty: ParserMmioScalarType, addr: &ParserMmioAddrExpr) -> String {
-    format!("mmio_read<{}>({})", ty.as_str(), addr.as_source())
+fn format_mmio_read_invocation(
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    capture: Option<&str>,
+) -> String {
+    match capture {
+        Some(capture) => format!(
+            "mmio_read<{}>({}, {})",
+            ty.as_str(),
+            addr.as_source(),
+            capture
+        ),
+        None => format!("mmio_read<{}>({})", ty.as_str(), addr.as_source()),
+    }
 }
 
 fn format_mmio_write_invocation(
@@ -2278,8 +2297,20 @@ fn format_mmio_write_invocation(
     )
 }
 
-fn format_raw_mmio_read_invocation(ty: ParserMmioScalarType, addr: &ParserMmioAddrExpr) -> String {
-    format!("raw_mmio_read<{}>({})", ty.as_str(), addr.as_source())
+fn format_raw_mmio_read_invocation(
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    capture: Option<&str>,
+) -> String {
+    match capture {
+        Some(capture) => format!(
+            "raw_mmio_read<{}>({}, {})",
+            ty.as_str(),
+            addr.as_source(),
+            capture
+        ),
+        None => format!("raw_mmio_read<{}>({})", ty.as_str(), addr.as_source()),
+    }
 }
 
 fn format_raw_mmio_write_invocation(

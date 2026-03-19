@@ -121,6 +121,7 @@ pub enum Stmt {
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
+        capture: Option<String>,
     },
     MmioWrite {
         ty: MmioScalarType,
@@ -130,6 +131,7 @@ pub enum Stmt {
     RawMmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
+        capture: Option<String>,
     },
     RawMmioWrite {
         ty: MmioScalarType,
@@ -943,11 +945,19 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
         let parts = split_csv(args);
-        if parts.len() != 1 {
-            return Err("mmio_read<T>(addr) requires exactly one address argument".to_string());
+        if parts.len() != 1 && parts.len() != 2 {
+            return Err(
+                "mmio_read<T>(addr[, slot]) requires one address argument and optional capture slot"
+                    .to_string(),
+            );
         }
         let addr = parse_mmio_addr_operand(parts[0].trim())?;
-        return Ok(Some(Stmt::MmioRead { ty, addr }));
+        let capture = if parts.len() == 2 {
+            Some(parse_mmio_capture_operand(parts[1].trim())?)
+        } else {
+            None
+        };
+        return Ok(Some(Stmt::MmioRead { ty, addr, capture }));
     }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_write")? {
@@ -965,11 +975,19 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "raw_mmio_read")? {
         let parts = split_csv(args);
-        if parts.len() != 1 {
-            return Err("raw_mmio_read<T>(addr) requires exactly one address argument".to_string());
+        if parts.len() != 1 && parts.len() != 2 {
+            return Err(
+                "raw_mmio_read<T>(addr[, slot]) requires one address argument and optional capture slot"
+                    .to_string(),
+            );
         }
         let addr = parse_mmio_addr_operand(parts[0].trim())?;
-        return Ok(Some(Stmt::RawMmioRead { ty, addr }));
+        let capture = if parts.len() == 2 {
+            Some(parse_mmio_capture_operand(parts[1].trim())?)
+        } else {
+            None
+        };
+        return Ok(Some(Stmt::RawMmioRead { ty, addr, capture }));
     }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "raw_mmio_write")? {
@@ -1025,6 +1043,17 @@ fn parse_mmio_value_operand(raw: &str) -> Result<MmioValueExpr, String> {
     }
     Err(format!(
         "unsupported mmio value operand '{}'; expected identifier or integer literal",
+        operand
+    ))
+}
+
+fn parse_mmio_capture_operand(raw: &str) -> Result<String, String> {
+    let operand = raw.trim();
+    if is_ident_token(operand) {
+        return Ok(operand.to_string());
+    }
+    Err(format!(
+        "'{}' is not a valid capture slot identifier",
         operand
     ))
 }
@@ -1196,7 +1225,8 @@ mod tests {
             vec![
                 Stmt::MmioRead {
                     ty: MmioScalarType::U16,
-                    addr: MmioAddrExpr::Ident("uart0".to_string())
+                    addr: MmioAddrExpr::Ident("uart0".to_string()),
+                    capture: None,
                 },
                 Stmt::MmioWrite {
                     ty: MmioScalarType::U64,
@@ -1229,7 +1259,8 @@ mod tests {
                     addr: MmioAddrExpr::IdentPlusOffset {
                         base: "uart0".to_string(),
                         offset: "0x10".to_string()
-                    }
+                    },
+                    capture: None,
                 },
                 Stmt::RawMmioWrite {
                     ty: MmioScalarType::U64,
@@ -1260,14 +1291,16 @@ mod tests {
             vec![
                 Stmt::MmioRead {
                     ty: MmioScalarType::U32,
-                    addr: MmioAddrExpr::IntLiteral("0x1000".to_string())
+                    addr: MmioAddrExpr::IntLiteral("0x1000".to_string()),
+                    capture: None,
                 },
                 Stmt::MmioRead {
                     ty: MmioScalarType::U32,
                     addr: MmioAddrExpr::IdentPlusOffset {
                         base: "uart0".to_string(),
                         offset: "0x10".to_string()
-                    }
+                    },
+                    capture: None,
                 },
                 Stmt::MmioWrite {
                     ty: MmioScalarType::U8,
@@ -1276,6 +1309,40 @@ mod tests {
                         offset: "4".to_string()
                     },
                     value: MmioValueExpr::IntLiteral("0xff".to_string())
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_typed_mmio_read_capture_slots_are_structured() {
+        let src = r#"
+        fn entry() {
+          mmio_read<u32>(uart0 + 0x10, status);
+          raw_mmio_read<u16>(0x1010, sample);
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U32,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "0x10".to_string(),
+                    },
+                    capture: Some("status".to_string()),
+                },
+                Stmt::RawMmioRead {
+                    ty: MmioScalarType::U16,
+                    addr: MmioAddrExpr::IntLiteral("0x1010".to_string()),
+                    capture: Some("sample".to_string()),
                 }
             ]
         );
@@ -1575,7 +1642,21 @@ mod tests {
             vec![diagnostic_at(
                 src,
                 13,
-                "mmio_read<T>(addr) requires exactly one address argument",
+                "mmio_read<T>(addr[, slot]) requires one address argument and optional capture slot",
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_typed_mmio_read_invalid_capture_slot_operand() {
+        let src = "fn entry() { mmio_read<u32>(UART0, 0x10); }";
+        let err = parse_module(src).expect_err("invalid capture slot should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at(
+                src,
+                13,
+                "'0x10' is not a valid capture slot identifier",
             )]
         );
     }
