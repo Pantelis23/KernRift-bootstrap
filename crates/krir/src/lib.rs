@@ -88,6 +88,8 @@ pub enum KrirOp {
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capture_slot: Option<String>,
     },
     MmioWrite {
         ty: MmioScalarType,
@@ -97,6 +99,8 @@ pub enum KrirOp {
     RawMmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capture_slot: Option<String>,
     },
     RawMmioWrite {
         ty: MmioScalarType,
@@ -503,7 +507,8 @@ pub fn lower_current_krir_to_executable_krir(
         }
 
         let mut exec_ops = Vec::new();
-        let mut last_read = None::<(usize, MmioScalarType)>;
+        let mut executable_slot_name = None::<String>;
+        let mut last_read = None::<(usize, String, MmioScalarType)>;
         for op in &function.ops {
             match op {
                 KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
@@ -534,7 +539,33 @@ pub fn lower_current_krir_to_executable_krir(
                     "canonical-exec: function '{}' contains unsupported release({})",
                     function.name, lock_class
                 )),
-                KrirOp::MmioRead { ty, addr } | KrirOp::RawMmioRead { ty, addr } => {
+                KrirOp::MmioRead {
+                    ty,
+                    addr,
+                    capture_slot,
+                }
+                | KrirOp::RawMmioRead {
+                    ty,
+                    addr,
+                    capture_slot,
+                } => {
+                    let slot_name = capture_slot
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_EXECUTABLE_MMIO_SLOT.to_string());
+                    if let Some(existing) = &executable_slot_name {
+                        if existing != &slot_name {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                function.name,
+                                format_mmio_read_invocation(*ty, addr, capture_slot.as_deref()),
+                                slot_name,
+                                existing
+                            ));
+                            continue;
+                        }
+                    } else {
+                        executable_slot_name = Some(slot_name.clone());
+                    }
                     match resolve_executable_mmio_addr(addr, &mmio_bases) {
                         Ok(resolved) => {
                             exec_ops.push(ExecutableOp::MmioRead {
@@ -542,12 +573,12 @@ pub fn lower_current_krir_to_executable_krir(
                                 addr: resolved,
                                 capture_value: false,
                             });
-                            last_read = Some((exec_ops.len() - 1, *ty));
+                            last_read = Some((exec_ops.len() - 1, slot_name, *ty));
                         }
                         Err(reason) => errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: {}",
                             function.name,
-                            format_mmio_read_invocation(*ty, addr),
+                            format_mmio_read_invocation(*ty, addr, capture_slot.as_deref()),
                             reason
                         )),
                     }
@@ -569,7 +600,8 @@ pub fn lower_current_krir_to_executable_krir(
                     let resolved_value = match resolve_executable_mmio_write_value(
                         *ty,
                         value,
-                        last_read.map(|(_, ty)| ty),
+                        executable_slot_name.as_deref(),
+                        last_read.as_ref().map(|(_, slot, ty)| (slot.as_str(), *ty)),
                     ) {
                         Ok(immediate) => immediate,
                         Err(reason) => {
@@ -591,7 +623,8 @@ pub fn lower_current_krir_to_executable_krir(
                             });
                         }
                         ExecutableMmioWriteValue::SavedValue => {
-                            let (read_index, _) = last_read
+                            let &(read_index, _, _) = last_read
+                                .as_ref()
                                 .expect("saved executable write must have a prior captured read");
                             let Some(ExecutableOp::MmioRead { capture_value, .. }) =
                                 exec_ops.get_mut(read_index)
@@ -693,10 +726,13 @@ enum ExecutableMmioWriteValue {
     SavedValue,
 }
 
+const DEFAULT_EXECUTABLE_MMIO_SLOT: &str = "value";
+
 fn resolve_executable_mmio_write_value(
     ty: MmioScalarType,
     value: &MmioValueExpr,
-    available_read_value: Option<MmioScalarType>,
+    executable_slot_name: Option<&str>,
+    available_read_value: Option<(&str, MmioScalarType)>,
 ) -> Result<ExecutableMmioWriteValue, String> {
     match value {
         MmioValueExpr::IntLiteral { value } => {
@@ -718,25 +754,68 @@ fn resolve_executable_mmio_write_value(
             }
         }
         MmioValueExpr::Ident { name } => {
-            if name != "value" {
+            let is_implicit_value = name == DEFAULT_EXECUTABLE_MMIO_SLOT;
+            let Some(slot_name) = executable_slot_name else {
+                return Err(if is_implicit_value {
+                    format!(
+                        "implicit write value '{}' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
+                        name,
+                        ty.as_str(),
+                        ty.as_str()
+                    )
+                } else {
+                    format!(
+                        "named write value '{}' requires a prior mmio_read<{}>(..., {}) or raw_mmio_read<{}>(..., {}) in the same function",
+                        name,
+                        ty.as_str(),
+                        name,
+                        ty.as_str(),
+                        name
+                    )
+                });
+            };
+            if name != slot_name {
                 return Err(format!(
-                    "non-literal write value '{}' is not executable in v0.1; only implicit 'value' from a prior mmio_read/raw_mmio_read is supported",
-                    name
+                    "named write value '{}' does not match the captured executable slot '{}' in this function",
+                    name, slot_name
                 ));
             }
-            let Some(read_ty) = available_read_value else {
-                return Err(format!(
-                    "implicit write value 'value' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
-                    ty.as_str(),
-                    ty.as_str()
-                ));
+            let Some((read_slot, read_ty)) = available_read_value else {
+                return Err(if is_implicit_value {
+                    format!(
+                        "implicit write value '{}' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
+                        name,
+                        ty.as_str(),
+                        ty.as_str()
+                    )
+                } else {
+                    format!(
+                        "named write value '{}' requires a prior mmio_read<{}>(..., {}) or raw_mmio_read<{}>(..., {}) in the same function",
+                        name,
+                        ty.as_str(),
+                        name,
+                        ty.as_str(),
+                        name
+                    )
+                });
             };
+            debug_assert_eq!(read_slot, slot_name);
             if read_ty != ty {
-                return Err(format!(
-                    "implicit write value 'value' has type {} from the prior read and does not match write type {}",
-                    read_ty.as_str(),
-                    ty.as_str()
-                ));
+                return Err(if is_implicit_value {
+                    format!(
+                        "implicit write value '{}' has type {} from the prior read and does not match write type {}",
+                        name,
+                        read_ty.as_str(),
+                        ty.as_str()
+                    )
+                } else {
+                    format!(
+                        "named write value '{}' has type {} from the prior read and does not match write type {}",
+                        name,
+                        read_ty.as_str(),
+                        ty.as_str()
+                    )
+                });
             }
             Ok(ExecutableMmioWriteValue::SavedValue)
         }
@@ -753,8 +832,20 @@ fn parse_integer_literal_u64(raw: &str) -> Result<u64, String> {
     }
 }
 
-fn format_mmio_read_invocation(ty: MmioScalarType, addr: &MmioAddrExpr) -> String {
-    format!("mmio_read<{}>({})", ty.as_str(), addr.as_source())
+fn format_mmio_read_invocation(
+    ty: MmioScalarType,
+    addr: &MmioAddrExpr,
+    capture_slot: Option<&str>,
+) -> String {
+    match capture_slot {
+        Some(capture_slot) => format!(
+            "mmio_read<{}>({}, {})",
+            ty.as_str(),
+            addr.as_source(),
+            capture_slot
+        ),
+        None => format!("mmio_read<{}>({})", ty.as_str(), addr.as_source()),
+    }
 }
 
 fn format_mmio_write_invocation(
@@ -3055,7 +3146,8 @@ mod tests {
                 addr: super::MmioAddrExpr::IdentPlusOffset {
                     base: "mmio_base".to_string(),
                     offset: "2".to_string(),
-                }
+                },
+                capture_slot: None,
             })
             .expect("serialize mmio_read"),
             json!({
@@ -3087,7 +3179,8 @@ mod tests {
                 ty: MmioScalarType::U8,
                 addr: super::MmioAddrExpr::IntLiteral {
                     value: "0x1014".to_string(),
-                }
+                },
+                capture_slot: None,
             })
             .expect("serialize raw_mmio_read"),
             json!({
