@@ -686,6 +686,7 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains(
         "kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
     ));
+    assert!(stderr.contains("kernriftc migrate-preview --canonical-edits --stdin --format json"));
     assert!(stderr.contains("kernriftc fix --canonical --write <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --write --format json <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --dry-run <file.kr>"));
@@ -7382,6 +7383,37 @@ fn migrate_preview_canonical_edits_json_reports_legacy_unary_exactly() {
 }
 
 #[test]
+fn migrate_preview_canonical_edits_json_from_stdin_reports_legacy_unary_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("migration_preview_legacy_unary.kr"),
+    )
+    .expect("read legacy unary fixture");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .arg("--surface")
+        .arg("stable")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_edit_plan_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_edit_plan_v1\",\n  \"surface\": \"stable\",\n  \"edits_count\": 5,\n  \"edits\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@alloc` with `@eff(alloc)`.\"\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@block` with `@eff(block)`.\"\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@irq` with `@ctx(irq)`.\"\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\"\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\"\n    }\n  ]\n}\n"
+    );
+}
+
+#[test]
 fn migrate_preview_canonical_edits_json_reports_experimental_aliases_exactly() {
     let root = repo_root();
     let fixture = root
@@ -7397,6 +7429,37 @@ fn migrate_preview_canonical_edits_json_reports_experimental_aliases_exactly() {
         .arg("--surface")
         .arg("experimental")
         .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_edit_plan_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_edit_plan_v1\",\n  \"surface\": \"experimental\",\n  \"edits_count\": 3,\n  \"edits\": [\n    {\n      \"function\": \"blocker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@may_block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@may_block` with `@eff(block)`.\"\n    },\n    {\n      \"function\": \"isr\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq_handler\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@irq_handler` with `@ctx(irq)`.\"\n    },\n    {\n      \"function\": \"worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@thread_entry\",\n      \"canonical_replacement\": \"@ctx(thread)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@thread_entry` with `@ctx(thread)`.\"\n    }\n  ]\n}\n"
+    );
+}
+
+#[test]
+fn migrate_preview_canonical_edits_json_from_stdin_reports_experimental_aliases_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("canonical_check_aliases.kr"),
+    )
+    .expect("read alias fixture");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .arg("--surface")
+        .arg("experimental")
+        .write_stdin(input);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
@@ -7435,6 +7498,33 @@ fn migrate_preview_canonical_edits_json_is_empty_for_canonical_source() {
 }
 
 #[test]
+fn migrate_preview_canonical_edits_json_from_stdin_is_empty_for_canonical_source() {
+    let root = repo_root();
+    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
+        .expect("read canonical fixture");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .arg("--surface")
+        .arg("stable")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_edit_plan_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_edit_plan_v1\",\n  \"surface\": \"stable\",\n  \"edits_count\": 0,\n  \"edits\": []\n}\n"
+    );
+}
+
+#[test]
 fn migrate_preview_canonical_edits_requires_json_format() {
     let root = repo_root();
     let fixture = root
@@ -7453,6 +7543,51 @@ fn migrate_preview_canonical_edits_requires_json_format() {
     assert_eq!(
         stderr.lines().next(),
         Some("invalid migrate-preview mode: --canonical-edits requires --format json")
+    );
+}
+
+#[test]
+fn migrate_preview_canonical_edits_rejects_duplicate_stdin_flag() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .arg("--surface")
+        .arg("stable")
+        .write_stdin("@irq\nfn entry() { }\n");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid migrate-preview mode: duplicate --stdin")
+    );
+}
+
+#[test]
+fn migrate_preview_canonical_edits_rejects_stdin_and_file_together() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str())
+        .write_stdin("@irq\nfn entry() { }\n");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid migrate-preview mode: --stdin cannot be combined with an input file")
     );
 }
 

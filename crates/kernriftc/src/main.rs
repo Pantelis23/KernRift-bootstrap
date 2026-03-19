@@ -11,10 +11,11 @@ use emit::{
 };
 use kernriftc::{
     CanonicalFixPreviewResult, CanonicalFixResult, CanonicalFixSourceResult, SurfaceProfile,
-    analyze, canonical_edit_plan_file_with_surface, canonical_fix_file_with_surface,
-    canonical_fix_preview_file_with_surface, canonical_fix_preview_source_with_surface,
-    canonical_fix_source_file_with_surface, canonical_fix_source_text_with_surface, check_file,
-    compile_file, frontend_migration_features_for_profile, migrate_preview_file_with_surface,
+    analyze, canonical_edit_plan_file_with_surface, canonical_edit_plan_source_with_surface,
+    canonical_fix_file_with_surface, canonical_fix_preview_file_with_surface,
+    canonical_fix_preview_source_with_surface, canonical_fix_source_file_with_surface,
+    canonical_fix_source_text_with_surface, check_file, compile_file,
+    frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -82,7 +83,8 @@ struct FeaturesArgs {
 struct MigratePreviewArgs {
     surface: SurfaceProfile,
     canonical_edits: bool,
-    input_path: String,
+    stdin: bool,
+    input_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -408,6 +410,7 @@ fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
 fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, String> {
     let mut surface = None::<SurfaceProfile>;
     let mut canonical_edits = false;
+    let mut stdin = false;
     let mut format = MigratePreviewFormat::Text;
     let mut format_set = false;
     let mut input_path = None::<String>;
@@ -436,6 +439,12 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
                     );
                 }
                 canonical_edits = true;
+            }
+            "--stdin" => {
+                if stdin {
+                    return Err("invalid migrate-preview mode: duplicate --stdin".to_string());
+                }
+                stdin = true;
             }
             "--format" => {
                 if format_set {
@@ -473,9 +482,21 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
     let Some(surface) = surface else {
         return Err("invalid migrate-preview mode: missing --surface".to_string());
     };
-    let Some(input_path) = input_path else {
+    if stdin && input_path.is_some() {
+        return Err(
+            "invalid migrate-preview mode: --stdin cannot be combined with an input file"
+                .to_string(),
+        );
+    }
+    if stdin && !canonical_edits {
+        return Err(
+            "invalid migrate-preview mode: --stdin is only supported with --canonical-edits"
+                .to_string(),
+        );
+    }
+    if !stdin && input_path.is_none() {
         return Err("invalid migrate-preview mode: missing input file".to_string());
-    };
+    }
 
     if !canonical_edits && format_set {
         return Err(
@@ -493,6 +514,7 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
     Ok(MigratePreviewArgs {
         surface,
         canonical_edits,
+        stdin,
         input_path,
     })
 }
@@ -700,8 +722,10 @@ fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
         return run_canonical_edit_preview(args);
     }
 
-    let entries = match migrate_preview_file_with_surface(Path::new(&args.input_path), args.surface)
-    {
+    let entries = match migrate_preview_file_with_surface(
+        Path::new(args.input_path.as_deref().expect("input path")),
+        args.surface,
+    ) {
         Ok(entries) => entries,
         Err(errs) => {
             print_errors(&errs);
@@ -751,14 +775,13 @@ const CANONICAL_FIX_SCHEMA_VERSION: &str = "kernrift_canonical_fix_result_v1";
 const CANONICAL_FIX_PREVIEW_SCHEMA_VERSION: &str = "kernrift_canonical_fix_preview_v1";
 
 fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
-    let edits =
-        match canonical_edit_plan_file_with_surface(Path::new(&args.input_path), args.surface) {
-            Ok(edits) => edits,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(1);
-            }
-        };
+    let edits = match canonical_edit_plan_for_args(args) {
+        Ok(edits) => edits,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
 
     match emit_canonical_edit_plan_json(args.surface, &edits) {
         Ok(text) => {
@@ -769,6 +792,20 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
             eprintln!("failed to serialize canonical edit-plan JSON: {}", err);
             ExitCode::from(EXIT_INVALID_INPUT)
         }
+    }
+}
+
+fn canonical_edit_plan_for_args(
+    args: &MigratePreviewArgs,
+) -> Result<Vec<kernriftc::FrontendCanonicalEditPlanEntry>, Vec<String>> {
+    if args.stdin {
+        let src = read_stdin_source()?;
+        canonical_edit_plan_source_with_surface(&src, args.surface)
+    } else {
+        canonical_edit_plan_file_with_surface(
+            Path::new(args.input_path.as_deref().expect("input path")),
+            args.surface,
+        )
     }
 }
 
@@ -1622,6 +1659,7 @@ fn print_usage() {
     eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
     );
+    eprintln!("  kernriftc migrate-preview --canonical-edits --stdin --format json");
     eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format json --surface experimental <file.kr>"
     );
