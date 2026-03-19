@@ -765,6 +765,7 @@ fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
 struct CanonicalEditPlanJsonReport<'a> {
     schema_version: &'static str,
     surface: &'static str,
+    file: &'a str,
     edits_count: usize,
     edits: Vec<CanonicalEditJson<'a>>,
 }
@@ -779,7 +780,7 @@ struct CanonicalEditJson<'a> {
     rewrite_intent: &'a str,
 }
 
-const CANONICAL_EDIT_PLAN_SCHEMA_VERSION: &str = "kernrift_canonical_edit_plan_v1";
+const CANONICAL_EDIT_PLAN_SCHEMA_VERSION: &str = "kernrift_canonical_edit_plan_v2";
 const CANONICAL_FIX_SCHEMA_VERSION: &str = "kernrift_canonical_fix_result_v1";
 const CANONICAL_FIX_PREVIEW_SCHEMA_VERSION: &str = "kernrift_canonical_fix_preview_v1";
 
@@ -809,16 +810,18 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        MigratePreviewFormat::Json => match emit_canonical_edit_plan_json(args.surface, &edits) {
-            Ok(text) => {
-                print!("{}", text);
-                ExitCode::SUCCESS
+        MigratePreviewFormat::Json => {
+            match emit_canonical_edit_plan_json(args.surface, input.label(), &edits) {
+                Ok(text) => {
+                    print!("{}", text);
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("failed to serialize canonical edit-plan JSON: {}", err);
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
             }
-            Err(err) => {
-                eprintln!("failed to serialize canonical edit-plan JSON: {}", err);
-                ExitCode::from(EXIT_INVALID_INPUT)
-            }
-        },
+        }
     }
 }
 
@@ -960,11 +963,13 @@ fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
 
 fn emit_canonical_edit_plan_json(
     surface: SurfaceProfile,
+    file: &str,
     edits: &[kernriftc::FrontendCanonicalEditPlanEntry],
 ) -> Result<String, serde_json::Error> {
     let report = CanonicalEditPlanJsonReport {
         schema_version: CANONICAL_EDIT_PLAN_SCHEMA_VERSION,
         surface: surface.as_str(),
+        file,
         edits_count: edits.len(),
         edits: edits
             .iter()

@@ -30,12 +30,15 @@ fn check_canonical_json_reports_legacy_unary_shorthands_exactly() {
         .code(1);
     let stdout = stdout_string(&assert);
     let stderr = stderr_string(&assert);
-    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v2");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
     assert_eq!(
         stdout,
-        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"stable\",\n  \"canonical_findings\": 5,\n  \"findings\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
+        format!(
+            "{{\n  \"schema_version\": \"kernrift_canonical_findings_v2\",\n  \"surface\": \"stable\",\n  \"file\": \"{}\",\n  \"canonical_findings\": 5,\n  \"findings\": [\n    {{\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true\n    }},\n    {{\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    }},\n    {{\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    }},\n    {{\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true\n    }},\n    {{\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true\n    }}\n  ]\n}}\n",
+            fixture.display()
+        )
     );
 }
 
@@ -70,12 +73,15 @@ fn check_canonical_json_reports_accepted_aliases_under_experimental_surface() {
         .code(1);
     let stdout = stdout_string(&assert);
     let stderr = stderr_string(&assert);
-    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v2");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
     assert_eq!(
         stdout,
-        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"experimental\",\n  \"canonical_findings\": 3,\n  \"findings\": [\n    {\n      \"function\": \"blocker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@may_block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"isr\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq_handler\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@thread_entry\",\n      \"canonical_replacement\": \"@ctx(thread)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
+        format!(
+            "{{\n  \"schema_version\": \"kernrift_canonical_findings_v2\",\n  \"surface\": \"experimental\",\n  \"file\": \"{}\",\n  \"canonical_findings\": 3,\n  \"findings\": [\n    {{\n      \"function\": \"blocker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@may_block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    }},\n    {{\n      \"function\": \"isr\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq_handler\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    }},\n    {{\n      \"function\": \"worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@thread_entry\",\n      \"canonical_replacement\": \"@ctx(thread)\",\n      \"migration_safe\": true\n    }}\n  ]\n}}\n",
+            fixture.display()
+        )
     );
 }
 
@@ -111,12 +117,12 @@ fn check_canonical_json_from_stdin_reports_legacy_unary_shorthands_exactly() {
         .code(1);
     let stdout = stdout_string(&assert);
     let stderr = stderr_string(&assert);
-    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v2");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
     assert_eq!(
         stdout,
-        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"stable\",\n  \"canonical_findings\": 5,\n  \"findings\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
+        "{\n  \"schema_version\": \"kernrift_canonical_findings_v2\",\n  \"surface\": \"stable\",\n  \"file\": \"<stdin>\",\n  \"canonical_findings\": 5,\n  \"findings\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
     );
 }
 
@@ -177,12 +183,15 @@ fn check_canonical_json_succeeds_cleanly_for_canonical_source() {
     let assert = run_check_canonical_file(&root, &fixture, None, Some("json")).success();
     let stdout = stdout_string(&assert);
     let stderr = stderr_string(&assert);
-    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v2");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
     assert_eq!(
         stdout,
-        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"stable\",\n  \"canonical_findings\": 0,\n  \"findings\": []\n}\n"
+        format!(
+            "{{\n  \"schema_version\": \"kernrift_canonical_findings_v2\",\n  \"surface\": \"stable\",\n  \"file\": \"{}\",\n  \"canonical_findings\": 0,\n  \"findings\": []\n}}\n",
+            fixture.display()
+        )
     );
 }
 
@@ -193,12 +202,12 @@ fn check_canonical_json_from_stdin_succeeds_cleanly_for_canonical_source() {
     let assert = run_check_canonical_stdin(&root, &input, None, Some("json")).success();
     let stdout = stdout_string(&assert);
     let stderr = stderr_string(&assert);
-    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v2");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
     assert_eq!(
         stdout,
-        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"stable\",\n  \"canonical_findings\": 0,\n  \"findings\": []\n}\n"
+        "{\n  \"schema_version\": \"kernrift_canonical_findings_v2\",\n  \"surface\": \"stable\",\n  \"file\": \"<stdin>\",\n  \"canonical_findings\": 0,\n  \"findings\": []\n}\n"
     );
 }
 
@@ -241,8 +250,8 @@ fn check_canonical_json_file_and_stdin_are_parity_locked_for_legacy_unary() {
         .failure()
         .code(1);
 
-    let file_json = stdout_json(&file_assert);
-    let stdin_json = stdout_json(&stdin_assert);
+    let file_json = normalized_canonical_findings_json(&stdout_string(&file_assert));
+    let stdin_json = normalized_canonical_findings_json(&stdout_string(&stdin_assert));
     assert_eq!(file_json, stdin_json);
 }
 
@@ -278,10 +287,12 @@ fn check_canonical_noop_file_and_stdin_text_and_json_are_parity_locked() {
     let file_text = stdout_string(&run_check_canonical_file(&root, &fixture, None, None).success());
     let stdin_text = stdout_string(&run_check_canonical_stdin(&root, &input, None, None).success());
 
-    let file_json =
-        stdout_json(&run_check_canonical_file(&root, &fixture, None, Some("json")).success());
-    let stdin_json =
-        stdout_json(&run_check_canonical_stdin(&root, &input, None, Some("json")).success());
+    let file_json = normalized_canonical_findings_json(&stdout_string(
+        &run_check_canonical_file(&root, &fixture, None, Some("json")).success(),
+    ));
+    let stdin_json = normalized_canonical_findings_json(&stdout_string(
+        &run_check_canonical_stdin(&root, &input, None, Some("json")).success(),
+    ));
 
     assert_eq!(
         normalized_lines_without_file_label(&file_text),

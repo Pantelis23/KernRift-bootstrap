@@ -279,10 +279,10 @@ Current JSON-capable command surfaces:
     `kernrift_policy_violations_v1`
 - `kernriftc check --canonical --format json <file.kr>`
   - this emits structured canonical findings under
-    `kernrift_canonical_findings_v1`
+    `kernrift_canonical_findings_v2`
 - `kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>`
   - this emits a non-mutating canonical edit-plan preview under
-    `kernrift_canonical_edit_plan_v1`
+    `kernrift_canonical_edit_plan_v2`
 - `kernriftc fix --canonical --write --format json <file.kr>`
   - this emits canonical fix application results under
     `kernrift_canonical_fix_result_v1`
@@ -316,8 +316,8 @@ Contributor lock for future JSON-capable commands:
 | `kernriftc verify-artifact-meta --format json <artifact> <meta.json>` | `--format json` | `kernrift_verify_artifact_meta_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` mismatch / deny, `2` invalid input | pass, deny, invalid input |
 | `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | `--format json` | `kernrift_policy_violations_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` deny, `2` invalid input | pass and deny |
 | `kernriftc check --format json --policy <policy.toml> <file.kr>` | `--format json` | `kernrift_policy_violations_v1` on policy denial | `stdout` only, empty `stderr`, trailing newline, `schema_version` present when JSON is emitted | `1` on policy deny with JSON payload; other check failures remain command-specific | policy deny only today |
-| `kernriftc check --canonical --format json <file.kr>` | `--format json` | `kernrift_canonical_findings_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` when no canonical findings exist, `1` when findings are emitted, `2` invalid input | canonical pass and canonical-findings deny |
-| `kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>` | `--format json` | `kernrift_canonical_edit_plan_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful preview emission, `1` parse/frontend failure, `2` invalid input | canonical edit-plan preview only |
+| `kernriftc check --canonical --format json <file.kr>` | `--format json` | `kernrift_canonical_findings_v2` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` when no canonical findings exist, `1` when findings are emitted, `2` invalid input | canonical pass and canonical-findings deny |
+| `kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>` | `--format json` | `kernrift_canonical_edit_plan_v2` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful preview emission, `1` parse/frontend failure, `2` invalid input | canonical edit-plan preview only |
 | `kernriftc fix --canonical --write --format json <file.kr>` | `--format json` | `kernrift_canonical_fix_result_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful fix or no-op, `1` parse/frontend/write failure, `2` invalid input | changed and unchanged successful fix runs |
 | `kernriftc fix --canonical --dry-run --format json <file.kr>` | `--format json` | `kernrift_canonical_fix_preview_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful preview, `1` parse/frontend failure, `2` invalid input | changed and unchanged successful dry-run previews |
 

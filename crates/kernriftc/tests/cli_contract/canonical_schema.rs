@@ -3,14 +3,16 @@ fn canonical_findings_json_schema_accepts_empty_and_nonempty_reports() {
     let compiled = compile_canonical_findings_schema();
     for instance in [
         json!({
-            "schema_version": "kernrift_canonical_findings_v1",
+            "schema_version": "kernrift_canonical_findings_v2",
             "surface": "stable",
+            "file": "basic.kr",
             "canonical_findings": 0,
             "findings": []
         }),
         json!({
-            "schema_version": "kernrift_canonical_findings_v1",
+            "schema_version": "kernrift_canonical_findings_v2",
             "surface": "experimental",
+            "file": "<stdin>",
             "canonical_findings": 1,
             "findings": [{
                 "function": "helper",
@@ -24,7 +26,7 @@ fn canonical_findings_json_schema_accepts_empty_and_nonempty_reports() {
         if let Err(errors) = compiled.validate(&instance) {
             let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
             panic!(
-                "canonical findings JSON must validate against canonical findings v1 schema: {}",
+                "canonical findings JSON must validate against canonical findings v2 schema: {}",
                 details.join(" | ")
             );
         }
@@ -37,14 +39,16 @@ fn canonical_edit_plan_json_schema_accepts_empty_and_nonempty_reports() {
     let compiled = compile_canonical_edit_plan_schema();
     for instance in [
         json!({
-            "schema_version": "kernrift_canonical_edit_plan_v1",
+            "schema_version": "kernrift_canonical_edit_plan_v2",
             "surface": "stable",
+            "file": "basic.kr",
             "edits_count": 0,
             "edits": []
         }),
         json!({
-            "schema_version": "kernrift_canonical_edit_plan_v1",
+            "schema_version": "kernrift_canonical_edit_plan_v2",
             "surface": "experimental",
+            "file": "<stdin>",
             "edits_count": 1,
             "edits": [{
                 "function": "worker",
@@ -59,7 +63,7 @@ fn canonical_edit_plan_json_schema_accepts_empty_and_nonempty_reports() {
         if let Err(errors) = compiled.validate(&instance) {
             let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
             panic!(
-                "canonical edit plan JSON must validate against canonical edit plan v1 schema: {}",
+                "canonical edit plan JSON must validate against canonical edit plan v2 schema: {}",
                 details.join(" | ")
             );
         }
@@ -139,4 +143,3 @@ fn canonical_fix_preview_json_schema_accepts_empty_and_nonempty_reports() {
         }
     }
 }
-
