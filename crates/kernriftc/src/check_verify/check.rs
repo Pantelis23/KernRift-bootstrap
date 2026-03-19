@@ -210,13 +210,15 @@ fn run_canonical_check(args: &CheckArgs) -> ExitCode {
         PolicyOutputFormat::Text => {
             print_canonical_findings_text(args.surface, input.label(), &findings)
         }
-        PolicyOutputFormat::Json => match emit_canonical_findings_json(args.surface, &findings) {
-            Ok(text) => print!("{}", text),
-            Err(err) => {
-                eprintln!("failed to serialize canonical findings JSON: {}", err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
+        PolicyOutputFormat::Json => {
+            match emit_canonical_findings_json(args.surface, input.label(), &findings) {
+                Ok(text) => print!("{}", text),
+                Err(err) => {
+                    eprintln!("failed to serialize canonical findings JSON: {}", err);
+                    return ExitCode::from(EXIT_INVALID_INPUT);
+                }
             }
-        },
+        }
     }
 
     if finding_count == 0 {
@@ -230,6 +232,7 @@ fn run_canonical_check(args: &CheckArgs) -> ExitCode {
 struct CanonicalFindingsJsonReport<'a> {
     schema_version: &'static str,
     surface: &'static str,
+    file: &'a str,
     canonical_findings: usize,
     findings: Vec<CanonicalFindingJson<'a>>,
 }
@@ -243,7 +246,7 @@ struct CanonicalFindingJson<'a> {
     migration_safe: bool,
 }
 
-const CANONICAL_FINDINGS_SCHEMA_VERSION: &str = "kernrift_canonical_findings_v1";
+const CANONICAL_FINDINGS_SCHEMA_VERSION: &str = "kernrift_canonical_findings_v2";
 
 fn print_canonical_findings_text(
     surface: SurfaceProfile,
@@ -265,11 +268,13 @@ fn print_canonical_findings_text(
 
 fn emit_canonical_findings_json(
     surface: SurfaceProfile,
+    file: &str,
     findings: &[FrontendCanonicalFinding],
 ) -> Result<String, serde_json::Error> {
     let report = CanonicalFindingsJsonReport {
         schema_version: CANONICAL_FINDINGS_SCHEMA_VERSION,
         surface: surface.as_str(),
+        file,
         canonical_findings: findings.len(),
         findings: findings
             .iter()

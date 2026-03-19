@@ -106,6 +106,18 @@ pub(super) fn normalized_fix_preview_json(stdout: &str) -> Value {
     value
 }
 
+pub(super) fn normalized_canonical_findings_json(stdout: &str) -> Value {
+    let mut value: Value = serde_json::from_str(stdout).expect("json stdout");
+    value["file"] = json!("<normalized>");
+    value
+}
+
+pub(super) fn normalized_canonical_edit_plan_json(stdout: &str) -> Value {
+    let mut value: Value = serde_json::from_str(stdout).expect("json stdout");
+    value["file"] = json!("<normalized>");
+    value
+}
+
 pub(super) fn run_check_canonical_file(
     root: &Path,
     fixture: &Path,

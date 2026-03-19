@@ -84,7 +84,8 @@ assert_unchanged_fixture
 echo "[5/12] canonical edit-plan JSON smoke (file)"
 PREVIEW_JSON_OUT="$TMP_DIR/preview.json.out"
 run_kernriftc migrate-preview --canonical-edits --format json "$WORK_FIXTURE" >"$PREVIEW_JSON_OUT"
-assert_contains '"schema_version": "kernrift_canonical_edit_plan_v1"' "$PREVIEW_JSON_OUT"
+assert_contains '"schema_version": "kernrift_canonical_edit_plan_v2"' "$PREVIEW_JSON_OUT"
+assert_contains "\"file\": \"$WORK_FIXTURE\"" "$PREVIEW_JSON_OUT"
 assert_contains '"edits_count": 5' "$PREVIEW_JSON_OUT"
 assert_unchanged_fixture
 
@@ -140,7 +141,8 @@ assert_contains "edits_count: 5" "$PREVIEW_STDIN_TEXT_OUT"
 echo "[12/12] canonical edit-plan JSON smoke (stdin)"
 PREVIEW_STDIN_JSON_OUT="$TMP_DIR/preview.stdin.json.out"
 cat "$WORK_FIXTURE" | run_kernriftc migrate-preview --canonical-edits --stdin --format json >"$PREVIEW_STDIN_JSON_OUT"
-assert_contains '"schema_version": "kernrift_canonical_edit_plan_v1"' "$PREVIEW_STDIN_JSON_OUT"
+assert_contains '"schema_version": "kernrift_canonical_edit_plan_v2"' "$PREVIEW_STDIN_JSON_OUT"
+assert_contains '"file": "<stdin>"' "$PREVIEW_STDIN_JSON_OUT"
 assert_contains '"edits_count": 5' "$PREVIEW_STDIN_JSON_OUT"
 
 echo "kernriftc canonical acceptance: PASS"

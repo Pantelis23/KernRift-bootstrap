@@ -37,13 +37,13 @@ pub(super) fn compile_policy_violations_schema() -> JSONSchema {
 
 pub(super) fn compile_canonical_findings_schema() -> JSONSchema {
     let schema_json: Value =
-        serde_json::from_str(CANONICAL_FINDINGS_SCHEMA_V1).expect("schema json");
+        serde_json::from_str(CANONICAL_FINDINGS_SCHEMA_V2).expect("schema json");
     JSONSchema::compile(&schema_json).expect("compile schema")
 }
 
 pub(super) fn compile_canonical_edit_plan_schema() -> JSONSchema {
     let schema_json: Value =
-        serde_json::from_str(CANONICAL_EDIT_PLAN_SCHEMA_V1).expect("schema json");
+        serde_json::from_str(CANONICAL_EDIT_PLAN_SCHEMA_V2).expect("schema json");
     JSONSchema::compile(&schema_json).expect("compile schema")
 }
 

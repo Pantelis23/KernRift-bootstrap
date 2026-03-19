@@ -46,8 +46,8 @@ fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
         "kernrift_inspect_artifact_v1",
         "kernrift_verify_artifact_meta_v1",
         "kernrift_policy_violations_v1",
-        "kernrift_canonical_findings_v1",
-        "kernrift_canonical_edit_plan_v1",
+        "kernrift_canonical_findings_v2",
+        "kernrift_canonical_edit_plan_v2",
         "kernrift_canonical_fix_result_v1",
         "kernrift_canonical_fix_preview_v1",
     ] {
