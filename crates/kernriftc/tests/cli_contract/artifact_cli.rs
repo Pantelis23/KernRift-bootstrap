@@ -324,6 +324,41 @@ fn emit_elfobj_supports_uart_console_probe_proof_program_and_metadata_verifies()
 }
 
 #[test]
+fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_probe.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-uart-console-probe", "o");
+    emit_backend_artifact(&root, "elfobj", &fixture, &artifact_path, false);
+
+    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    validate_inspect_artifact_schema(&json);
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
+    assert_eq!(json["file"], artifact_path.display().to_string());
+    assert_eq!(json["artifact_kind"], "elf_relocatable");
+    assert_eq!(json["machine"], "x86_64");
+    assert_eq!(json["defined_symbols"], json!(["entry", "uart_init", "uart_kick_watchdog", "uart_send_break", "uart_status"]));
+    assert_eq!(json["undefined_symbols"], json!(["platform_barrier"]));
+    assert_eq!(json["flags"]["has_entry_symbol"], true);
+    assert_eq!(json["flags"]["has_undefined_symbols"], true);
+    assert_eq!(json["flags"]["has_text_relocations"], true);
+    assert_eq!(json["relocations"], json!([
+        {
+            "section": ".rela.text",
+            "type": "R_X86_64_PLT32",
+            "target": "platform_barrier"
+        },
+        {
+            "section": ".rela.text",
+            "type": "R_X86_64_PLT32",
+            "target": "platform_barrier"
+        }
+    ]));
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
 fn emit_backend_artifact_rejects_nonliteral_mmio_write_value_in_current_subset() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("mmio_typed.kr");
