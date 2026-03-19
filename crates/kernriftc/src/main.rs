@@ -83,6 +83,7 @@ struct MigratePreviewArgs {
     surface: SurfaceProfile,
     canonical_edits: bool,
     stdin: bool,
+    format: MigratePreviewFormat,
     input_path: Option<String>,
 }
 
@@ -504,7 +505,7 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         );
     }
 
-    if canonical_edits && format != MigratePreviewFormat::Json {
+    if canonical_edits && !stdin && format != MigratePreviewFormat::Json {
         return Err(
             "invalid migrate-preview mode: --canonical-edits requires --format json".to_string(),
         );
@@ -514,6 +515,7 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         surface,
         canonical_edits,
         stdin,
+        format,
         input_path,
     })
 }
@@ -782,15 +784,30 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
         }
     };
 
-    match emit_canonical_edit_plan_json(args.surface, &edits) {
-        Ok(text) => {
-            print!("{}", text);
+    match args.format {
+        MigratePreviewFormat::Text => {
+            println!("surface: {}", args.surface.as_str());
+            println!("edits_count: {}", edits.len());
+            for edit in edits {
+                println!("function: {}", edit.function_name);
+                println!("classification: {}", edit.classification.as_str());
+                println!("surface_form: @{}", edit.surface_form);
+                println!("canonical_replacement: {}", edit.canonical_replacement);
+                println!("migration_safe: {}", edit.migration_safe);
+                println!("rewrite_intent: {}", edit.rewrite_intent);
+            }
             ExitCode::SUCCESS
         }
-        Err(err) => {
-            eprintln!("failed to serialize canonical edit-plan JSON: {}", err);
-            ExitCode::from(EXIT_INVALID_INPUT)
-        }
+        MigratePreviewFormat::Json => match emit_canonical_edit_plan_json(args.surface, &edits) {
+            Ok(text) => {
+                print!("{}", text);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("failed to serialize canonical edit-plan JSON: {}", err);
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
     }
 }
 
@@ -1634,6 +1651,7 @@ fn print_usage() {
     eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
     );
+    eprintln!("  kernriftc migrate-preview --canonical-edits --stdin");
     eprintln!("  kernriftc migrate-preview --canonical-edits --stdin --format json");
     eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format json --surface experimental <file.kr>"
