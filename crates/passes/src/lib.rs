@@ -194,12 +194,17 @@ fn effect_check(module: &KrirModule) -> Vec<CheckError> {
             });
         }
 
-        if f.attrs.noyield && f.ops.iter().any(|op| matches!(op, KrirOp::YieldPoint)) {
+        if f.attrs.noyield
+            && let Some(semantics) = effect_semantics.get(&f.name)
+            && semantics.transitive.contains(&Eff::Yield)
+            && let Some(provenance) = semantics.provenance.get(&Eff::Yield)
+        {
             errs.push(CheckError {
                 pass: "effect-check",
                 message: format!(
-                    "function '{}' is @noyield but contains yieldpoint()",
-                    f.name
+                    "NOYIELD_YIELD_BOUNDARY: function '{}' is @noyield but uses yield effect ({})",
+                    f.name,
+                    format_effect_provenance(provenance)
                 ),
             });
         }

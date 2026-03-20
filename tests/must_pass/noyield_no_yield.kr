@@ -1,0 +1,8 @@
+@ctx(thread, boot)
+fn helper() {}
+
+@noyield
+@ctx(thread, boot)
+fn spinloop() {
+    helper();
+}
