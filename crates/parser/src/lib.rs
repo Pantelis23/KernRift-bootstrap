@@ -929,6 +929,166 @@ impl<'a> Lexer<'a> {
     }
 }
 
+/// Token-stream parser. Replaces the old character-level `Parser` (in Task 5).
+pub struct TokParser {
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl TokParser {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self { tokens, pos: 0 }
+    }
+
+    pub fn peek(&self) -> &Token {
+        self.tokens.get(self.pos).unwrap_or(self.tokens.last().unwrap())
+    }
+
+    pub fn peek_at(&self, offset: usize) -> &Token {
+        let idx = (self.pos + offset).min(self.tokens.len() - 1);
+        &self.tokens[idx]
+    }
+
+    pub fn advance(&mut self) -> &Token {
+        let t = &self.tokens[self.pos.min(self.tokens.len() - 1)];
+        if self.pos < self.tokens.len() - 1 { self.pos += 1; }
+        t
+    }
+
+    pub fn expect_kind(&mut self, kind: &TokenKind) -> Result<Token, String> {
+        let t = self.peek().clone();
+        if std::mem::discriminant(&t.kind) == std::mem::discriminant(kind) {
+            self.advance();
+            Ok(t)
+        } else {
+            Err(format!(
+                "expected {:?} but found {:?} at {}:{}",
+                kind, t.kind, t.source.line, t.source.column
+            ))
+        }
+    }
+
+    pub fn at(&self, kind: &TokenKind) -> bool {
+        std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(kind)
+    }
+
+    pub fn eat(&mut self, kind: &TokenKind) -> bool {
+        if self.at(kind) { self.advance(); true } else { false }
+    }
+
+    /// Pratt expression parser. `min_bp` is the minimum binding power (0 = parse all).
+    pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, String> {
+        // --- prefix ---
+        let mut lhs = match self.advance().kind.clone() {
+            TokenKind::IntLit(n)    => Expr::IntLiteral(n),
+            TokenKind::FloatLit(f)  => Expr::FloatLiteral(f),
+            TokenKind::CharLit(c)   => Expr::CharLiteral(c),
+            TokenKind::StrLit(s)    => Expr::StringLiteral(s),
+            TokenKind::True         => Expr::BoolLiteral(true),
+            TokenKind::False        => Expr::BoolLiteral(false),
+            TokenKind::Bang         => {
+                let (_, rbp) = prefix_bp(UnOpKind::Not);
+                let e = self.parse_expr(rbp)?;
+                Expr::UnOp { op: UnOpKind::Not, operand: Box::new(e) }
+            }
+            TokenKind::Tilde        => {
+                let (_, rbp) = prefix_bp(UnOpKind::BitNot);
+                let e = self.parse_expr(rbp)?;
+                Expr::UnOp { op: UnOpKind::BitNot, operand: Box::new(e) }
+            }
+            TokenKind::Minus        => {
+                let (_, rbp) = prefix_bp(UnOpKind::Neg);
+                let e = self.parse_expr(rbp)?;
+                Expr::UnOp { op: UnOpKind::Neg, operand: Box::new(e) }
+            }
+            TokenKind::LParen       => {
+                let e = self.parse_expr(0)?;
+                self.expect_kind(&TokenKind::RParen)?;
+                e
+            }
+            TokenKind::Ident(name)  => {
+                if self.eat(&TokenKind::Dot) {
+                    // UART0.Status  or  buf.len
+                    let field = match self.advance().kind.clone() {
+                        TokenKind::Ident(f) => f,
+                        other => return Err(format!("expected field name after '.', got {:?}", other)),
+                    };
+                    if field == "len" {
+                        Expr::SliceLen(name)
+                    } else {
+                        Expr::DeviceField { device: name, field }
+                    }
+                } else if self.eat(&TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                        args.push(self.parse_expr(0)?);
+                        if !self.eat(&TokenKind::Comma) { break; }
+                    }
+                    self.expect_kind(&TokenKind::RParen)?;
+                    Expr::Call { callee: name, args }
+                } else {
+                    Expr::Ident(name)
+                }
+            }
+            other => return Err(format!("expected expression, got {:?}", other)),
+        };
+
+        // --- infix ---
+        loop {
+            let op = match token_to_binop(&self.peek().kind) {
+                Some(op) => op,
+                None => break,
+            };
+            let (lbp, rbp) = infix_bp(op);
+            if lbp < min_bp { break; }
+            self.advance();
+            let rhs = self.parse_expr(rbp)?;
+            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Ok(lhs)
+    }
+}
+
+fn token_to_binop(kind: &TokenKind) -> Option<BinOpKind> {
+    Some(match kind {
+        TokenKind::Plus     => BinOpKind::Add,  TokenKind::Minus  => BinOpKind::Sub,
+        TokenKind::Star     => BinOpKind::Mul,  TokenKind::Slash  => BinOpKind::Div,
+        TokenKind::Percent  => BinOpKind::Rem,
+        TokenKind::Amp      => BinOpKind::And,  TokenKind::Pipe   => BinOpKind::Or,
+        TokenKind::Caret    => BinOpKind::Xor,
+        TokenKind::Shl      => BinOpKind::Shl,  TokenKind::Shr    => BinOpKind::Shr,
+        TokenKind::EqEq     => BinOpKind::Eq,   TokenKind::BangEq => BinOpKind::Ne,
+        TokenKind::Lt       => BinOpKind::Lt,   TokenKind::Gt     => BinOpKind::Gt,
+        TokenKind::LtEq     => BinOpKind::Le,   TokenKind::GtEq   => BinOpKind::Ge,
+        TokenKind::AmpAmp   => BinOpKind::LogAnd,
+        TokenKind::PipePipe => BinOpKind::LogOr,
+        _ => return None,
+    })
+}
+
+/// Returns (left_bp, right_bp) for infix operators.
+/// Higher bp = tighter binding. Left-associative: rbp = lbp + 1.
+fn infix_bp(op: BinOpKind) -> (u8, u8) {
+    match op {
+        BinOpKind::LogOr                                                   => (10, 11),
+        BinOpKind::LogAnd                                                  => (20, 21),
+        BinOpKind::Or                                                      => (30, 31),
+        BinOpKind::Xor                                                     => (40, 41),
+        BinOpKind::And                                                     => (50, 51),
+        BinOpKind::Eq | BinOpKind::Ne                                      => (60, 61),
+        BinOpKind::Lt | BinOpKind::Gt | BinOpKind::Le | BinOpKind::Ge     => (70, 71),
+        BinOpKind::Shl | BinOpKind::Shr                                    => (80, 81),
+        BinOpKind::Add | BinOpKind::Sub                                    => (90, 91),
+        BinOpKind::Mul | BinOpKind::Div | BinOpKind::Rem                   => (100, 101),
+    }
+}
+
+fn prefix_bp(op: UnOpKind) -> ((), u8) {
+    match op {
+        UnOpKind::Not | UnOpKind::BitNot | UnOpKind::Neg => ((), 110),
+    }
+}
+
 struct Parser<'a> {
     src: &'a str,
     pos: usize,
@@ -3569,5 +3729,65 @@ mod lexer_tests {
         assert!(kinds.iter().any(|k| matches!(k, TokenKind::LtEq)));
         assert!(kinds.iter().any(|k| matches!(k, TokenKind::Shl)));
         assert!(kinds.iter().any(|k| matches!(k, TokenKind::ShlEq)));
+    }
+}
+
+#[cfg(test)]
+mod expr_tests {
+    use super::*;
+
+    fn parse_expr(src: &str) -> Expr {
+        let tokens = Lexer::new(src).collect_all().unwrap();
+        let mut p = TokParser::new(tokens);
+        p.parse_expr(0).unwrap()
+    }
+
+    #[test]
+    fn parse_int_literal()   { assert_eq!(parse_expr("42"), Expr::IntLiteral(42)); }
+    #[test]
+    fn parse_bool_literal()  { assert_eq!(parse_expr("true"), Expr::BoolLiteral(true)); }
+    #[test]
+    fn parse_char_literal()  { assert_eq!(parse_expr("'A'"), Expr::CharLiteral(b'A')); }
+    #[test]
+    fn parse_ident()         { assert!(matches!(parse_expr("status"), Expr::Ident(s) if s == "status")); }
+    #[test]
+    fn parse_add()           {
+        assert!(matches!(parse_expr("a + b"), Expr::BinOp { op: BinOpKind::Add, .. }));
+    }
+    #[test]
+    fn parse_precedence()    {
+        // a + b & c  should be (a + b) & c because + has higher precedence than &
+        let e = parse_expr("a + b & c");
+        assert!(matches!(e, Expr::BinOp { op: BinOpKind::And, .. }));
+    }
+    #[test]
+    fn parse_device_field()  {
+        let e = parse_expr("UART0.Status");
+        assert!(matches!(e, Expr::DeviceField { ref device, ref field } if device == "UART0" && field == "Status"));
+    }
+    #[test]
+    fn parse_fn_call_expr()  {
+        let e = parse_expr("get_status()");
+        assert!(matches!(e, Expr::Call { ref callee, .. } if callee == "get_status"));
+    }
+    #[test]
+    fn parse_unary_not()     {
+        assert!(matches!(parse_expr("!flag"), Expr::UnOp { op: UnOpKind::Not, .. }));
+    }
+    #[test]
+    fn parse_parens()        {
+        // (a + b) * c — parens override precedence
+        let e = parse_expr("(a + b) * c");
+        assert!(matches!(e, Expr::BinOp { op: BinOpKind::Mul, .. }));
+    }
+    #[test]
+    fn parse_comparison()    {
+        let e = parse_expr("x == 0");
+        assert!(matches!(e, Expr::BinOp { op: BinOpKind::Eq, .. }));
+    }
+    #[test]
+    fn parse_logical_and()   {
+        let e = parse_expr("a && b");
+        assert!(matches!(e, Expr::BinOp { op: BinOpKind::LogAnd, .. }));
     }
 }
