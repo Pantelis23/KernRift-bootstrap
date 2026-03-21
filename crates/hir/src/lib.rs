@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use krir::{
     ArithOp as KrirArithOp, CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl,
@@ -10,11 +10,12 @@ use krir::{
     MmioValueExpr as KrirMmioValueExpr, PercpuDecl as KrirPercpuDecl, SchedHook,
 };
 use parser::{
-    ArithOp as ParserArithOp, FnAst, MmioAddrExpr as ParserMmioAddrExpr,
-    MmioBaseDecl as ParserMmioBaseDecl, MmioRegAccess as ParserMmioRegAccess,
-    MmioRegisterDecl as ParserMmioRegisterDecl, MmioScalarType as ParserMmioScalarType,
-    MmioValueExpr as ParserMmioValueExpr, ModuleAst, ParamTy as ParserParamTy, RawAttr, Stmt,
-    format_source_diagnostic, int_literal_numeric_value, split_csv_allow_trailing_comma,
+    ArithOp as ParserArithOp, BinOpKind as ParserBinOpKind, Expr as ParserExpr, FnAst,
+    MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
+    MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
+    MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
+    ParamTy as ParserParamTy, RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
+    split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -1298,6 +1299,7 @@ pub fn lower_to_krir_with_surface(
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
     let (expanded_bases, expanded_regs) = expand_device_decls(ast);
+    let device_regs = build_device_reg_map(&expanded_regs);
     let module_declares_mmio_structure = module_declares_mmio_structure(ast, &expanded_bases, &expanded_regs);
     let module_allows_raw_mmio_literals = module_allows_raw_mmio_literals(&ast.module_caps);
     let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(&expanded_bases);
@@ -1364,7 +1366,7 @@ pub fn lower_to_krir_with_surface(
     }
 
     for item in &ast.items {
-        match lower_function(item, surface_profile, &const_map) {
+        match lower_function(item, surface_profile, &const_map, &device_regs) {
             Ok(function) => functions.push(function),
             Err(errs) => errors.extend(errs),
         }
@@ -1534,14 +1536,16 @@ fn lower_function(
     item: &FnAst,
     surface_profile: SurfaceProfile,
     const_map: &std::collections::BTreeMap<String, String>,
+    device_regs: &DeviceRegMap,
 ) -> Result<Function, Vec<String>> {
     let facts = normalize_function_facts(item, surface_profile)?;
 
     let mut ops = Vec::new();
     let mut eff_used = facts.eff_used;
     let mut stmt_errors: Vec<String> = Vec::new();
+    let mut slot_counter: u32 = 0;
     for stmt in &item.body {
-        lower_stmt(stmt, &mut ops, &mut eff_used, const_map, surface_profile, &mut stmt_errors);
+        lower_stmt(stmt, &mut ops, &mut eff_used, const_map, surface_profile, &mut stmt_errors, &mut slot_counter, device_regs);
     }
     if !stmt_errors.is_empty() {
         return Err(stmt_errors);
@@ -1586,6 +1590,24 @@ fn expand_device_decls(
         }
     }
     (bases, regs)
+}
+
+/// Maps `(device_name, register_name)` → the expanded `ParserMmioRegisterDecl`.
+type DeviceRegMap = HashMap<(String, String), ParserMmioRegisterDecl>;
+
+fn build_device_reg_map(regs: &[ParserMmioRegisterDecl]) -> DeviceRegMap {
+    let mut map = HashMap::new();
+    for reg in regs {
+        map.insert((reg.base.clone(), reg.name.clone()), reg.clone());
+    }
+    map
+}
+
+/// Allocate a fresh temporary slot name and advance the counter.
+fn fresh_slot(counter: &mut u32) -> String {
+    let n = *counter;
+    *counter += 1;
+    format!("__t{}", n)
 }
 
 fn collect_mmio_bases(
@@ -2514,6 +2536,111 @@ fn lower_stmts_to_canonical_executable(
     }
 }
 
+/// Lower a surface `Expr` to a KRIR slot, emitting operations into `ops`.
+/// Returns the name of the slot holding the result.
+fn lower_expr(
+    expr: &ParserExpr,
+    ops: &mut Vec<KrirOp>,
+    slot_counter: &mut u32,
+    device_regs: &DeviceRegMap,
+    eff_used: &mut BTreeSet<Eff>,
+) -> Result<String, String> {
+    match expr {
+        ParserExpr::IntLiteral(n) => {
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U64, cell: slot.clone() });
+            ops.push(KrirOp::StackStore {
+                ty: KrirMmioScalarType::U64,
+                cell: slot.clone(),
+                value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+            });
+            Ok(slot)
+        }
+        ParserExpr::BoolLiteral(b) => {
+            let slot = fresh_slot(slot_counter);
+            let n: u64 = if *b { 1 } else { 0 };
+            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U8, cell: slot.clone() });
+            ops.push(KrirOp::StackStore {
+                ty: KrirMmioScalarType::U8,
+                cell: slot.clone(),
+                value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+            });
+            Ok(slot)
+        }
+        ParserExpr::Ident(name) => Ok(name.clone()),
+        ParserExpr::DeviceField { device, field } => {
+            let reg = device_regs
+                .get(&(device.clone(), field.clone()))
+                .ok_or_else(|| format!("unknown device register '{}.{}'", device, field))?;
+            if reg.access == ParserMmioRegAccess::Wo {
+                return Err(format!("register '{}.{}' is write-only", device, field));
+            }
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: lower_mmio_scalar_type(reg.ty),
+                cell: slot.clone(),
+            });
+            ops.push(KrirOp::MmioRead {
+                ty: lower_mmio_scalar_type(reg.ty),
+                addr: KrirMmioAddrExpr::IdentPlusOffset {
+                    base: device.clone(),
+                    offset: reg.offset.clone(),
+                },
+                capture_slot: Some(slot.clone()),
+            });
+            eff_used.insert(Eff::Mmio);
+            Ok(slot)
+        }
+        ParserExpr::BinOp { op, lhs, rhs } => {
+            let l = lower_expr(lhs, ops, slot_counter, device_regs, eff_used)?;
+            let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used)?;
+            match op {
+                ParserBinOpKind::Mul | ParserBinOpKind::Div | ParserBinOpKind::Rem => {
+                    return Err(
+                        "multiplication/division/modulo not yet supported (V1 limitation)".into(),
+                    );
+                }
+                ParserBinOpKind::Eq
+                | ParserBinOpKind::Ne
+                | ParserBinOpKind::Lt
+                | ParserBinOpKind::Gt
+                | ParserBinOpKind::Le
+                | ParserBinOpKind::Ge
+                | ParserBinOpKind::LogAnd
+                | ParserBinOpKind::LogOr => {
+                    return Err(
+                        "comparison/logical operators not yet lowered (Task 9/10)".into(),
+                    );
+                }
+                _ => {}
+            }
+            let arith_op = binop_to_krir_arith(*op)
+                .ok_or_else(|| format!("unsupported binary operator {:?}", op))?;
+            ops.push(KrirOp::SlotArith {
+                ty: KrirMmioScalarType::U64,
+                dst: l.clone(),
+                src: r,
+                arith_op,
+            });
+            Ok(l)
+        }
+        _ => Err(format!("expression type not yet supported in HIR lowering: {:?}", expr)),
+    }
+}
+
+fn binop_to_krir_arith(op: ParserBinOpKind) -> Option<KrirArithOp> {
+    Some(match op {
+        ParserBinOpKind::Add => KrirArithOp::Add,
+        ParserBinOpKind::Sub => KrirArithOp::Sub,
+        ParserBinOpKind::And => KrirArithOp::And,
+        ParserBinOpKind::Or => KrirArithOp::Or,
+        ParserBinOpKind::Xor => KrirArithOp::Xor,
+        ParserBinOpKind::Shl => KrirArithOp::Shl,
+        ParserBinOpKind::Shr => KrirArithOp::Shr,
+        _ => return None,
+    })
+}
+
 fn lower_stmt(
     stmt: &Stmt,
     ops: &mut Vec<KrirOp>,
@@ -2521,6 +2648,8 @@ fn lower_stmt(
     const_map: &std::collections::BTreeMap<String, String>,
     surface_profile: SurfaceProfile,
     errors: &mut Vec<String>,
+    slot_counter: &mut u32,
+    device_regs: &DeviceRegMap,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -2533,13 +2662,13 @@ fn lower_stmt(
         Stmt::Critical(inner) => {
             ops.push(KrirOp::CriticalEnter);
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors);
+                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs);
             }
             ops.push(KrirOp::CriticalExit);
         }
         Stmt::Unsafe(inner) => {
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors);
+                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs);
             }
         }
         Stmt::YieldPoint => {
@@ -2710,12 +2839,37 @@ fn lower_stmt(
                 args: krir_args,
             });
         }
+        Stmt::ExprStmt(expr) => match expr {
+            ParserExpr::Call { callee, args } if args.is_empty() => {
+                ops.push(KrirOp::Call { callee: callee.clone() });
+            }
+            ParserExpr::Call { callee, args } => {
+                let mut krir_args = Vec::new();
+                let mut ok = true;
+                for arg in args {
+                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used) {
+                        Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
+                        Err(e) => {
+                            errors.push(e);
+                            ok = false;
+                        }
+                    }
+                }
+                if ok {
+                    ops.push(KrirOp::CallWithArgs { callee: callee.clone(), args: krir_args });
+                }
+            }
+            _ => {
+                if let Err(e) = lower_expr(expr, ops, slot_counter, device_regs, eff_used) {
+                    errors.push(e);
+                }
+            }
+        },
         Stmt::VarDecl { .. } | Stmt::Assign { .. } | Stmt::CompoundAssign { .. }
         | Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
-        | Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Print(_)
-        | Stmt::ExprStmt(_) => {
+        | Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Print(_) => {
             errors.push(format!(
-                "surface syntax statement not yet lowered (Task 7-12): {:?}",
+                "surface syntax statement not yet lowered (Task 8-12): {:?}",
                 stmt
             ));
         }

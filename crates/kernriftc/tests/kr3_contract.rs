@@ -1086,6 +1086,40 @@ fn target_id_parse_roundtrip() {
 }
 
 #[test]
+fn expr_stmt_call_with_args_lowers_to_call_with_args_op() {
+    // helper(42) is parsed as Stmt::ExprStmt(Expr::Call { callee: "helper", args: [IntLiteral(42)] })
+    // which should lower to: StackCell + StackStore (for 42) then CallWithArgs.
+    let src = r#"
+@module_caps(MmioRaw)
+@ctx(thread)
+fn caller() {
+    helper(42)
+}
+@ctx(thread)
+fn helper() {}
+"#;
+    compile_source(src).unwrap();
+}
+
+#[test]
+fn device_field_read_lowers_via_lower_expr() {
+    // helper(UART0.Status) — device field used as call arg; lower_expr reads via MmioRead.
+    let src = r#"
+@module_caps(Mmio)
+device UART0 at 0x3F000000 {
+    Status at 0x04 : uint32 ro
+}
+@ctx(thread)
+fn check() {
+    helper(UART0.Status)
+}
+@ctx(thread)
+fn helper() {}
+"#;
+    compile_source(src).unwrap();
+}
+
+#[test]
 fn device_block_lowers_to_mmio_decls() {
     let src = r#"
 @module_caps(Mmio)
