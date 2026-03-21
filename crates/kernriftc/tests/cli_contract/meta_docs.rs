@@ -345,7 +345,6 @@ fn kr0_general_teaching_docs_prefer_canonical_frontend_surface() {
     let teaching_docs = [
         ARCHITECTURE_DOC_TEXT,
         KR0_KR3_PLAN_TEXT,
-        ADAPTIVE_OS_CONTEXT_TEXT,
         KERNEL_PROFILE_SPEC_TEXT,
         KERNEL_PROFILE_NOTES_TEXT,
     ];
@@ -379,10 +378,5 @@ fn kr0_general_teaching_docs_prefer_canonical_frontend_surface() {
     assert!(
         KR0_KR3_PLAN_TEXT.contains("yieldpoint()"),
         "KR0/KR3 plan must teach the canonical yieldpoint() form"
-    );
-    assert!(
-        ADAPTIVE_OS_CONTEXT_TEXT.contains("mmio_read<T>(addr)")
-            && ADAPTIVE_OS_CONTEXT_TEXT.contains("mmio_write<T>(addr, value)"),
-        "adaptive OS context doc must teach current typed MMIO call forms"
     );
 }

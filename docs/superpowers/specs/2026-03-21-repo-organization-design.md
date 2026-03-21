@@ -8,7 +8,7 @@
 
 ## Goal
 
-Make KernRift approachable for both external kernel/systems developers and internal Adaptive_OS collaborators. Add a complete onboarding path covering Linux, macOS, and Windows. Clean up the primary CLI interface.
+Make KernRift approachable for external kernel/systems developers. Add a complete onboarding path covering Linux, macOS, and Windows. Clean up the primary CLI interface.
 
 ---
 

@@ -36,7 +36,6 @@ const CANONICAL_FIX_PREVIEW_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_canonical_fix_preview_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
-const ADAPTIVE_OS_CONTEXT_TEXT: &str = include_str!("../../../docs/ADAPTIVE_OS_CONTEXT.md");
 const ARCHITECTURE_DOC_TEXT: &str = include_str!("../../../docs/ARCHITECTURE.md");
 const KERNEL_PROFILE_NOTES_TEXT: &str =
     include_str!("../../../docs/design/kernel_profile_pr1_notes.md");
