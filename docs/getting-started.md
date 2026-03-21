@@ -5,6 +5,8 @@
 - **Rust 1.93.1** — install via [rustup](https://rustup.rs). Once you clone this repo, `rust-toolchain.toml` auto-selects the correct version; no manual pinning needed.
 - **Cargo** — bundled with Rust
 
+> **Do not use `apt install cargo` / `apt install rustc` on Ubuntu/Debian.** The distro-packaged Rust is several major versions behind and will fail with a `feature 'edition2024' is required` error. Always install via rustup.rs.
+
 ## Install
 
 ### From source (all platforms)
