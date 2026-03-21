@@ -936,6 +936,7 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::SlicePtr { .. } => "slice_ptr",
         KrirOp::PercpuRead { .. } => "percpu_read",
         KrirOp::PercpuWrite { .. } => "percpu_write",
+        KrirOp::CompareIntoSlot { .. } => "compare_into_slot",
     }
     .to_string()
 }

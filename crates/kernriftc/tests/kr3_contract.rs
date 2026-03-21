@@ -1145,6 +1145,42 @@ fn helper() {}
 }
 
 #[test]
+fn if_else_synthesizes_continuation_functions() {
+    // if/else should compile cleanly; synthesized __if_then/__if_else/__if_end functions
+    // must appear in the KrirModule and pass undefined-symbol checks.
+    let src = r#"
+@ctx(thread)
+fn classify(uint32 val) {
+    if val == 0 {
+        uint32 zero = 1
+    } else {
+        uint32 nonzero = 2
+    }
+}
+"#;
+    let module = compile_source(src).unwrap();
+    // Main fn + 3 synthesized fns (then, else, end)
+    assert!(module.functions.len() >= 4, "expected ≥4 functions, got {}", module.functions.len());
+}
+
+#[test]
+fn compare_into_slot_op_emitted_for_equality() {
+    use krir::KrirOp;
+    let src = r#"
+@ctx(thread)
+fn check(uint32 x) {
+    if x == 42 {
+        uint32 matched = 1
+    }
+}
+"#;
+    let module = compile_source(src).unwrap();
+    let main_fn = module.functions.iter().find(|f| f.name == "check").unwrap();
+    let has_compare = main_fn.ops.iter().any(|op| matches!(op, KrirOp::CompareIntoSlot { .. }));
+    assert!(has_compare, "expected CompareIntoSlot in 'check' ops, got: {:?}", main_fn.ops);
+}
+
+#[test]
 fn device_block_lowers_to_mmio_decls() {
     let src = r#"
 @module_caps(Mmio)

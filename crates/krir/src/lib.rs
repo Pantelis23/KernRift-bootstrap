@@ -109,6 +109,31 @@ pub enum ExecutableCallArg {
     SavedValue,
 }
 
+/// Comparison operation for `CompareIntoSlot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+impl CmpOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Ne => "ne",
+            Self::Lt => "lt",
+            Self::Gt => "gt",
+            Self::Le => "le",
+            Self::Ge => "ge",
+        }
+    }
+}
+
 /// Arithmetic operation for `CellArithImm` / `SlotArithImm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -259,6 +284,14 @@ pub enum KrirOp {
         ty: MmioScalarType,
         name: String,
         value: MmioValueExpr,
+    },
+    /// Evaluate `lhs cmp_op rhs` (comparison) and store 0 or 1 into `out` slot.
+    /// `out` must already be allocated via `StackCell`.
+    CompareIntoSlot {
+        cmp_op: CmpOp,
+        lhs: String,
+        rhs: String,
+        out: String,
     },
 }
 
@@ -1920,6 +1953,14 @@ pub fn lower_current_krir_to_executable_krir(
                     ty.as_str(),
                     name,
                     value.as_source()
+                )),
+                KrirOp::CompareIntoSlot { cmp_op, lhs, rhs, out } => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported compare_{}_into_slot({}, {}, {})",
+                    function.name,
+                    cmp_op.as_str(),
+                    lhs,
+                    rhs,
+                    out
                 )),
             }
         }

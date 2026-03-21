@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use krir::{
-    ArithOp as KrirArithOp, CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl,
-    ExecutableFacts, ExecutableFunction, ExecutableKrirModule, ExecutableOp as KrExecutableOp,
-    ExecutableSignature, ExecutableTerminator, ExecutableValue, ExecutableValueType, Function,
-    FunctionAttrs, KrirModule, KrirOp, KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr,
-    MmioBaseDecl as KrirMmioBaseDecl, MmioRegAccess as KrirMmioRegAccess,
-    MmioRegisterDecl as KrirMmioRegisterDecl, MmioScalarType as KrirMmioScalarType,
-    MmioValueExpr as KrirMmioValueExpr, PercpuDecl as KrirPercpuDecl, SchedHook,
+    ArithOp as KrirArithOp, CallEdge, CmpOp as KrirCmpOp, Ctx, Eff, ExecutableBlock,
+    ExecutableExternDecl, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
+    ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
+    ExecutableValueType, Function, FunctionAttrs, KrirModule, KrirOp, KrirParamTy,
+    MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
+    MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
+    MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
+    PercpuDecl as KrirPercpuDecl, SchedHook,
 };
 use parser::{
     ArithOp as ParserArithOp, AssignTarget as ParserAssignTarget, BinOpKind as ParserBinOpKind,
@@ -1367,9 +1368,14 @@ pub fn lower_to_krir_with_surface(
 
     for item in &ast.items {
         match lower_function(item, surface_profile, &const_map, &device_regs) {
-            Ok(function) => functions.push(function),
+            Ok(fns) => functions.extend(fns),
             Err(errs) => errors.extend(errs),
         }
+    }
+
+    // Rebuild names to include synthesized continuation functions from if/else/loop lowering.
+    for function in &functions {
+        names.insert(function.name.clone());
     }
 
     let mut call_edges = Vec::new();
@@ -1532,39 +1538,89 @@ fn collect_mmio_base_numeric_addrs(mmio_bases: &[KrirMmioBaseDecl]) -> BTreeMap<
         .collect()
 }
 
+/// Lower a single `FnAst` item to one or more `Function`s.
+/// Returns the main function plus any synthesized continuation functions (for if/else/loops).
 fn lower_function(
     item: &FnAst,
     surface_profile: SurfaceProfile,
     const_map: &std::collections::BTreeMap<String, String>,
     device_regs: &DeviceRegMap,
-) -> Result<Function, Vec<String>> {
+) -> Result<Vec<Function>, Vec<String>> {
     let facts = normalize_function_facts(item, surface_profile)?;
 
-    let mut ops = Vec::new();
-    let mut eff_used = facts.eff_used;
-    let mut stmt_errors: Vec<String> = Vec::new();
+    // Shared counters across all synthesized functions from this source function.
     let mut slot_counter: u32 = 0;
-    for stmt in &item.body {
-        lower_stmt(stmt, &mut ops, &mut eff_used, const_map, surface_profile, &mut stmt_errors, &mut slot_counter, device_regs);
-    }
-    if !stmt_errors.is_empty() {
-        return Err(stmt_errors);
+    let mut fn_counter: u32 = 0;
+    let mut all_errors: Vec<String> = Vec::new();
+    let mut result_functions: Vec<Function> = Vec::new();
+
+    // Work queue: (name, params, attrs, ctx_ok, eff, caps, body, continuation)
+    // Start with the main function body.
+    let mut queue: Vec<PendingFn> = vec![PendingFn {
+        name: item.name.clone(),
+        body: item.body.clone(),
+        continuation: String::new(),
+    }];
+    let main_params: Vec<(String, KrirParamTy)> = item
+        .params
+        .iter()
+        .map(|(name, ty)| (name.clone(), lower_param_ty(*ty)))
+        .collect();
+    let main_ctx_ok: Vec<_> = facts.ctx_ok.into_iter().collect();
+    let main_caps_req: Vec<_> = facts.caps_req.into_iter().collect();
+    let main_attrs = facts.attrs.clone();
+    let base_eff = facts.eff_used;
+
+    let mut pending_fns: Vec<PendingFn> = Vec::new();
+
+    while let Some(work) = queue.pop() {
+        let mut ops = Vec::new();
+        let mut eff_used = base_eff.clone();
+        let mut stmt_errors: Vec<String> = Vec::new();
+
+        for stmt in &work.body {
+            lower_stmt(
+                stmt,
+                &mut ops,
+                &mut eff_used,
+                const_map,
+                surface_profile,
+                &mut stmt_errors,
+                &mut slot_counter,
+                device_regs,
+                &mut fn_counter,
+                &mut pending_fns,
+            );
+        }
+        // Append continuation call (for synthesized branches).
+        if !work.continuation.is_empty() {
+            ops.push(KrirOp::Call { callee: work.continuation.clone() });
+        }
+
+        all_errors.extend(stmt_errors);
+
+        // Synthesized functions get empty params/ctx/caps/attrs — they're internal helpers.
+        let is_main = work.name == item.name;
+        result_functions.push(Function {
+            name: work.name,
+            is_extern: if is_main { item.is_extern } else { false },
+            params: if is_main { main_params.clone() } else { vec![] },
+            ctx_ok: if is_main { main_ctx_ok.clone() } else { main_ctx_ok.clone() },
+            eff_used: eff_used.into_iter().collect(),
+            caps_req: if is_main { main_caps_req.clone() } else { main_caps_req.clone() },
+            attrs: if is_main { main_attrs.clone() } else { FunctionAttrs::default() },
+            ops,
+        });
+
+        // Drain pending_fns into the work queue.
+        queue.extend(pending_fns.drain(..));
     }
 
-    Ok(Function {
-        name: item.name.clone(),
-        is_extern: item.is_extern,
-        params: item
-            .params
-            .iter()
-            .map(|(name, ty)| (name.clone(), lower_param_ty(*ty)))
-            .collect(),
-        ctx_ok: facts.ctx_ok.into_iter().collect(),
-        eff_used: eff_used.into_iter().collect(),
-        caps_req: facts.caps_req.into_iter().collect(),
-        attrs: facts.attrs,
-        ops,
-    })
+    if !all_errors.is_empty() {
+        return Err(all_errors);
+    }
+
+    Ok(result_functions)
 }
 
 /// Expand `DeviceDecl` blocks into flat `ParserMmioBaseDecl` + `ParserMmioRegisterDecl` lists,
@@ -1608,6 +1664,21 @@ fn fresh_slot(counter: &mut u32) -> String {
     let n = *counter;
     *counter += 1;
     format!("__t{}", n)
+}
+
+/// A synthesized continuation function queued during if/else/loop lowering.
+struct PendingFn {
+    name: String,
+    body: Vec<Stmt>,
+    /// If non-empty, append `Call { callee: continuation }` at the end of the body.
+    continuation: String,
+}
+
+/// Allocate a fresh synthesized function name.
+fn fresh_fn_name(prefix: &str, counter: &mut u32) -> String {
+    let n = *counter;
+    *counter += 1;
+    format!("{}__{}", prefix, n)
 }
 
 fn collect_mmio_bases(
@@ -2600,19 +2671,24 @@ fn lower_expr(
                         "multiplication/division/modulo not yet supported (V1 limitation)".into(),
                     );
                 }
-                ParserBinOpKind::Eq
-                | ParserBinOpKind::Ne
-                | ParserBinOpKind::Lt
-                | ParserBinOpKind::Gt
-                | ParserBinOpKind::Le
-                | ParserBinOpKind::Ge
-                | ParserBinOpKind::LogAnd
-                | ParserBinOpKind::LogOr => {
+                ParserBinOpKind::LogAnd | ParserBinOpKind::LogOr => {
                     return Err(
-                        "comparison/logical operators not yet lowered (Task 9/10)".into(),
+                        "logical && / || not yet lowered (short-circuit not implemented)".into(),
                     );
                 }
                 _ => {}
+            }
+            // Comparison ops produce 0 or 1 into a fresh bool slot.
+            if let Some(cmp_op) = binop_to_krir_cmp(*op) {
+                let out = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U8, cell: out.clone() });
+                ops.push(KrirOp::CompareIntoSlot {
+                    cmp_op,
+                    lhs: l,
+                    rhs: r,
+                    out: out.clone(),
+                });
+                return Ok(out);
             }
             let arith_op = binop_to_krir_arith(*op)
                 .ok_or_else(|| format!("unsupported binary operator {:?}", op))?;
@@ -2641,6 +2717,18 @@ fn binop_to_krir_arith(op: ParserBinOpKind) -> Option<KrirArithOp> {
     })
 }
 
+fn binop_to_krir_cmp(op: ParserBinOpKind) -> Option<KrirCmpOp> {
+    Some(match op {
+        ParserBinOpKind::Eq => KrirCmpOp::Eq,
+        ParserBinOpKind::Ne => KrirCmpOp::Ne,
+        ParserBinOpKind::Lt => KrirCmpOp::Lt,
+        ParserBinOpKind::Gt => KrirCmpOp::Gt,
+        ParserBinOpKind::Le => KrirCmpOp::Le,
+        ParserBinOpKind::Ge => KrirCmpOp::Ge,
+        _ => return None,
+    })
+}
+
 fn lower_stmt(
     stmt: &Stmt,
     ops: &mut Vec<KrirOp>,
@@ -2650,6 +2738,8 @@ fn lower_stmt(
     errors: &mut Vec<String>,
     slot_counter: &mut u32,
     device_regs: &DeviceRegMap,
+    fn_counter: &mut u32,
+    pending_fns: &mut Vec<PendingFn>,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -2662,13 +2752,13 @@ fn lower_stmt(
         Stmt::Critical(inner) => {
             ops.push(KrirOp::CriticalEnter);
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs);
+                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
             }
             ops.push(KrirOp::CriticalExit);
         }
         Stmt::Unsafe(inner) => {
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs);
+                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
             }
         }
         Stmt::YieldPoint => {
@@ -2971,10 +3061,47 @@ fn lower_stmt(
             });
             eff_used.insert(Eff::Mmio);
         }
-        Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
+        Stmt::If { cond, then_body, else_body } => {
+            // Lower condition into a bool slot.
+            let cond_slot = match lower_expr(cond, ops, slot_counter, device_regs, eff_used) {
+                Ok(s) => s,
+                Err(e) => { errors.push(e); return; }
+            };
+            let then_name = fresh_fn_name("__if_then", fn_counter);
+            let end_name  = fresh_fn_name("__if_end",  fn_counter);
+            let else_name = if else_body.is_empty() {
+                end_name.clone()
+            } else {
+                fresh_fn_name("__if_else", fn_counter)
+            };
+            // BranchIfZero: slot==0 → false → else/end; slot!=0 → true → then
+            ops.push(KrirOp::BranchIfZero {
+                slot: cond_slot,
+                then_callee: else_name.clone(),  // zero = false
+                else_callee: then_name.clone(),  // nonzero = true
+            });
+            pending_fns.push(PendingFn {
+                name: then_name,
+                body: then_body.clone(),
+                continuation: end_name.clone(),
+            });
+            if !else_body.is_empty() {
+                pending_fns.push(PendingFn {
+                    name: else_name,
+                    body: else_body.clone(),
+                    continuation: end_name.clone(),
+                });
+            }
+            pending_fns.push(PendingFn {
+                name: end_name,
+                body: vec![],
+                continuation: String::new(),
+            });
+        }
+        Stmt::While { .. } | Stmt::For { .. }
         | Stmt::Return(_) | Stmt::Break | Stmt::Continue => {
             errors.push(format!(
-                "surface syntax statement not yet lowered (Task 9-12): {:?}",
+                "surface syntax statement not yet lowered (Task 10-12): {:?}",
                 stmt
             ));
         }
