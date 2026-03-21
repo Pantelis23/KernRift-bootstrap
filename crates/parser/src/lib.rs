@@ -67,8 +67,12 @@ impl MmioScalarType {
         }
     }
 
-    /// Returns the underlying unsigned integer storage type.
-    /// Signed types and bool/char all have unsigned backing storage.
+    /// Returns the underlying unsigned integer storage type for use in KRIR lowering.
+    /// - Signed integers (I8/I16/I32/I64) → same-width unsigned (U8/U16/U32/U64)
+    /// - Bool, Char → U8
+    /// - F16 → U16 (storage as raw 16-bit value)
+    /// - F32, F64 → returned as-is (no integer equivalent; KRIR float lowering handles these)
+    /// - Unsigned integers → identity
     pub fn storage_type(self) -> Self {
         match self {
             Self::I8  => Self::U8,  Self::I16 => Self::U16,
@@ -114,6 +118,78 @@ impl MmioScalarType {
             other => Err(format!("unknown type '{}'", other)),
         }
     }
+}
+
+/// Binary operator kinds — precedence enforced by the Pratt parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOpKind {
+    Add, Sub,                              // arithmetic
+    And, Or, Xor, Shl, Shr,               // bitwise
+    Mul, Div, Rem,                         // arithmetic (deferred V1 — parser accepts, HIR rejects)
+    Eq, Ne, Lt, Gt, Le, Ge,               // comparison
+    LogAnd, LogOr,                         // logical
+}
+
+/// Unary operator kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnOpKind {
+    Not,    // logical not  `!`
+    BitNot, // bitwise not  `~`
+    Neg,    // arithmetic negation `-`
+}
+
+/// A full expression — replaces the old `MmioValueExpr` (which was Ident | IntLiteral only).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    IntLiteral(u64),
+    FloatLiteral(f64),
+    BoolLiteral(bool),
+    CharLiteral(u8),
+    StringLiteral(String),              // for `print` intrinsic
+    Ident(String),                      // local variable or param slot
+    DeviceField {                       // `UART0.Status`
+        device: String,
+        field: String,
+    },
+    SliceLen(String),                   // `buf.len`
+    Call {                              // `get_status()`
+        callee: String,
+        args: Vec<Expr>,
+    },
+    BinOp {
+        op: BinOpKind,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    UnOp {
+        op: UnOpKind,
+        operand: Box<Expr>,
+    },
+}
+
+/// A register inside a `device` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRegDecl {
+    pub name: String,
+    pub offset: String,
+    pub ty: MmioScalarType,
+    pub access: MmioRegAccess,
+}
+
+/// `device NAME at ADDR { ... }` — replaces `mmio NAME = ADDR` + `mmio_reg` pairs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceDecl {
+    pub name: String,
+    pub base_addr: String,
+    pub registers: Vec<DeviceRegDecl>,
+    pub source: SourceNote,
+}
+
+/// Assignment target — either a local variable or a device register field.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssignTarget {
+    Ident(String),                // local variable
+    DeviceField { device: String, field: String },  // UART0.Data = b
 }
 
 /// Arithmetic operation for `cell_<op><T>` statements.
@@ -183,7 +259,7 @@ impl MmioValueExpr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Call(String),
     CallCapture {
@@ -295,13 +371,62 @@ pub enum Stmt {
         name: String,
         value: MmioValueExpr,
     },
+
+    // ---- NEW SURFACE SYNTAX STATEMENTS ----
+    /// `TypeKind name = expr` or `TypeKind name`
+    VarDecl {
+        ty: MmioScalarType,
+        name: String,
+        init: Option<Expr>,
+    },
+    /// `name = expr`
+    Assign {
+        target: AssignTarget,
+        value: Expr,
+    },
+    /// `name op= expr`
+    CompoundAssign {
+        target: AssignTarget,
+        op: BinOpKind,
+        value: Expr,
+    },
+    /// `if cond { then } else { else_ }`
+    If {
+        cond: Expr,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,     // empty = no else
+    },
+    /// `while cond { body }`
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
+    /// `for i in start..end { body }`
+    For {
+        var: String,
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+        body: Vec<Stmt>,
+    },
+    /// `return expr` or bare `return`
+    Return(Option<Expr>),
+    /// `break`
+    Break,
+    /// `continue`
+    Continue,
+    /// `print("...")` — compiler intrinsic
+    Print(String),
+    /// `fn_name(args...)` as a statement (call whose return value is discarded)
+    ExprStmt(Expr),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FnAst {
     pub name: String,
     pub is_extern: bool,
     pub params: Vec<(String, ParamTy)>,
+    pub return_ty: Option<MmioScalarType>,  // None = void
     pub attrs: Vec<RawAttr>,
     pub body: Vec<Stmt>,
     pub source: SourceNote,
@@ -398,16 +523,17 @@ pub struct PercpuDecl {
     pub ty: MmioScalarType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ModuleAst {
     pub module_caps: Vec<String>,
     pub mmio_bases: Vec<MmioBaseDecl>,
     pub mmio_registers: Vec<MmioRegisterDecl>,
+    pub devices: Vec<DeviceDecl>,          // NEW
     pub constants: Vec<ConstDecl>,
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
     /// Lock class declarations: `spinlock NAME;`
-    pub spinlocks: Vec<String>,
+    pub locks: Vec<String>,                // RENAMED from spinlocks
     /// Per-cpu variable declarations: `percpu NAME: T;`
     pub percpu_vars: Vec<PercpuDecl>,
     pub items: Vec<FnAst>,
@@ -605,7 +731,7 @@ impl<'a> Parser<'a> {
                             self.errors
                                 .push(format!("duplicate spinlock declaration '{}'", name));
                         } else {
-                            module.spinlocks.push(name);
+                            module.locks.push(name);
                         }
                     }
                     None => {
@@ -717,6 +843,7 @@ impl<'a> Parser<'a> {
                     name,
                     is_extern: true,
                     params,
+                    return_ty: None,
                     attrs,
                     body: Vec::new(),
                     source: self.source_note(item_start),
@@ -736,6 +863,7 @@ impl<'a> Parser<'a> {
                 name,
                 is_extern: false,
                 params,
+                return_ty: None,
                 attrs,
                 body,
                 source: self.source_note(item_start),
@@ -3019,5 +3147,22 @@ mod type_tests {
         assert_eq!(MmioScalarType::parse("char"),    Ok(MmioScalarType::Char));
         assert_eq!(MmioScalarType::parse("byte"),    Ok(MmioScalarType::U8));
         assert_eq!(MmioScalarType::parse("addr"),    Ok(MmioScalarType::U64));
+    }
+
+    #[test]
+    fn expr_ast_compiles() {
+        // just checks the types exist and are usable
+        let _e = Expr::IntLiteral(42);
+        let _e2 = Expr::BinOp {
+            op: BinOpKind::Add,
+            lhs: Box::new(Expr::IntLiteral(1)),
+            rhs: Box::new(Expr::IntLiteral(2)),
+        };
+        let _d = DeviceDecl {
+            name: "UART0".to_string(),
+            base_addr: "0x3F000000".to_string(),
+            registers: vec![],
+            source: SourceNote { byte_offset: 0, line: 1, column: 1, line_text: String::new() },
+        };
     }
 }

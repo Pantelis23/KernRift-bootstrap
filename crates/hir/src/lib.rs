@@ -1466,7 +1466,7 @@ pub fn lower_to_krir_with_surface(
     }
 
     // Collect and validate spinlock / per-cpu declarations.
-    let declared_lock_classes: BTreeSet<&str> = ast.spinlocks.iter().map(String::as_str).collect();
+    let declared_lock_classes: BTreeSet<&str> = ast.locks.iter().map(String::as_str).collect();
     let declared_percpu: BTreeSet<&str> = ast.percpu_vars.iter().map(|d| d.name.as_str()).collect();
 
     for function in &functions {
@@ -1493,7 +1493,7 @@ pub fn lower_to_krir_with_surface(
         }
     }
 
-    let lock_classes: Vec<String> = ast.spinlocks.clone();
+    let lock_classes: Vec<String> = ast.locks.clone();
     let percpu_vars: Vec<KrirPercpuDecl> = ast
         .percpu_vars
         .iter()
@@ -2469,6 +2469,15 @@ fn lower_stmts_to_canonical_executable(
                 callee,
                 args.len()
             )),
+            Stmt::VarDecl { .. } | Stmt::Assign { .. } | Stmt::CompoundAssign { .. }
+            | Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
+            | Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Print(_)
+            | Stmt::ExprStmt(_) => {
+                errors.push(format!(
+                    "surface syntax statement not yet lowered (Task 7-12): {:?}",
+                    stmt
+                ));
+            }
         }
     }
 }
@@ -2669,6 +2678,15 @@ fn lower_stmt(
                 args: krir_args,
             });
         }
+        Stmt::VarDecl { .. } | Stmt::Assign { .. } | Stmt::CompoundAssign { .. }
+        | Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
+        | Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Print(_)
+        | Stmt::ExprStmt(_) => {
+            errors.push(format!(
+                "surface syntax statement not yet lowered (Task 7-12): {:?}",
+                stmt
+            ));
+        }
     }
 }
 
@@ -2679,8 +2697,12 @@ fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
         ParserMmioScalarType::U16 => KrirMmioScalarType::U16,
         ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
         ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
-        // storage_type() only ever returns U8/U16/U32/U64; other arms are unreachable.
-        _ => unreachable!("storage_type() returned non-unsigned variant"),
+        ParserMmioScalarType::F32 | ParserMmioScalarType::F64 | ParserMmioScalarType::F16 => {
+            // Float MMIO lowering not yet implemented (Task 14).
+            // This should be caught at parse time — float types are not valid in mmio_read/write contexts.
+            panic!("float MMIO lowering not yet implemented; use mmio_read<uint32> and reinterpret")
+        }
+        other => unreachable!("storage_type() returned non-unsigned variant {:?}", other),
     }
 }
 
