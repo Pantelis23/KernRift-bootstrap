@@ -1297,12 +1297,13 @@ pub fn lower_to_krir_with_surface(
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
-    let module_declares_mmio_structure = module_declares_mmio_structure(ast);
+    let (expanded_bases, expanded_regs) = expand_device_decls(ast);
+    let module_declares_mmio_structure = module_declares_mmio_structure(ast, &expanded_bases, &expanded_regs);
     let module_allows_raw_mmio_literals = module_allows_raw_mmio_literals(&ast.module_caps);
-    let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(ast);
+    let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(&expanded_bases);
     let mmio_base_numeric_addrs = collect_mmio_base_numeric_addrs(&mmio_bases);
     let (mmio_registers, mmio_register_rules, mmio_absolute_register_rules, mmio_register_errors) =
-        collect_mmio_registers(ast, &mmio_base_names, &mmio_base_numeric_addrs);
+        collect_mmio_registers(&expanded_regs, &mmio_base_names, &mmio_base_numeric_addrs);
     errors.extend(mmio_errors);
     errors.extend(mmio_register_errors);
 
@@ -1562,12 +1563,39 @@ fn lower_function(
     })
 }
 
-fn collect_mmio_bases(ast: &ModuleAst) -> (Vec<KrirMmioBaseDecl>, BTreeSet<String>, Vec<String>) {
+/// Expand `DeviceDecl` blocks into flat `ParserMmioBaseDecl` + `ParserMmioRegisterDecl` lists,
+/// prepending any existing flat declarations so that device-block registers are also included.
+fn expand_device_decls(
+    ast: &ModuleAst,
+) -> (Vec<ParserMmioBaseDecl>, Vec<ParserMmioRegisterDecl>) {
+    let mut bases = ast.mmio_bases.clone();
+    let mut regs = ast.mmio_registers.clone();
+    for dev in &ast.devices {
+        bases.push(ParserMmioBaseDecl {
+            name: dev.name.clone(),
+            addr: dev.base_addr.clone(),
+        });
+        for reg in &dev.registers {
+            regs.push(ParserMmioRegisterDecl {
+                base: dev.name.clone(),
+                name: reg.name.clone(),
+                offset: reg.offset.clone(),
+                ty: reg.ty,
+                access: reg.access,
+            });
+        }
+    }
+    (bases, regs)
+}
+
+fn collect_mmio_bases(
+    bases: &[ParserMmioBaseDecl],
+) -> (Vec<KrirMmioBaseDecl>, BTreeSet<String>, Vec<String>) {
     let mut out = Vec::new();
     let mut names = BTreeSet::new();
     let mut errors = Vec::new();
 
-    for ParserMmioBaseDecl { name, addr } in &ast.mmio_bases {
+    for ParserMmioBaseDecl { name, addr } in bases {
         if !names.insert(name.clone()) {
             errors.push(format!("duplicate mmio base '{}'", name));
             continue;
@@ -1608,7 +1636,7 @@ const MMIO_SYMBOLIC_BASE_ZERO_OFFSET: &str = "0";
 const MMIO_RAW_MODULE_CAP: &str = "MmioRaw";
 
 fn collect_mmio_registers(
-    ast: &ModuleAst,
+    registers: &[ParserMmioRegisterDecl],
     declared_bases: &BTreeSet<String>,
     declared_base_numeric_addrs: &BTreeMap<String, u128>,
 ) -> (
@@ -1629,7 +1657,7 @@ fn collect_mmio_registers(
         offset,
         ty,
         access,
-    } in &ast.mmio_registers
+    } in registers
     {
         let full_name = format!("{}.{}", base, name);
         if !declared_bases.contains(base) {
@@ -1966,8 +1994,12 @@ fn validate_mmio_register_write_absolute(
     true
 }
 
-fn module_declares_mmio_structure(ast: &ModuleAst) -> bool {
-    !ast.mmio_bases.is_empty() || !ast.mmio_registers.is_empty()
+fn module_declares_mmio_structure(
+    ast: &ModuleAst,
+    expanded_bases: &[ParserMmioBaseDecl],
+    expanded_regs: &[ParserMmioRegisterDecl],
+) -> bool {
+    !expanded_bases.is_empty() || !expanded_regs.is_empty() || !ast.devices.is_empty()
 }
 
 fn module_allows_raw_mmio_literals(module_caps: &[String]) -> bool {

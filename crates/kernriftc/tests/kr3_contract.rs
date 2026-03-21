@@ -1084,3 +1084,24 @@ fn target_id_parse_roundtrip() {
     }
     assert!(BackendTargetId::parse("unknown-target").is_err());
 }
+
+#[test]
+fn device_block_lowers_to_mmio_decls() {
+    let src = r#"
+@module_caps(Mmio)
+device UART0 at 0x3F000000 {
+    Data   at 0x00 : uint8  rw
+    Status at 0x04 : uint32 ro
+}
+@ctx(thread)
+fn dummy() {}
+"#;
+    use kernriftc::compile_source;
+    let module = compile_source(src).unwrap();
+    assert!(module.mmio_bases.iter().any(|b| b.name == "UART0"),
+        "expected UART0 in mmio_bases, got: {:?}", module.mmio_bases);
+    assert!(module.mmio_registers.iter().any(|r| r.name == "Status"),
+        "expected Status in mmio_registers, got: {:?}", module.mmio_registers);
+    assert!(module.mmio_registers.iter().any(|r| r.name == "Data"),
+        "expected Data in mmio_registers");
+}
