@@ -27,6 +27,21 @@ fn run(path: &str, file: &str, extra: &[String]) -> ! {
 
 #[cfg(not(unix))]
 fn run(path: &str, file: &str, extra: &[String]) -> ! {
+    // Check for ELF magic — .krbo files are Linux ELF executables and cannot
+    // run on Windows directly.
+    if let Ok(mut f) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut magic = [0u8; 4];
+        if f.read_exact(&mut magic).is_ok() && &magic == b"\x7fELF" {
+            eprintln!(
+                "kernrift: '{}' is a Linux ELF executable and cannot run on Windows.\n\
+                 Use WSL (wsl --install) to run .krbo files: wsl kernrift {}",
+                file, file
+            );
+            std::process::exit(1);
+        }
+    }
+
     match std::process::Command::new(path).args(extra).status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(err) => {

@@ -458,7 +458,13 @@ fn emit_x86_64_executable_bytes(
     target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
     if !cfg!(target_os = "linux") {
-        return Err("final executable emit currently requires a Linux host".to_string());
+        return Err(
+            "compiling to a runnable .krbo requires a Linux host — \
+             the output format is a Linux ELF executable.\n\
+             On Windows: use WSL (wsl --install) and run kernriftc from inside it.\n\
+             Analysis commands (kernriftc check, kernriftc policy, etc.) work on all platforms."
+                .to_string(),
+        );
     }
 
     if !executable.extern_declarations.is_empty() {
