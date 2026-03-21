@@ -76,4 +76,4 @@ KR0 (facts-only pipeline + artifact emission) is complete. KR1–KR3 (driver sub
 
 ## License
 
-MIT
+MIT © 2025 Pantelis Christou — see [LICENSE](LICENSE) for the full text.
