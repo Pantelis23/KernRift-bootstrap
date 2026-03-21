@@ -336,13 +336,48 @@ fn main() -> ExitCode {
             }
             run_report(&args[2], &args[3])
         }
-        _ => match parse_backend_emit_args("elfobj", &args[1..], SurfaceProfile::Stable) {
-            Ok(parsed) => run_backend_emit(&parsed),
-            Err(_) => {
-                print_usage();
-                ExitCode::from(EXIT_INVALID_INPUT)
+        arg if args.len() == 2 && arg.ends_with(".kr") => {
+            let stem = std::path::Path::new(arg)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let output = format!("{}.krbo", stem);
+            let synthetic: Vec<String> =
+                vec!["-o".to_string(), output, arg.to_string()];
+            match parse_backend_emit_args("krbo", &synthetic, SurfaceProfile::Stable) {
+                Ok(parsed) => run_backend_emit(&parsed),
+                Err(err) => {
+                    eprintln!("{}", err);
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
             }
-        },
+        }
+        arg if args.len() > 2 && args[1].ends_with(".kr") => {
+            eprintln!(
+                "error: unexpected arguments after source file. \
+                 Use 'kernriftc check' or '--emit=krbo -o <out> <file.kr>' for explicit control."
+            );
+            let _ = arg;
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+        arg if arg.starts_with("--") => {
+            eprintln!(
+                "error: unknown flag '{}'. Run 'kernriftc check --help' for usage.",
+                arg
+            );
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+        arg if arg.contains('.') => {
+            eprintln!("error: expected a .kr source file, got '{}'", arg);
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+        arg => {
+            eprintln!(
+                "error: unknown subcommand '{}'. Did you mean 'kernriftc check'?",
+                arg
+            );
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
     }
 }
 
