@@ -42,11 +42,11 @@ use crate::check_verify::{
     parse_verify_args, run_check, run_inspect, run_inspect_report, run_policy, run_report,
     run_verify,
 };
+use crate::living_compiler::{parse_living_compiler_args, run_living_compiler};
 use crate::policy_engine::{
     CONTRACTS_SCHEMA_V1, CONTRACTS_SCHEMA_V2, CONTRACTS_SCHEMA_VERSION_V2, ContractsBundle,
     evaluate_policy, format_policy_violation, parse_policy_text, validate_json_against_schema_text,
 };
-use crate::living_compiler::{parse_living_compiler_args, run_living_compiler};
 use crate::proposals::{parse_proposals_args, run_proposals};
 use crate::verify_artifact_meta::{parse_verify_artifact_meta_args, run_verify_artifact_meta};
 
@@ -342,8 +342,7 @@ fn main() -> ExitCode {
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
             let output = format!("{}.krbo", stem);
-            let synthetic: Vec<String> =
-                vec!["-o".to_string(), output.clone(), arg.to_string()];
+            let synthetic: Vec<String> = vec!["-o".to_string(), output.clone(), arg.to_string()];
             match parse_backend_emit_args("elfexe", &synthetic, SurfaceProfile::Stable) {
                 Ok(parsed) => {
                     let result = run_backend_emit(&parsed);

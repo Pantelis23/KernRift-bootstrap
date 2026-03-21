@@ -1,3 +1,4 @@
+#[allow(deprecated)]
 #[test]
 fn default_compile_produces_executable_in_cwd() {
     let tmp = std::env::temp_dir().join(format!(
@@ -26,6 +27,7 @@ fn default_compile_produces_executable_in_cwd() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
+#[allow(deprecated)]
 #[test]
 fn default_compile_extra_args_gives_clear_error() {
     Command::cargo_bin("kernriftc")
@@ -37,6 +39,7 @@ fn default_compile_extra_args_gives_clear_error() {
         .stderr(predicates::str::contains("unexpected arguments after source file"));
 }
 
+#[allow(deprecated)]
 #[test]
 fn unknown_subcommand_gives_clear_error() {
     Command::cargo_bin("kernriftc")
@@ -47,6 +50,7 @@ fn unknown_subcommand_gives_clear_error() {
         .stderr(predicates::str::contains("unknown subcommand"));
 }
 
+#[allow(deprecated)]
 #[test]
 fn wrong_extension_gives_clear_error() {
     Command::cargo_bin("kernriftc")
@@ -57,6 +61,7 @@ fn wrong_extension_gives_clear_error() {
         .stderr(predicates::str::contains("expected a .kr source file"));
 }
 
+#[allow(deprecated)]
 #[test]
 fn unknown_flag_gives_clear_error() {
     Command::cargo_bin("kernriftc")

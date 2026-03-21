@@ -44,5 +44,8 @@ fn print_json(suggestions: &[kernriftc::PatternMatch]) {
         "suggestion_count": suggestions.len(),
         "suggestions": suggestions,
     });
-    println!("{}", serde_json::to_string_pretty(&output).expect("serialize"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("serialize")
+    );
 }

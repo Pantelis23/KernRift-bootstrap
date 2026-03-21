@@ -37,7 +37,7 @@ pub(crate) fn parse_living_compiler_args(args: &[String]) -> Result<LivingCompil
             "--surface" => {
                 let Some(value) = args.get(idx + 1) else {
                     return Err(
-                        "invalid living-compiler mode: --surface requires a value".to_string(),
+                        "invalid living-compiler mode: --surface requires a value".to_string()
                     );
                 };
                 surface = SurfaceProfile::parse(value)
@@ -47,14 +47,17 @@ pub(crate) fn parse_living_compiler_args(args: &[String]) -> Result<LivingCompil
             "--format" => {
                 let Some(value) = args.get(idx + 1) else {
                     return Err(
-                        "invalid living-compiler mode: --format requires a value".to_string(),
+                        "invalid living-compiler mode: --format requires a value".to_string()
                     );
                 };
                 format = LivingCompilerFormat::parse(value)?;
                 idx += 2;
             }
             other if other.starts_with('-') => {
-                return Err(format!("invalid living-compiler mode: unknown flag '{}'", other));
+                return Err(format!(
+                    "invalid living-compiler mode: unknown flag '{}'",
+                    other
+                ));
             }
             other => {
                 positionals.push(other.to_string());

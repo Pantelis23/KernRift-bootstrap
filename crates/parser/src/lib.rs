@@ -47,9 +47,17 @@ pub struct RawAttr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmioScalarType {
-    U8, U16, U32, U64,
-    I8, I16, I32, I64,
-    F32, F64, F16,
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    F16,
     Bool,
     Char,
 }
@@ -57,13 +65,19 @@ pub enum MmioScalarType {
 impl MmioScalarType {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::U8  => "uint8",  Self::U16 => "uint16",
-            Self::U32 => "uint32", Self::U64 => "uint64",
-            Self::I8  => "int8",   Self::I16 => "int16",
-            Self::I32 => "int32",  Self::I64 => "int64",
-            Self::F32 => "float32",Self::F64 => "float64",
+            Self::U8 => "uint8",
+            Self::U16 => "uint16",
+            Self::U32 => "uint32",
+            Self::U64 => "uint64",
+            Self::I8 => "int8",
+            Self::I16 => "int16",
+            Self::I32 => "int32",
+            Self::I64 => "int64",
+            Self::F32 => "float32",
+            Self::F64 => "float64",
             Self::F16 => "float16",
-            Self::Bool => "bool",  Self::Char => "char",
+            Self::Bool => "bool",
+            Self::Char => "char",
         }
     }
 
@@ -75,8 +89,10 @@ impl MmioScalarType {
     /// - Unsigned integers → identity
     pub fn storage_type(self) -> Self {
         match self {
-            Self::I8  => Self::U8,  Self::I16 => Self::U16,
-            Self::I32 => Self::U32, Self::I64 => Self::U64,
+            Self::I8 => Self::U8,
+            Self::I16 => Self::U16,
+            Self::I32 => Self::U32,
+            Self::I64 => Self::U64,
             Self::Bool | Self::Char => Self::U8,
             Self::F16 => Self::U16,
             other => other,
@@ -85,10 +101,10 @@ impl MmioScalarType {
 
     pub fn byte_size(self) -> u8 {
         match self {
-            Self::U8  | Self::I8  | Self::Bool | Self::Char => 1,
-            Self::U16 | Self::I16 | Self::F16               => 2,
-            Self::U32 | Self::I32 | Self::F32               => 4,
-            Self::U64 | Self::I64 | Self::F64               => 8,
+            Self::U8 | Self::I8 | Self::Bool | Self::Char => 1,
+            Self::U16 | Self::I16 | Self::F16 => 2,
+            Self::U32 | Self::I32 | Self::F32 => 4,
+            Self::U64 | Self::I64 | Self::F64 => 8,
         }
     }
 
@@ -102,19 +118,19 @@ impl MmioScalarType {
 
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim() {
-            "uint8"  | "u8"   | "byte" => Ok(Self::U8),
-            "uint16" | "u16"           => Ok(Self::U16),
-            "uint32" | "u32"           => Ok(Self::U32),
-            "uint64" | "u64"  | "addr" => Ok(Self::U64),
-            "int8"   | "i8"            => Ok(Self::I8),
-            "int16"  | "i16"           => Ok(Self::I16),
-            "int32"  | "i32"           => Ok(Self::I32),
-            "int64"  | "i64"           => Ok(Self::I64),
-            "float32"| "f32"           => Ok(Self::F32),
-            "float64"| "f64"           => Ok(Self::F64),
-            "float16"| "f16"           => Ok(Self::F16),
-            "bool"                     => Ok(Self::Bool),
-            "char"                     => Ok(Self::Char),
+            "uint8" | "u8" | "byte" => Ok(Self::U8),
+            "uint16" | "u16" => Ok(Self::U16),
+            "uint32" | "u32" => Ok(Self::U32),
+            "uint64" | "u64" | "addr" => Ok(Self::U64),
+            "int8" | "i8" => Ok(Self::I8),
+            "int16" | "i16" => Ok(Self::I16),
+            "int32" | "i32" => Ok(Self::I32),
+            "int64" | "i64" => Ok(Self::I64),
+            "float32" | "f32" => Ok(Self::F32),
+            "float64" | "f64" => Ok(Self::F64),
+            "float16" | "f16" => Ok(Self::F16),
+            "bool" => Ok(Self::Bool),
+            "char" => Ok(Self::Char),
             other => Err(format!("unknown type '{}'", other)),
         }
     }
@@ -123,11 +139,24 @@ impl MmioScalarType {
 /// Binary operator kinds — precedence enforced by the Pratt parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOpKind {
-    Add, Sub,                              // arithmetic
-    And, Or, Xor, Shl, Shr,               // bitwise
-    Mul, Div, Rem,                         // arithmetic (deferred V1 — parser accepts, HIR rejects)
-    Eq, Ne, Lt, Gt, Le, Ge,               // comparison
-    LogAnd, LogOr,                         // logical
+    Add,
+    Sub, // arithmetic
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr, // bitwise
+    Mul,
+    Div,
+    Rem, // arithmetic (deferred V1 — parser accepts, HIR rejects)
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge, // comparison
+    LogAnd,
+    LogOr, // logical
 }
 
 /// Unary operator kinds.
@@ -145,14 +174,16 @@ pub enum Expr {
     FloatLiteral(f64),
     BoolLiteral(bool),
     CharLiteral(u8),
-    StringLiteral(String),              // for `print` intrinsic
-    Ident(String),                      // local variable or param slot
-    DeviceField {                       // `UART0.Status`
+    StringLiteral(String), // for `print` intrinsic
+    Ident(String),         // local variable or param slot
+    DeviceField {
+        // `UART0.Status`
         device: String,
         field: String,
     },
-    SliceLen(String),                   // `buf.len`
-    Call {                              // `get_status()`
+    SliceLen(String), // `buf.len`
+    Call {
+        // `get_status()`
         callee: String,
         args: Vec<Expr>,
     },
@@ -188,8 +219,8 @@ pub struct DeviceDecl {
 /// Assignment target — either a local variable or a device register field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssignTarget {
-    Ident(String),                // local variable
-    DeviceField { device: String, field: String },  // UART0.Data = b
+    Ident(String),                                 // local variable
+    DeviceField { device: String, field: String }, // UART0.Data = b
 }
 
 /// Arithmetic operation for `cell_<op><T>` statements.
@@ -394,7 +425,7 @@ pub enum Stmt {
     If {
         cond: Expr,
         then_body: Vec<Stmt>,
-        else_body: Vec<Stmt>,     // empty = no else
+        else_body: Vec<Stmt>, // empty = no else
     },
     /// `while cond { body }`
     While {
@@ -426,7 +457,7 @@ pub struct FnAst {
     pub name: String,
     pub is_extern: bool,
     pub params: Vec<(String, ParamTy)>,
-    pub return_ty: Option<MmioScalarType>,  // None = void
+    pub return_ty: Option<MmioScalarType>, // None = void
     pub attrs: Vec<RawAttr>,
     pub body: Vec<Stmt>,
     pub source: SourceNote,
@@ -528,12 +559,12 @@ pub struct ModuleAst {
     pub module_caps: Vec<String>,
     pub mmio_bases: Vec<MmioBaseDecl>,
     pub mmio_registers: Vec<MmioRegisterDecl>,
-    pub devices: Vec<DeviceDecl>,          // NEW
+    pub devices: Vec<DeviceDecl>, // NEW
     pub constants: Vec<ConstDecl>,
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
     /// Lock class declarations: `spinlock NAME;`
-    pub locks: Vec<String>,                // RENAMED from spinlocks
+    pub locks: Vec<String>, // RENAMED from spinlocks
     /// Per-cpu variable declarations: `percpu NAME: T;`
     pub percpu_vars: Vec<PercpuDecl>,
     pub items: Vec<FnAst>,
@@ -647,15 +678,36 @@ pub fn split_csv_allow_trailing_comma(input: &str) -> Result<Vec<String>, String
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Keywords
-    Fn, Extern, Return, Break, Continue,
-    If, Else, While, For, In,
-    Const, Struct, Enum, Device, At, Lock, Percpu,
-    Acquire, Release, Critical, Unsafe, Yieldpoint,
-    Print, RawWrite, RawRead,
-    True, False,
+    Fn,
+    Extern,
+    Return,
+    Break,
+    Continue,
+    If,
+    Else,
+    While,
+    For,
+    In,
+    Const,
+    Struct,
+    Enum,
+    Device,
+    At,
+    Lock,
+    Percpu,
+    Acquire,
+    Release,
+    Critical,
+    Unsafe,
+    Yieldpoint,
+    Print,
+    RawWrite,
+    RawRead,
+    True,
+    False,
     // Type keywords — carry the resolved type
     TypeKw(MmioScalarType),
-    StringKw,       // `string` type keyword (special: []char)
+    StringKw, // `string` type keyword (special: []char)
     // Literals
     IntLit(u64),
     FloatLit(f64),
@@ -664,20 +716,54 @@ pub enum TokenKind {
     // Identifier
     Ident(String),
     // Punctuation
-    LBrace, RBrace, LParen, RParen, LBracket, RBracket,
-    Comma, Colon, Semicolon, Dot, DotDot, DotDotEq,
-    Arrow,          // `->`
+    LBrace,
+    RBrace,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Comma,
+    Colon,
+    Semicolon,
+    Dot,
+    DotDot,
+    DotDotEq,
+    Arrow, // `->`
     // Operators
-    Plus, Minus, Star, Slash, Percent,
-    Amp, Pipe, Caret, Tilde, Bang,
-    Shl, Shr,
-    Eq, EqEq, BangEq, Lt, Gt, LtEq, GtEq,
-    AmpAmp, PipePipe,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    Bang,
+    Shl,
+    Shr,
+    Eq,
+    EqEq,
+    BangEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    AmpAmp,
+    PipePipe,
     // Compound assignment
-    PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
-    AmpEq, PipeEq, CaretEq, ShlEq, ShrEq,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
     // Attributes
-    AtSign,         // `@` before attribute names
+    AtSign, // `@` before attribute names
     // End of file
     Eof,
 }
@@ -704,7 +790,9 @@ impl<'a> Lexer<'a> {
             let tok = self.next_token()?;
             let is_eof = matches!(tok.kind, TokenKind::Eof);
             tokens.push(tok);
-            if is_eof { break; }
+            if is_eof {
+                break;
+            }
         }
         Ok(tokens)
     }
@@ -776,18 +864,18 @@ impl<'a> Lexer<'a> {
 
     fn lex_escape(&mut self) -> Result<char, String> {
         match self.advance() {
-            Some('n')  => Ok('\n'),
-            Some('r')  => Ok('\r'),
-            Some('t')  => Ok('\t'),
-            Some('b')  => Ok('\x08'),
-            Some('a')  => Ok('\x07'),
-            Some('f')  => Ok('\x0C'),
-            Some('v')  => Ok('\x0B'),
+            Some('n') => Ok('\n'),
+            Some('r') => Ok('\r'),
+            Some('t') => Ok('\t'),
+            Some('b') => Ok('\x08'),
+            Some('a') => Ok('\x07'),
+            Some('f') => Ok('\x0C'),
+            Some('v') => Ok('\x0B'),
             Some('\\') => Ok('\\'),
             Some('\'') => Ok('\''),
-            Some('"')  => Ok('"'),
-            Some('0')  => Ok('\0'),
-            Some('x')  => {
+            Some('"') => Ok('"'),
+            Some('0') => Ok('\0'),
+            Some('x') => {
                 let h1 = self.advance().ok_or("expected hex digit after \\x")?;
                 let h2 = self.advance().ok_or("expected two hex digits after \\x")?;
                 let hex = format!("{}{}", h1, h2);
@@ -819,32 +907,101 @@ impl<'a> Lexer<'a> {
             Some('"') => TokenKind::StrLit(self.lex_string_literal()?),
             Some('\'') => TokenKind::CharLit(self.lex_char_literal()?),
             Some('.') => {
-                if self.src[self.pos..].starts_with(".=") { self.pos += 2; TokenKind::DotDotEq }
-                else if self.src[self.pos..].starts_with('.') { self.pos += 1; TokenKind::DotDot }
-                else { TokenKind::Dot }
+                if self.src[self.pos..].starts_with(".=") {
+                    self.pos += 2;
+                    TokenKind::DotDotEq
+                } else if self.src[self.pos..].starts_with('.') {
+                    self.pos += 1;
+                    TokenKind::DotDot
+                } else {
+                    TokenKind::Dot
+                }
             }
             Some('-') => {
-                if self.src[self.pos..].starts_with('>') { self.pos += 1; TokenKind::Arrow }
-                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::MinusEq }
-                else { TokenKind::Minus }
+                if self.src[self.pos..].starts_with('>') {
+                    self.pos += 1;
+                    TokenKind::Arrow
+                } else if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::MinusEq
+                } else {
+                    TokenKind::Minus
+                }
             }
-            Some('+') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::PlusEq  } else { TokenKind::Plus  },
-            Some('*') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::StarEq  } else { TokenKind::Star  },
-            Some('/') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::SlashEq } else { TokenKind::Slash },
-            Some('%') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::PercentEq } else { TokenKind::Percent },
-            Some('^') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::CaretEq } else { TokenKind::Caret },
-            Some('!') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::BangEq  } else { TokenKind::Bang  },
-            Some('=') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::EqEq    } else { TokenKind::Eq    },
+            Some('+') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::PlusEq
+                } else {
+                    TokenKind::Plus
+                }
+            }
+            Some('*') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::StarEq
+                } else {
+                    TokenKind::Star
+                }
+            }
+            Some('/') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::SlashEq
+                } else {
+                    TokenKind::Slash
+                }
+            }
+            Some('%') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::PercentEq
+                } else {
+                    TokenKind::Percent
+                }
+            }
+            Some('^') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::CaretEq
+                } else {
+                    TokenKind::Caret
+                }
+            }
+            Some('!') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::BangEq
+                } else {
+                    TokenKind::Bang
+                }
+            }
+            Some('=') => {
+                if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::EqEq
+                } else {
+                    TokenKind::Eq
+                }
+            }
             Some('<') => {
                 // After consuming '<':
                 // - remaining "<=": input was "<<=", produce ShlEq (advance 2 more)
                 // - remaining "=":  input was "<=",  produce LtEq  (advance 1 more)
                 // - remaining "<":  input was "<<",  produce Shl   (advance 1 more)
                 // - otherwise:      input was "<",   produce Lt
-                if self.src[self.pos..].starts_with("<=") { self.pos += 2; TokenKind::ShlEq }
-                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::LtEq }
-                else if self.src[self.pos..].starts_with('<') { self.pos += 1; TokenKind::Shl }
-                else { TokenKind::Lt }
+                if self.src[self.pos..].starts_with("<=") {
+                    self.pos += 2;
+                    TokenKind::ShlEq
+                } else if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::LtEq
+                } else if self.src[self.pos..].starts_with('<') {
+                    self.pos += 1;
+                    TokenKind::Shl
+                } else {
+                    TokenKind::Lt
+                }
             }
             Some('>') => {
                 // After consuming '>':
@@ -852,54 +1009,111 @@ impl<'a> Lexer<'a> {
                 // - remaining "=":  input was ">=",  produce GtEq  (advance 1 more)
                 // - remaining ">":  input was ">>",  produce Shr   (advance 1 more)
                 // - otherwise:      input was ">",   produce Gt
-                if self.src[self.pos..].starts_with(">=") { self.pos += 2; TokenKind::ShrEq }
-                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::GtEq }
-                else if self.src[self.pos..].starts_with('>') { self.pos += 1; TokenKind::Shr }
-                else { TokenKind::Gt }
+                if self.src[self.pos..].starts_with(">=") {
+                    self.pos += 2;
+                    TokenKind::ShrEq
+                } else if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::GtEq
+                } else if self.src[self.pos..].starts_with('>') {
+                    self.pos += 1;
+                    TokenKind::Shr
+                } else {
+                    TokenKind::Gt
+                }
             }
             Some('&') => {
-                if self.src[self.pos..].starts_with('&') { self.pos += 1; TokenKind::AmpAmp }
-                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::AmpEq }
-                else { TokenKind::Amp }
+                if self.src[self.pos..].starts_with('&') {
+                    self.pos += 1;
+                    TokenKind::AmpAmp
+                } else if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::AmpEq
+                } else {
+                    TokenKind::Amp
+                }
             }
             Some('|') => {
-                if self.src[self.pos..].starts_with('|') { self.pos += 1; TokenKind::PipePipe }
-                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::PipeEq }
-                else { TokenKind::Pipe }
+                if self.src[self.pos..].starts_with('|') {
+                    self.pos += 1;
+                    TokenKind::PipePipe
+                } else if self.src[self.pos..].starts_with('=') {
+                    self.pos += 1;
+                    TokenKind::PipeEq
+                } else {
+                    TokenKind::Pipe
+                }
             }
             Some(c) if c.is_ascii_digit() => {
                 let start = self.pos - 1;
                 if c == '0' && self.src[self.pos..].starts_with('x') {
                     self.pos += 1;
-                    while self.peek_char().map(|c| c.is_ascii_hexdigit()).unwrap_or(false) { self.advance(); }
+                    while self
+                        .peek_char()
+                        .map(|c| c.is_ascii_hexdigit())
+                        .unwrap_or(false)
+                    {
+                        self.advance();
+                    }
                     let s = &self.src[start..self.pos];
                     let n = u64::from_str_radix(&s[2..], 16).map_err(|e| e.to_string())?;
                     TokenKind::IntLit(n)
                 } else if c == '0' && self.src[self.pos..].starts_with('b') {
                     self.pos += 1;
-                    while self.peek_char().map(|c| c == '0' || c == '1').unwrap_or(false) { self.advance(); }
+                    while self
+                        .peek_char()
+                        .map(|c| c == '0' || c == '1')
+                        .unwrap_or(false)
+                    {
+                        self.advance();
+                    }
                     let s = &self.src[start..self.pos];
                     let n = u64::from_str_radix(&s[2..], 2).map_err(|e| e.to_string())?;
                     TokenKind::IntLit(n)
                 } else {
-                    while self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) { self.advance(); }
+                    while self
+                        .peek_char()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                    {
+                        self.advance();
+                    }
                     // Float if followed by '.' then digit
                     let is_float = self.peek_char() == Some('.')
-                        && self.src[self.pos + 1..].chars().next()
-                            .map(|c| c.is_ascii_digit()).unwrap_or(false);
+                        && self.src[self.pos + 1..]
+                            .chars()
+                            .next()
+                            .map(|c| c.is_ascii_digit())
+                            .unwrap_or(false);
                     if is_float {
                         self.advance(); // consume '.'
-                        while self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) { self.advance(); }
+                        while self
+                            .peek_char()
+                            .map(|c| c.is_ascii_digit())
+                            .unwrap_or(false)
+                        {
+                            self.advance();
+                        }
                         if self.peek_char() == Some('e') || self.peek_char() == Some('E') {
                             self.advance();
-                            if self.peek_char() == Some('-') || self.peek_char() == Some('+') { self.advance(); }
-                            while self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) { self.advance(); }
+                            if self.peek_char() == Some('-') || self.peek_char() == Some('+') {
+                                self.advance();
+                            }
+                            while self
+                                .peek_char()
+                                .map(|c| c.is_ascii_digit())
+                                .unwrap_or(false)
+                            {
+                                self.advance();
+                            }
                         }
-                        let f: f64 = self.src[start..self.pos].parse()
+                        let f: f64 = self.src[start..self.pos]
+                            .parse()
                             .map_err(|e: std::num::ParseFloatError| e.to_string())?;
                         TokenKind::FloatLit(f)
                     } else {
-                        let n: u64 = self.src[start..self.pos].parse()
+                        let n: u64 = self.src[start..self.pos]
+                            .parse()
                             .map_err(|e: std::num::ParseIntError| e.to_string())?;
                         TokenKind::IntLit(n)
                     }
@@ -907,39 +1121,45 @@ impl<'a> Lexer<'a> {
             }
             Some(c) if c.is_alphabetic() || c == '_' => {
                 let start = self.pos - c.len_utf8();
-                while self.peek_char().map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { self.advance(); }
+                while self
+                    .peek_char()
+                    .map(|c| c.is_alphanumeric() || c == '_')
+                    .unwrap_or(false)
+                {
+                    self.advance();
+                }
                 let word = &self.src[start..self.pos];
                 match word {
-                    "fn"         => TokenKind::Fn,
-                    "extern"     => TokenKind::Extern,
-                    "return"     => TokenKind::Return,
-                    "break"      => TokenKind::Break,
-                    "continue"   => TokenKind::Continue,
-                    "if"         => TokenKind::If,
-                    "else"       => TokenKind::Else,
-                    "while"      => TokenKind::While,
-                    "for"        => TokenKind::For,
-                    "in"         => TokenKind::In,
-                    "const"      => TokenKind::Const,
-                    "struct"     => TokenKind::Struct,
-                    "enum"       => TokenKind::Enum,
-                    "device"     => TokenKind::Device,
-                    "at"         => TokenKind::At,
-                    "lock"       => TokenKind::Lock,
-                    "percpu"     => TokenKind::Percpu,
-                    "acquire"    => TokenKind::Acquire,
-                    "release"    => TokenKind::Release,
-                    "critical"   => TokenKind::Critical,
-                    "unsafe"     => TokenKind::Unsafe,
+                    "fn" => TokenKind::Fn,
+                    "extern" => TokenKind::Extern,
+                    "return" => TokenKind::Return,
+                    "break" => TokenKind::Break,
+                    "continue" => TokenKind::Continue,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
+                    "while" => TokenKind::While,
+                    "for" => TokenKind::For,
+                    "in" => TokenKind::In,
+                    "const" => TokenKind::Const,
+                    "struct" => TokenKind::Struct,
+                    "enum" => TokenKind::Enum,
+                    "device" => TokenKind::Device,
+                    "at" => TokenKind::At,
+                    "lock" => TokenKind::Lock,
+                    "percpu" => TokenKind::Percpu,
+                    "acquire" => TokenKind::Acquire,
+                    "release" => TokenKind::Release,
+                    "critical" => TokenKind::Critical,
+                    "unsafe" => TokenKind::Unsafe,
                     "yieldpoint" => TokenKind::Yieldpoint,
-                    "print"      => TokenKind::Print,
-                    "true"       => TokenKind::True,
-                    "false"      => TokenKind::False,
-                    "string"     => TokenKind::StringKw,
+                    "print" => TokenKind::Print,
+                    "true" => TokenKind::True,
+                    "false" => TokenKind::False,
+                    "string" => TokenKind::StringKw,
                     _ => match MmioScalarType::parse(word) {
-                        Ok(ty)  => TokenKind::TypeKw(ty),
-                        Err(_)  => TokenKind::Ident(word.to_string()),
-                    }
+                        Ok(ty) => TokenKind::TypeKw(ty),
+                        Err(_) => TokenKind::Ident(word.to_string()),
+                    },
                 }
             }
             Some(c) => return Err(format!("unexpected character '{}'", c)),
@@ -960,7 +1180,9 @@ impl TokParser {
     }
 
     pub fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).unwrap_or(self.tokens.last().unwrap())
+        self.tokens
+            .get(self.pos)
+            .unwrap_or(self.tokens.last().unwrap())
     }
 
     pub fn peek_at(&self, offset: usize) -> &Token {
@@ -970,7 +1192,9 @@ impl TokParser {
 
     pub fn advance(&mut self) -> &Token {
         let t = &self.tokens[self.pos.min(self.tokens.len() - 1)];
-        if self.pos < self.tokens.len() - 1 { self.pos += 1; }
+        if self.pos < self.tokens.len() - 1 {
+            self.pos += 1;
+        }
         t
     }
 
@@ -992,56 +1216,77 @@ impl TokParser {
     }
 
     pub fn eat(&mut self, kind: &TokenKind) -> bool {
-        if self.at(kind) { self.advance(); true } else { false }
+        if self.at(kind) {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     /// Pratt expression parser. `min_bp` is the minimum binding power (0 = parse all).
     pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, String> {
         // --- prefix ---
         let mut lhs = match self.advance().kind.clone() {
-            TokenKind::IntLit(n)    => Expr::IntLiteral(n),
-            TokenKind::FloatLit(f)  => Expr::FloatLiteral(f),
-            TokenKind::CharLit(c)   => Expr::CharLiteral(c),
-            TokenKind::StrLit(s)    => Expr::StringLiteral(s),
-            TokenKind::True         => Expr::BoolLiteral(true),
-            TokenKind::False        => Expr::BoolLiteral(false),
-            TokenKind::Bang         => {
+            TokenKind::IntLit(n) => Expr::IntLiteral(n),
+            TokenKind::FloatLit(f) => Expr::FloatLiteral(f),
+            TokenKind::CharLit(c) => Expr::CharLiteral(c),
+            TokenKind::StrLit(s) => Expr::StringLiteral(s),
+            TokenKind::True => Expr::BoolLiteral(true),
+            TokenKind::False => Expr::BoolLiteral(false),
+            TokenKind::Bang => {
                 let (_, rbp) = prefix_bp(UnOpKind::Not);
                 let e = self.parse_expr(rbp)?;
-                Expr::UnOp { op: UnOpKind::Not, operand: Box::new(e) }
+                Expr::UnOp {
+                    op: UnOpKind::Not,
+                    operand: Box::new(e),
+                }
             }
-            TokenKind::Tilde        => {
+            TokenKind::Tilde => {
                 let (_, rbp) = prefix_bp(UnOpKind::BitNot);
                 let e = self.parse_expr(rbp)?;
-                Expr::UnOp { op: UnOpKind::BitNot, operand: Box::new(e) }
+                Expr::UnOp {
+                    op: UnOpKind::BitNot,
+                    operand: Box::new(e),
+                }
             }
-            TokenKind::Minus        => {
+            TokenKind::Minus => {
                 let (_, rbp) = prefix_bp(UnOpKind::Neg);
                 let e = self.parse_expr(rbp)?;
-                Expr::UnOp { op: UnOpKind::Neg, operand: Box::new(e) }
+                Expr::UnOp {
+                    op: UnOpKind::Neg,
+                    operand: Box::new(e),
+                }
             }
-            TokenKind::LParen       => {
+            TokenKind::LParen => {
                 let e = self.parse_expr(0)?;
                 self.expect_kind(&TokenKind::RParen)?;
                 e
             }
-            TokenKind::Ident(name)  => {
+            TokenKind::Ident(name) => {
                 if self.eat(&TokenKind::Dot) {
                     // UART0.Status  or  buf.len
                     let field = match self.advance().kind.clone() {
                         TokenKind::Ident(f) => f,
-                        other => return Err(format!("expected field name after '.', got {:?}", other)),
+                        other => {
+                            return Err(format!("expected field name after '.', got {:?}", other));
+                        }
                     };
                     if field == "len" {
                         Expr::SliceLen(name)
                     } else {
-                        Expr::DeviceField { device: name, field }
+                        Expr::DeviceField {
+                            device: name,
+                            field,
+                        }
                     }
                 } else if self.eat(&TokenKind::LParen) {
                     let mut args = Vec::new();
                     while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
                         args.push(self.parse_expr(0)?);
-                        if !self.eat(&TokenKind::Comma) { break; }
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
                     }
                     self.expect_kind(&TokenKind::RParen)?;
                     Expr::Call { callee: name, args }
@@ -1053,16 +1298,18 @@ impl TokParser {
         };
 
         // --- infix ---
-        loop {
-            let op = match token_to_binop(&self.peek().kind) {
-                Some(op) => op,
-                None => break,
-            };
+        while let Some(op) = token_to_binop(&self.peek().kind) {
             let (lbp, rbp) = infix_bp(op);
-            if lbp < min_bp { break; }
+            if lbp < min_bp {
+                break;
+            }
             self.advance();
             let rhs = self.parse_expr(rbp)?;
-            lhs = Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            lhs = Expr::BinOp {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
@@ -1074,55 +1321,68 @@ impl TokParser {
 
         while !self.at(&TokenKind::Eof) {
             // Skip stray semicolons (backward compat)
-            if self.eat(&TokenKind::Semicolon) { continue; }
+            if self.eat(&TokenKind::Semicolon) {
+                continue;
+            }
 
             match self.peek().kind.clone() {
                 // @annotation — may be module_caps or function annotation
-                TokenKind::AtSign => {
-                    match self.parse_attr_tok() {
-                        Ok(attr) => {
-                            if attr.name == "module_caps" {
-                                let args_str = attr.args.as_deref().unwrap_or("");
-                                match split_csv_allow_trailing_comma(args_str) {
-                                    Ok(caps) => {
-                                        for cap in caps {
-                                            module.module_caps.push(cap);
-                                        }
-                                    }
-                                    Err(_) => {
-                                        errors.push(format_source_diagnostic(
-                                            &attr.source,
-                                            "@module_caps(...) contains an empty capability entry",
-                                            None,
-                                        ));
+                TokenKind::AtSign => match self.parse_attr_tok() {
+                    Ok(attr) => {
+                        if attr.name == "module_caps" {
+                            let args_str = attr.args.as_deref().unwrap_or("");
+                            match split_csv_allow_trailing_comma(args_str) {
+                                Ok(caps) => {
+                                    for cap in caps {
+                                        module.module_caps.push(cap);
                                     }
                                 }
-                            } else {
-                                pending_attrs.push(attr);
+                                Err(_) => {
+                                    errors.push(format_source_diagnostic(
+                                        &attr.source,
+                                        "@module_caps(...) contains an empty capability entry",
+                                        None,
+                                    ));
+                                }
                             }
+                        } else {
+                            pending_attrs.push(attr);
                         }
-                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
                     }
-                }
+                    Err(e) => {
+                        errors.push(e);
+                        self.skip_to_next_item();
+                    }
+                },
                 // fn
                 TokenKind::Fn => {
                     self.advance();
-                    match self.parse_fn_tok(pending_attrs.drain(..).collect(), false) {
+                    match self.parse_fn_tok(std::mem::take(&mut pending_attrs), false) {
                         Ok(f) => module.items.push(f),
-                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
                     }
                 }
                 // extern fn
                 TokenKind::Extern => {
                     self.advance();
                     if !self.eat(&TokenKind::Fn) {
-                        errors.push(format!("expected 'fn' after 'extern' at {}:{}", self.peek().source.line, self.peek().source.column));
+                        errors.push(format!(
+                            "expected 'fn' after 'extern' at {}:{}",
+                            self.peek().source.line,
+                            self.peek().source.column
+                        ));
                         self.skip_to_next_item();
                         continue;
                     }
-                    match self.parse_fn_tok(pending_attrs.drain(..).collect(), true) {
+                    match self.parse_fn_tok(std::mem::take(&mut pending_attrs), true) {
                         Ok(f) => module.items.push(f),
-                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
                     }
                 }
                 // device NAME at ADDR { ... }
@@ -1130,15 +1390,25 @@ impl TokParser {
                     self.advance();
                     match self.parse_device_tok() {
                         Ok(d) => module.devices.push(d),
-                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
                     }
                 }
                 // lock NAME
                 TokenKind::Lock => {
                     self.advance();
                     match self.peek().kind.clone() {
-                        TokenKind::Ident(name) => { self.advance(); module.locks.push(name); }
-                        _ => errors.push(format!("expected lock name at {}:{}", self.peek().source.line, self.peek().source.column)),
+                        TokenKind::Ident(name) => {
+                            self.advance();
+                            module.locks.push(name);
+                        }
+                        _ => errors.push(format!(
+                            "expected lock name at {}:{}",
+                            self.peek().source.line,
+                            self.peek().source.column
+                        )),
                     }
                     self.eat(&TokenKind::Semicolon);
                 }
@@ -1147,7 +1417,10 @@ impl TokParser {
                     self.advance();
                     match self.parse_const_tok() {
                         Ok(c) => module.constants.push(c),
-                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
                     }
                 }
                 // percpu NAME : TYPE
@@ -1155,20 +1428,29 @@ impl TokParser {
                     self.advance();
                     match self.parse_percpu_tok() {
                         Ok(p) => module.percpu_vars.push(p),
-                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
                     }
                 }
                 other => {
                     errors.push(format!(
                         "unexpected token {:?} at top level ({}:{})",
-                        other, self.peek().source.line, self.peek().source.column
+                        other,
+                        self.peek().source.line,
+                        self.peek().source.column
                     ));
                     self.skip_to_next_item();
                 }
             }
         }
 
-        if errors.is_empty() { Ok(module) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(module)
+        } else {
+            Err(errors)
+        }
     }
 
     /// Parse `@name(args)` — the leading `@` has not been consumed.
@@ -1184,10 +1466,15 @@ impl TokParser {
             let mut s = String::new();
             loop {
                 match self.advance().kind.clone() {
-                    TokenKind::LParen => { depth += 1; s.push('('); }
+                    TokenKind::LParen => {
+                        depth += 1;
+                        s.push('(');
+                    }
                     TokenKind::RParen => {
                         depth -= 1;
-                        if depth == 0 { break; }
+                        if depth == 0 {
+                            break;
+                        }
                         s.push(')');
                     }
                     TokenKind::Eof => return Err("unterminated attribute".into()),
@@ -1201,7 +1488,11 @@ impl TokParser {
             None
         };
         self.eat(&TokenKind::Semicolon);
-        Ok(RawAttr { name, args, source: note })
+        Ok(RawAttr {
+            name,
+            args,
+            source: note,
+        })
     }
 
     /// Parse `fn name(params) -> ty { body }` — `fn` keyword already consumed.
@@ -1227,12 +1518,28 @@ impl TokParser {
 
         if is_extern {
             self.eat(&TokenKind::Semicolon);
-            return Ok(FnAst { name, is_extern: true, params, return_ty, attrs, body: Vec::new(), source });
+            return Ok(FnAst {
+                name,
+                is_extern: true,
+                params,
+                return_ty,
+                attrs,
+                body: Vec::new(),
+                source,
+            });
         }
 
         self.expect_kind(&TokenKind::LBrace)?;
         let body = self.parse_block_tok()?;
-        Ok(FnAst { name, is_extern: false, params, return_ty, attrs, body, source })
+        Ok(FnAst {
+            name,
+            is_extern: false,
+            params,
+            return_ty,
+            attrs,
+            body,
+            source,
+        })
     }
 
     /// Parse parameter list: `TYPE name, ...` — inside `(` and `)`.
@@ -1251,9 +1558,15 @@ impl TokParser {
                 TokenKind::Ident(n) => n,
                 other => return Err(format!("expected parameter name, got {:?}", other)),
             };
-            let param_ty = if is_slice { ParamTy::Slice(ty) } else { ParamTy::Scalar(ty) };
+            let param_ty = if is_slice {
+                ParamTy::Slice(ty)
+            } else {
+                ParamTy::Scalar(ty)
+            };
             params.push((name, param_ty));
-            if !self.eat(&TokenKind::Comma) { break; }
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
         }
         Ok(params)
     }
@@ -1262,8 +1575,12 @@ impl TokParser {
     fn parse_block_tok(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-            if self.eat(&TokenKind::Semicolon) { continue; }
-            if self.at(&TokenKind::RBrace) { break; }
+            if self.eat(&TokenKind::Semicolon) {
+                continue;
+            }
+            if self.at(&TokenKind::RBrace) {
+                break;
+            }
             match self.parse_stmt_tok() {
                 Ok(s) => stmts.push(s),
                 Err(e) => return Err(e),
@@ -1283,7 +1600,12 @@ impl TokParser {
                 self.advance();
                 let name = match self.advance().kind.clone() {
                     TokenKind::Ident(n) => n,
-                    other => return Err(format!("expected variable name after type, got {:?}", other)),
+                    other => {
+                        return Err(format!(
+                            "expected variable name after type, got {:?}",
+                            other
+                        ));
+                    }
                 };
                 let init = if self.eat(&TokenKind::Eq) {
                     Some(self.parse_expr(0)?)
@@ -1304,7 +1626,11 @@ impl TokParser {
                 } else {
                     Vec::new()
                 };
-                Ok(Stmt::If { cond, then_body, else_body })
+                Ok(Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                })
             }
             // while expr { body }
             TokenKind::While => {
@@ -1332,26 +1658,46 @@ impl TokParser {
                 let end = self.parse_expr(0)?;
                 self.expect_kind(&TokenKind::LBrace)?;
                 let body = self.parse_block_tok()?;
-                Ok(Stmt::For { var, start, end, inclusive, body })
+                Ok(Stmt::For {
+                    var,
+                    start,
+                    end,
+                    inclusive,
+                    body,
+                })
             }
             // return expr?
             TokenKind::Return => {
                 self.advance();
-                if self.at(&TokenKind::RBrace) || self.at(&TokenKind::Semicolon) || self.at(&TokenKind::Eof) {
+                if self.at(&TokenKind::RBrace)
+                    || self.at(&TokenKind::Semicolon)
+                    || self.at(&TokenKind::Eof)
+                {
                     Ok(Stmt::Return(None))
                 } else {
                     Ok(Stmt::Return(Some(self.parse_expr(0)?)))
                 }
             }
-            TokenKind::Break    => { self.advance(); Ok(Stmt::Break) }
-            TokenKind::Continue => { self.advance(); Ok(Stmt::Continue) }
+            TokenKind::Break => {
+                self.advance();
+                Ok(Stmt::Break)
+            }
+            TokenKind::Continue => {
+                self.advance();
+                Ok(Stmt::Continue)
+            }
             // print("string")
             TokenKind::Print => {
                 self.advance();
                 self.expect_kind(&TokenKind::LParen)?;
                 let s = match self.advance().kind.clone() {
                     TokenKind::StrLit(s) => s,
-                    other => return Err(format!("print() requires a string literal, got {:?}", other)),
+                    other => {
+                        return Err(format!(
+                            "print() requires a string literal, got {:?}",
+                            other
+                        ));
+                    }
                 };
                 self.expect_kind(&TokenKind::RParen)?;
                 Ok(Stmt::Print(s))
@@ -1391,12 +1737,15 @@ impl TokParser {
                 Ok(Stmt::Unsafe(body))
             }
             // yieldpoint
-            TokenKind::Yieldpoint => { self.advance(); Ok(Stmt::YieldPoint) }
+            TokenKind::Yieldpoint => {
+                self.advance();
+                Ok(Stmt::YieldPoint)
+            }
             // Ident — assignment, compound-assign, field-assign, or call
             // Also handles `raw_write` and `raw_read` which are tokenized as Ident
             TokenKind::Ident(name) => {
                 // Check for raw_write<T>(addr, val) / raw_read<T>(addr, cap)
-                if name == "raw_write" || name == "raw_write" {
+                if name == "raw_write" || name == "raw_read" {
                     // handled below after advance
                 }
                 self.advance();
@@ -1408,7 +1757,11 @@ impl TokParser {
                     self.expect_kind(&TokenKind::Comma)?;
                     let val_expr = self.parse_mmio_value_expr_tok()?;
                     self.expect_kind(&TokenKind::RParen)?;
-                    return Ok(Stmt::RawMmioWrite { ty, addr: addr_expr, value: val_expr });
+                    return Ok(Stmt::RawMmioWrite {
+                        ty,
+                        addr: addr_expr,
+                        value: val_expr,
+                    });
                 }
                 if name == "raw_read" {
                     let ty = self.parse_type_param_tok()?;
@@ -1419,9 +1772,15 @@ impl TokParser {
                             TokenKind::Ident(n) => n,
                             other => return Err(format!("expected capture slot, got {:?}", other)),
                         })
-                    } else { None };
+                    } else {
+                        None
+                    };
                     self.expect_kind(&TokenKind::RParen)?;
-                    return Ok(Stmt::RawMmioRead { ty, addr: addr_expr, capture });
+                    return Ok(Stmt::RawMmioRead {
+                        ty,
+                        addr: addr_expr,
+                        capture,
+                    });
                 }
                 // Check next token for assignment variants
                 match self.peek().kind.clone() {
@@ -1429,25 +1788,40 @@ impl TokParser {
                     TokenKind::Eq => {
                         self.advance();
                         let value = self.parse_expr(0)?;
-                        Ok(Stmt::Assign { target: AssignTarget::Ident(name), value })
+                        Ok(Stmt::Assign {
+                            target: AssignTarget::Ident(name),
+                            value,
+                        })
                     }
                     // name op= expr
                     ref k if compound_assign_op(k).is_some() => {
                         let op = compound_assign_op(&self.advance().kind.clone()).unwrap();
                         let value = self.parse_expr(0)?;
-                        Ok(Stmt::CompoundAssign { target: AssignTarget::Ident(name), op, value })
+                        Ok(Stmt::CompoundAssign {
+                            target: AssignTarget::Ident(name),
+                            op,
+                            value,
+                        })
                     }
                     // name.field = expr
                     TokenKind::Dot => {
                         self.advance();
                         let field = match self.advance().kind.clone() {
                             TokenKind::Ident(f) => f,
-                            other => return Err(format!("expected field name after '.', got {:?}", other)),
+                            other => {
+                                return Err(format!(
+                                    "expected field name after '.', got {:?}",
+                                    other
+                                ));
+                            }
                         };
                         self.expect_kind(&TokenKind::Eq)?;
                         let value = self.parse_expr(0)?;
                         Ok(Stmt::Assign {
-                            target: AssignTarget::DeviceField { device: name, field },
+                            target: AssignTarget::DeviceField {
+                                device: name,
+                                field,
+                            },
                             value,
                         })
                     }
@@ -1457,7 +1831,9 @@ impl TokParser {
                         let mut args = Vec::new();
                         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
                             args.push(self.parse_expr(0)?);
-                            if !self.eat(&TokenKind::Comma) { break; }
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
                         }
                         self.expect_kind(&TokenKind::RParen)?;
                         // Map well-known old-syntax zero-arg intrinsics to their Stmt variants.
@@ -1472,18 +1848,38 @@ impl TokParser {
                         // Reject known old-syntax intrinsic names so TokParser falls back
                         // to the old character-level parser which handles them correctly.
                         match name.as_str() {
-                            "tail_call" | "call_with_args" | "call_capture"
-                            | "return_slot" | "branch_if_zero" | "branch_if_eq"
+                            "tail_call"
+                            | "call_with_args"
+                            | "call_capture"
+                            | "return_slot"
+                            | "branch_if_zero"
+                            | "branch_if_eq"
                             | "branch_if_mask_nonzero"
-                            | "mmio_read" | "mmio_write"
-                            | "raw_mmio_read" | "raw_mmio_write"
-                            | "stack_cell" | "cell_store" | "cell_load"
-                            | "cell_add" | "cell_sub" | "cell_and" | "cell_or"
-                            | "cell_xor" | "cell_shl" | "cell_shr"
-                            | "slot_add" | "slot_sub" | "slot_and" | "slot_or"
-                            | "slot_xor" | "slot_shl" | "slot_shr"
-                            | "slice_len" | "slice_ptr"
-                            | "percpu_read" | "percpu_write" => {
+                            | "mmio_read"
+                            | "mmio_write"
+                            | "raw_mmio_read"
+                            | "raw_mmio_write"
+                            | "stack_cell"
+                            | "cell_store"
+                            | "cell_load"
+                            | "cell_add"
+                            | "cell_sub"
+                            | "cell_and"
+                            | "cell_or"
+                            | "cell_xor"
+                            | "cell_shl"
+                            | "cell_shr"
+                            | "slot_add"
+                            | "slot_sub"
+                            | "slot_and"
+                            | "slot_or"
+                            | "slot_xor"
+                            | "slot_shl"
+                            | "slot_shr"
+                            | "slice_len"
+                            | "slice_ptr"
+                            | "percpu_read"
+                            | "percpu_write" => {
                                 return Err(format!(
                                     "old-syntax intrinsic '{}' — use old parser",
                                     name
@@ -1497,10 +1893,16 @@ impl TokParser {
                             Ok(Stmt::ExprStmt(Expr::Call { callee: name, args }))
                         }
                     }
-                    other => Err(format!("unexpected token {:?} after identifier '{}' ({}:{})", other, name, note.line, note.column)),
+                    other => Err(format!(
+                        "unexpected token {:?} after identifier '{}' ({}:{})",
+                        other, name, note.line, note.column
+                    )),
                 }
             }
-            other => Err(format!("unexpected token {:?} at start of statement ({}:{})", other, note.line, note.column)),
+            other => Err(format!(
+                "unexpected token {:?} at start of statement ({}:{})",
+                other, note.line, note.column
+            )),
         }
     }
 
@@ -1544,7 +1946,7 @@ impl TokParser {
     fn parse_mmio_value_expr_tok(&mut self) -> Result<MmioValueExpr, String> {
         match self.advance().kind.clone() {
             TokenKind::IntLit(n) => Ok(MmioValueExpr::IntLiteral(format!("0x{:X}", n))),
-            TokenKind::Ident(n)  => Ok(MmioValueExpr::Ident(n)),
+            TokenKind::Ident(n) => Ok(MmioValueExpr::Ident(n)),
             other => Err(format!("expected value expression, got {:?}", other)),
         }
     }
@@ -1559,14 +1961,18 @@ impl TokParser {
         self.expect_kind(&TokenKind::At)?;
         let base_addr = match self.advance().kind.clone() {
             TokenKind::IntLit(n) => format!("0x{:X}", n),
-            TokenKind::Ident(s)  => s,
+            TokenKind::Ident(s) => s,
             other => return Err(format!("expected device base address, got {:?}", other)),
         };
         self.expect_kind(&TokenKind::LBrace)?;
         let mut registers = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-            if self.eat(&TokenKind::Semicolon) { continue; }
-            if self.at(&TokenKind::RBrace) { break; }
+            if self.eat(&TokenKind::Semicolon) {
+                continue;
+            }
+            if self.at(&TokenKind::RBrace) {
+                break;
+            }
             let reg_name = match self.advance().kind.clone() {
                 TokenKind::Ident(n) => n,
                 other => return Err(format!("expected register name, got {:?}", other)),
@@ -1592,10 +1998,20 @@ impl TokParser {
                 other => return Err(format!("expected access mode, got {:?}", other)),
             };
             self.eat(&TokenKind::Semicolon);
-            registers.push(DeviceRegDecl { name: reg_name, offset, ty, access });
+            registers.push(DeviceRegDecl {
+                name: reg_name,
+                offset,
+                ty,
+                access,
+            });
         }
         self.expect_kind(&TokenKind::RBrace)?;
-        Ok(DeviceDecl { name, base_addr, registers, source })
+        Ok(DeviceDecl {
+            name,
+            base_addr,
+            registers,
+            source,
+        })
     }
 
     /// Parse `const TYPE NAME = VALUE` — `const` keyword already consumed.
@@ -1643,9 +2059,16 @@ impl TokParser {
     fn skip_to_next_item(&mut self) {
         while !self.at(&TokenKind::Eof) {
             match self.peek().kind {
-                TokenKind::Fn | TokenKind::Device | TokenKind::Lock | TokenKind::Const
-                | TokenKind::Percpu | TokenKind::Extern | TokenKind::AtSign => break,
-                _ => { self.advance(); }
+                TokenKind::Fn
+                | TokenKind::Device
+                | TokenKind::Lock
+                | TokenKind::Const
+                | TokenKind::Percpu
+                | TokenKind::Extern
+                | TokenKind::AtSign => break,
+                _ => {
+                    self.advance();
+                }
             }
         }
     }
@@ -1653,16 +2076,23 @@ impl TokParser {
 
 fn token_to_binop(kind: &TokenKind) -> Option<BinOpKind> {
     Some(match kind {
-        TokenKind::Plus     => BinOpKind::Add,  TokenKind::Minus  => BinOpKind::Sub,
-        TokenKind::Star     => BinOpKind::Mul,  TokenKind::Slash  => BinOpKind::Div,
-        TokenKind::Percent  => BinOpKind::Rem,
-        TokenKind::Amp      => BinOpKind::And,  TokenKind::Pipe   => BinOpKind::Or,
-        TokenKind::Caret    => BinOpKind::Xor,
-        TokenKind::Shl      => BinOpKind::Shl,  TokenKind::Shr    => BinOpKind::Shr,
-        TokenKind::EqEq     => BinOpKind::Eq,   TokenKind::BangEq => BinOpKind::Ne,
-        TokenKind::Lt       => BinOpKind::Lt,   TokenKind::Gt     => BinOpKind::Gt,
-        TokenKind::LtEq     => BinOpKind::Le,   TokenKind::GtEq   => BinOpKind::Ge,
-        TokenKind::AmpAmp   => BinOpKind::LogAnd,
+        TokenKind::Plus => BinOpKind::Add,
+        TokenKind::Minus => BinOpKind::Sub,
+        TokenKind::Star => BinOpKind::Mul,
+        TokenKind::Slash => BinOpKind::Div,
+        TokenKind::Percent => BinOpKind::Rem,
+        TokenKind::Amp => BinOpKind::And,
+        TokenKind::Pipe => BinOpKind::Or,
+        TokenKind::Caret => BinOpKind::Xor,
+        TokenKind::Shl => BinOpKind::Shl,
+        TokenKind::Shr => BinOpKind::Shr,
+        TokenKind::EqEq => BinOpKind::Eq,
+        TokenKind::BangEq => BinOpKind::Ne,
+        TokenKind::Lt => BinOpKind::Lt,
+        TokenKind::Gt => BinOpKind::Gt,
+        TokenKind::LtEq => BinOpKind::Le,
+        TokenKind::GtEq => BinOpKind::Ge,
+        TokenKind::AmpAmp => BinOpKind::LogAnd,
         TokenKind::PipePipe => BinOpKind::LogOr,
         _ => return None,
     })
@@ -1672,16 +2102,16 @@ fn token_to_binop(kind: &TokenKind) -> Option<BinOpKind> {
 /// Higher bp = tighter binding. Left-associative: rbp = lbp + 1.
 fn infix_bp(op: BinOpKind) -> (u8, u8) {
     match op {
-        BinOpKind::LogOr                                                   => (10, 11),
-        BinOpKind::LogAnd                                                  => (20, 21),
-        BinOpKind::Or                                                      => (30, 31),
-        BinOpKind::Xor                                                     => (40, 41),
-        BinOpKind::And                                                     => (50, 51),
-        BinOpKind::Eq | BinOpKind::Ne                                      => (60, 61),
-        BinOpKind::Lt | BinOpKind::Gt | BinOpKind::Le | BinOpKind::Ge     => (70, 71),
-        BinOpKind::Shl | BinOpKind::Shr                                    => (80, 81),
-        BinOpKind::Add | BinOpKind::Sub                                    => (90, 91),
-        BinOpKind::Mul | BinOpKind::Div | BinOpKind::Rem                   => (100, 101),
+        BinOpKind::LogOr => (10, 11),
+        BinOpKind::LogAnd => (20, 21),
+        BinOpKind::Or => (30, 31),
+        BinOpKind::Xor => (40, 41),
+        BinOpKind::And => (50, 51),
+        BinOpKind::Eq | BinOpKind::Ne => (60, 61),
+        BinOpKind::Lt | BinOpKind::Gt | BinOpKind::Le | BinOpKind::Ge => (70, 71),
+        BinOpKind::Shl | BinOpKind::Shr => (80, 81),
+        BinOpKind::Add | BinOpKind::Sub => (90, 91),
+        BinOpKind::Mul | BinOpKind::Div | BinOpKind::Rem => (100, 101),
     }
 }
 
@@ -1694,15 +2124,15 @@ fn prefix_bp(op: UnOpKind) -> ((), u8) {
 /// Map a compound-assignment token to its BinOpKind (returns None if not a compound-assign).
 fn compound_assign_op(kind: &TokenKind) -> Option<BinOpKind> {
     Some(match kind {
-        TokenKind::PlusEq    => BinOpKind::Add,
-        TokenKind::MinusEq   => BinOpKind::Sub,
-        TokenKind::AmpEq     => BinOpKind::And,
-        TokenKind::PipeEq    => BinOpKind::Or,
-        TokenKind::CaretEq   => BinOpKind::Xor,
-        TokenKind::ShlEq     => BinOpKind::Shl,
-        TokenKind::ShrEq     => BinOpKind::Shr,
-        TokenKind::StarEq    => BinOpKind::Mul,
-        TokenKind::SlashEq   => BinOpKind::Div,
+        TokenKind::PlusEq => BinOpKind::Add,
+        TokenKind::MinusEq => BinOpKind::Sub,
+        TokenKind::AmpEq => BinOpKind::And,
+        TokenKind::PipeEq => BinOpKind::Or,
+        TokenKind::CaretEq => BinOpKind::Xor,
+        TokenKind::ShlEq => BinOpKind::Shl,
+        TokenKind::ShrEq => BinOpKind::Shr,
+        TokenKind::StarEq => BinOpKind::Mul,
+        TokenKind::SlashEq => BinOpKind::Div,
         TokenKind::PercentEq => BinOpKind::Rem,
         _ => return None,
     })
@@ -1711,24 +2141,24 @@ fn compound_assign_op(kind: &TokenKind) -> Option<BinOpKind> {
 /// Reconstruct approximate source text for a token kind (used in attribute arg collection).
 fn token_kind_to_str(kind: &TokenKind) -> String {
     match kind {
-        TokenKind::Ident(s)    => s.clone(),
-        TokenKind::IntLit(n)   => n.to_string(),
-        TokenKind::StrLit(s)   => format!("\"{}\"", s),
-        TokenKind::Comma       => ",".into(),
-        TokenKind::Colon       => ":".into(),
-        TokenKind::Dot         => ".".into(),
-        TokenKind::Eq          => "=".into(),
-        TokenKind::Plus        => "+".into(),
-        TokenKind::Minus       => "-".into(),
-        TokenKind::Star        => "*".into(),
-        TokenKind::Slash       => "/".into(),
-        TokenKind::Amp         => "&".into(),
-        TokenKind::Pipe        => "|".into(),
-        TokenKind::Bang        => "!".into(),
-        TokenKind::Lt          => "<".into(),
-        TokenKind::Gt          => ">".into(),
-        TokenKind::TypeKw(ty)  => ty.as_str().into(),
-        other                  => format!("{:?}", other),
+        TokenKind::Ident(s) => s.clone(),
+        TokenKind::IntLit(n) => n.to_string(),
+        TokenKind::StrLit(s) => format!("\"{}\"", s),
+        TokenKind::Comma => ",".into(),
+        TokenKind::Colon => ":".into(),
+        TokenKind::Dot => ".".into(),
+        TokenKind::Eq => "=".into(),
+        TokenKind::Plus => "+".into(),
+        TokenKind::Minus => "-".into(),
+        TokenKind::Star => "*".into(),
+        TokenKind::Slash => "/".into(),
+        TokenKind::Amp => "&".into(),
+        TokenKind::Pipe => "|".into(),
+        TokenKind::Bang => "!".into(),
+        TokenKind::Lt => "<".into(),
+        TokenKind::Gt => ">".into(),
+        TokenKind::TypeKw(ty) => ty.as_str().into(),
+        other => format!("{:?}", other),
     }
 }
 
@@ -1740,18 +2170,28 @@ fn split_csv_simple(s: &str) -> Vec<String> {
     let mut depth = 0i32;
     for ch in s.chars() {
         match ch {
-            '(' | '[' => { depth += 1; cur.push(ch); }
-            ')' | ']' => { depth -= 1; cur.push(ch); }
+            '(' | '[' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' | ']' => {
+                depth -= 1;
+                cur.push(ch);
+            }
             ',' if depth == 0 => {
                 let t = cur.trim().to_string();
-                if !t.is_empty() { out.push(t); }
+                if !t.is_empty() {
+                    out.push(t);
+                }
                 cur = String::new();
             }
             c => cur.push(c),
         }
     }
     let t = cur.trim().to_string();
-    if !t.is_empty() { out.push(t); }
+    if !t.is_empty() {
+        out.push(t);
+    }
     out
 }
 
@@ -2877,9 +3317,7 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
     if lowered == "tail_call" {
         let parts = split_csv(&args);
         if parts.is_empty() {
-            return Err(
-                "tail_call(callee[, arg, ...]) requires at least a callee".to_string(),
-            );
+            return Err("tail_call(callee[, arg, ...]) requires at least a callee".to_string());
         }
         let callee = parse_branch_target_operand(parts[0].trim())?;
         let tail_args: Result<Vec<MmioValueExpr>, String> = parts[1..]
@@ -4053,14 +4491,7 @@ mod tests {
     fn parse_rejects_unsupported_typed_mmio_element() {
         let src = "fn entry() { mmio_read<u128>(); }";
         let err = parse_module(src).expect_err("invalid mmio element type should fail");
-        assert_eq!(
-            err,
-            vec![diagnostic_at(
-                src,
-                13,
-                "unknown type 'u128'",
-            )]
-        );
+        assert_eq!(err, vec![diagnostic_at(src, 13, "unknown type 'u128'",)]);
     }
 
     #[test]
@@ -4312,14 +4743,14 @@ mod type_tests {
         assert_eq!(MmioScalarType::parse("float32"), Ok(MmioScalarType::F32));
         assert_eq!(MmioScalarType::parse("float64"), Ok(MmioScalarType::F64));
         assert_eq!(MmioScalarType::parse("float16"), Ok(MmioScalarType::F16));
-        assert_eq!(MmioScalarType::parse("uint8"),   Ok(MmioScalarType::U8));
-        assert_eq!(MmioScalarType::parse("uint32"),  Ok(MmioScalarType::U32));
-        assert_eq!(MmioScalarType::parse("int8"),    Ok(MmioScalarType::I8));
-        assert_eq!(MmioScalarType::parse("int32"),   Ok(MmioScalarType::I32));
-        assert_eq!(MmioScalarType::parse("bool"),    Ok(MmioScalarType::Bool));
-        assert_eq!(MmioScalarType::parse("char"),    Ok(MmioScalarType::Char));
-        assert_eq!(MmioScalarType::parse("byte"),    Ok(MmioScalarType::U8));
-        assert_eq!(MmioScalarType::parse("addr"),    Ok(MmioScalarType::U64));
+        assert_eq!(MmioScalarType::parse("uint8"), Ok(MmioScalarType::U8));
+        assert_eq!(MmioScalarType::parse("uint32"), Ok(MmioScalarType::U32));
+        assert_eq!(MmioScalarType::parse("int8"), Ok(MmioScalarType::I8));
+        assert_eq!(MmioScalarType::parse("int32"), Ok(MmioScalarType::I32));
+        assert_eq!(MmioScalarType::parse("bool"), Ok(MmioScalarType::Bool));
+        assert_eq!(MmioScalarType::parse("char"), Ok(MmioScalarType::Char));
+        assert_eq!(MmioScalarType::parse("byte"), Ok(MmioScalarType::U8));
+        assert_eq!(MmioScalarType::parse("addr"), Ok(MmioScalarType::U64));
     }
 
     #[test]
@@ -4335,7 +4766,12 @@ mod type_tests {
             name: "UART0".to_string(),
             base_addr: "0x3F000000".to_string(),
             registers: vec![],
-            source: SourceNote { byte_offset: 0, line: 1, column: 1, line_text: String::new() },
+            source: SourceNote {
+                byte_offset: 0,
+                line: 1,
+                column: 1,
+                line_text: String::new(),
+            },
         };
     }
 }
@@ -4352,28 +4788,52 @@ mod lexer_tests {
     fn lex_keywords_and_idents() {
         let t = tok("fn entry() { }");
         assert!(t.iter().any(|t| matches!(t.kind, TokenKind::Fn)));
-        assert!(t.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "entry")));
+        assert!(
+            t.iter()
+                .any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "entry"))
+        );
     }
 
     #[test]
     fn lex_type_keywords() {
         let t = tok("uint32 int8 float32 bool char byte addr string");
-        let types: Vec<_> = t.iter()
-            .filter_map(|t| if let TokenKind::TypeKw(ty) = &t.kind { Some(*ty) } else { None })
+        let types: Vec<_> = t
+            .iter()
+            .filter_map(|t| {
+                if let TokenKind::TypeKw(ty) = &t.kind {
+                    Some(*ty)
+                } else {
+                    None
+                }
+            })
             .collect();
         // `string` produces StringKw (not TypeKw), so 7 entries, not 8
-        assert_eq!(types, vec![
-            MmioScalarType::U32, MmioScalarType::I8, MmioScalarType::F32,
-            MmioScalarType::Bool, MmioScalarType::Char, MmioScalarType::U8,
-            MmioScalarType::U64, // addr -> U64
-        ]);
+        assert_eq!(
+            types,
+            vec![
+                MmioScalarType::U32,
+                MmioScalarType::I8,
+                MmioScalarType::F32,
+                MmioScalarType::Bool,
+                MmioScalarType::Char,
+                MmioScalarType::U8,
+                MmioScalarType::U64, // addr -> U64
+            ]
+        );
     }
 
     #[test]
     fn lex_int_literals() {
         let t = tok("42 0xFF 0b1010");
-        let ints: Vec<u64> = t.iter()
-            .filter_map(|t| if let TokenKind::IntLit(n) = t.kind { Some(n) } else { None })
+        let ints: Vec<u64> = t
+            .iter()
+            .filter_map(|t| {
+                if let TokenKind::IntLit(n) = t.kind {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(ints, vec![42, 255, 10]);
     }
@@ -4381,8 +4841,15 @@ mod lexer_tests {
     #[test]
     fn lex_char_literal_escapes() {
         let t = tok(r"'\n' '\t' '\xFF' 'A'");
-        let chars: Vec<u8> = t.iter()
-            .filter_map(|t| if let TokenKind::CharLit(c) = t.kind { Some(c) } else { None })
+        let chars: Vec<u8> = t
+            .iter()
+            .filter_map(|t| {
+                if let TokenKind::CharLit(c) = t.kind {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(chars, vec![b'\n', b'\t', 0xFF, b'A']);
     }
@@ -4390,14 +4857,26 @@ mod lexer_tests {
     #[test]
     fn lex_float_literal() {
         let t = tok("3.14 0.5 1.0e-3");
-        assert_eq!(t.iter().filter(|t| matches!(t.kind, TokenKind::FloatLit(_))).count(), 3);
+        assert_eq!(
+            t.iter()
+                .filter(|t| matches!(t.kind, TokenKind::FloatLit(_)))
+                .count(),
+            3
+        );
     }
 
     #[test]
     fn lex_string_literal_escapes() {
         let t = tok(r#""Hello\nWorld\xFF""#);
-        let s: Vec<_> = t.iter()
-            .filter_map(|t| if let TokenKind::StrLit(s) = &t.kind { Some(s.clone()) } else { None })
+        let s: Vec<_> = t
+            .iter()
+            .filter_map(|t| {
+                if let TokenKind::StrLit(s) = &t.kind {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         // \xFF in the lexer produces byte 0xFF cast to char → U+00FF (ÿ)
         assert_eq!(s[0], "Hello\nWorld\u{00FF}");
@@ -4419,14 +4898,20 @@ mod lexer_tests {
     fn lex_no_semicolons_needed() {
         // newlines are NOT statement terminators — the lexer just ignores them
         let t = tok("uint32 x = 5\nuint32 y = 10");
-        assert_eq!(t.iter().filter(|t| matches!(t.kind, TokenKind::TypeKw(_))).count(), 2);
+        assert_eq!(
+            t.iter()
+                .filter(|t| matches!(t.kind, TokenKind::TypeKw(_)))
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn lex_shift_comparison_operators() {
         // Verify <, <=, <<, <<= are all distinct
         let t = tok("< <= << <<=");
-        let kinds: Vec<_> = t.iter()
+        let kinds: Vec<_> = t
+            .iter()
             .filter(|t| !matches!(t.kind, TokenKind::Eof))
             .map(|t| &t.kind)
             .collect();
@@ -4448,51 +4933,97 @@ mod expr_tests {
     }
 
     #[test]
-    fn parse_int_literal()   { assert_eq!(parse_expr("42"), Expr::IntLiteral(42)); }
-    #[test]
-    fn parse_bool_literal()  { assert_eq!(parse_expr("true"), Expr::BoolLiteral(true)); }
-    #[test]
-    fn parse_char_literal()  { assert_eq!(parse_expr("'A'"), Expr::CharLiteral(b'A')); }
-    #[test]
-    fn parse_ident()         { assert!(matches!(parse_expr("status"), Expr::Ident(s) if s == "status")); }
-    #[test]
-    fn parse_add()           {
-        assert!(matches!(parse_expr("a + b"), Expr::BinOp { op: BinOpKind::Add, .. }));
+    fn parse_int_literal() {
+        assert_eq!(parse_expr("42"), Expr::IntLiteral(42));
     }
     #[test]
-    fn parse_precedence()    {
+    fn parse_bool_literal() {
+        assert_eq!(parse_expr("true"), Expr::BoolLiteral(true));
+    }
+    #[test]
+    fn parse_char_literal() {
+        assert_eq!(parse_expr("'A'"), Expr::CharLiteral(b'A'));
+    }
+    #[test]
+    fn parse_ident() {
+        assert!(matches!(parse_expr("status"), Expr::Ident(s) if s == "status"));
+    }
+    #[test]
+    fn parse_add() {
+        assert!(matches!(
+            parse_expr("a + b"),
+            Expr::BinOp {
+                op: BinOpKind::Add,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn parse_precedence() {
         // a + b & c  should be (a + b) & c because + has higher precedence than &
         let e = parse_expr("a + b & c");
-        assert!(matches!(e, Expr::BinOp { op: BinOpKind::And, .. }));
+        assert!(matches!(
+            e,
+            Expr::BinOp {
+                op: BinOpKind::And,
+                ..
+            }
+        ));
     }
     #[test]
-    fn parse_device_field()  {
+    fn parse_device_field() {
         let e = parse_expr("UART0.Status");
-        assert!(matches!(e, Expr::DeviceField { ref device, ref field } if device == "UART0" && field == "Status"));
+        assert!(
+            matches!(e, Expr::DeviceField { ref device, ref field } if device == "UART0" && field == "Status")
+        );
     }
     #[test]
-    fn parse_fn_call_expr()  {
+    fn parse_fn_call_expr() {
         let e = parse_expr("get_status()");
         assert!(matches!(e, Expr::Call { ref callee, .. } if callee == "get_status"));
     }
     #[test]
-    fn parse_unary_not()     {
-        assert!(matches!(parse_expr("!flag"), Expr::UnOp { op: UnOpKind::Not, .. }));
+    fn parse_unary_not() {
+        assert!(matches!(
+            parse_expr("!flag"),
+            Expr::UnOp {
+                op: UnOpKind::Not,
+                ..
+            }
+        ));
     }
     #[test]
-    fn parse_parens()        {
+    fn parse_parens() {
         // (a + b) * c — parens override precedence
         let e = parse_expr("(a + b) * c");
-        assert!(matches!(e, Expr::BinOp { op: BinOpKind::Mul, .. }));
+        assert!(matches!(
+            e,
+            Expr::BinOp {
+                op: BinOpKind::Mul,
+                ..
+            }
+        ));
     }
     #[test]
-    fn parse_comparison()    {
+    fn parse_comparison() {
         let e = parse_expr("x == 0");
-        assert!(matches!(e, Expr::BinOp { op: BinOpKind::Eq, .. }));
+        assert!(matches!(
+            e,
+            Expr::BinOp {
+                op: BinOpKind::Eq,
+                ..
+            }
+        ));
     }
     #[test]
-    fn parse_logical_and()   {
+    fn parse_logical_and() {
         let e = parse_expr("a && b");
-        assert!(matches!(e, Expr::BinOp { op: BinOpKind::LogAnd, .. }));
+        assert!(matches!(
+            e,
+            Expr::BinOp {
+                op: BinOpKind::LogAnd,
+                ..
+            }
+        ));
     }
 }

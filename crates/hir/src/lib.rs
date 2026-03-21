@@ -2,11 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use krir::{
     ArithOp as KrirArithOp, CallEdge, CmpOp as KrirCmpOp, Ctx, Eff, ExecutableBlock,
-    FArithOp as KrirFArithOp,
     ExecutableExternDecl, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
     ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
-    ExecutableValueType, Function, FunctionAttrs, KrirModule, KrirOp, KrirParamTy,
-    MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
+    ExecutableValueType, FArithOp as KrirFArithOp, Function, FunctionAttrs, KrirModule, KrirOp,
+    KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
     MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
     PercpuDecl as KrirPercpuDecl, SchedHook,
@@ -1302,7 +1301,8 @@ pub fn lower_to_krir_with_surface(
     let mut names = BTreeSet::new();
     let (expanded_bases, expanded_regs) = expand_device_decls(ast);
     let device_regs = build_device_reg_map(&expanded_regs);
-    let module_declares_mmio_structure = module_declares_mmio_structure(ast, &expanded_bases, &expanded_regs);
+    let module_declares_mmio_structure =
+        module_declares_mmio_structure(ast, &expanded_bases, &expanded_regs);
     let module_allows_raw_mmio_literals = module_allows_raw_mmio_literals(&ast.module_caps);
     let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(&expanded_bases);
     let mmio_base_numeric_addrs = collect_mmio_base_numeric_addrs(&mmio_bases);
@@ -1595,7 +1595,9 @@ fn lower_function(
         }
         // Append continuation call (for synthesized branches).
         if !work.continuation.is_empty() {
-            ops.push(KrirOp::Call { callee: work.continuation.clone() });
+            ops.push(KrirOp::Call {
+                callee: work.continuation.clone(),
+            });
         }
 
         all_errors.extend(stmt_errors);
@@ -1606,15 +1608,19 @@ fn lower_function(
             name: work.name,
             is_extern: if is_main { item.is_extern } else { false },
             params: if is_main { main_params.clone() } else { vec![] },
-            ctx_ok: if is_main { main_ctx_ok.clone() } else { main_ctx_ok.clone() },
+            ctx_ok: main_ctx_ok.clone(),
             eff_used: eff_used.into_iter().collect(),
-            caps_req: if is_main { main_caps_req.clone() } else { main_caps_req.clone() },
-            attrs: if is_main { main_attrs.clone() } else { FunctionAttrs::default() },
+            caps_req: main_caps_req.clone(),
+            attrs: if is_main {
+                main_attrs.clone()
+            } else {
+                FunctionAttrs::default()
+            },
             ops,
         });
 
         // Drain pending_fns into the work queue.
-        queue.extend(pending_fns.drain(..));
+        queue.append(&mut pending_fns);
     }
 
     if !all_errors.is_empty() {
@@ -1626,9 +1632,7 @@ fn lower_function(
 
 /// Expand `DeviceDecl` blocks into flat `ParserMmioBaseDecl` + `ParserMmioRegisterDecl` lists,
 /// prepending any existing flat declarations so that device-block registers are also included.
-fn expand_device_decls(
-    ast: &ModuleAst,
-) -> (Vec<ParserMmioBaseDecl>, Vec<ParserMmioRegisterDecl>) {
+fn expand_device_decls(ast: &ModuleAst) -> (Vec<ParserMmioBaseDecl>, Vec<ParserMmioRegisterDecl>) {
     let mut bases = ast.mmio_bases.clone();
     let mut regs = ast.mmio_registers.clone();
     for dev in &ast.devices {
@@ -2595,9 +2599,16 @@ fn lower_stmts_to_canonical_executable(
                 callee,
                 args.len()
             )),
-            Stmt::VarDecl { .. } | Stmt::Assign { .. } | Stmt::CompoundAssign { .. }
-            | Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
-            | Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Print(_)
+            Stmt::VarDecl { .. }
+            | Stmt::Assign { .. }
+            | Stmt::CompoundAssign { .. }
+            | Stmt::If { .. }
+            | Stmt::While { .. }
+            | Stmt::For { .. }
+            | Stmt::Return(_)
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Print(_)
             | Stmt::ExprStmt(_) => {
                 errors.push(format!(
                     "surface syntax statement not yet lowered (Task 7-12): {:?}",
@@ -2620,32 +2631,47 @@ fn lower_expr(
     match expr {
         ParserExpr::IntLiteral(n) => {
             let slot = fresh_slot(slot_counter);
-            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U64, cell: slot.clone() });
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: slot.clone(),
+            });
             ops.push(KrirOp::StackStore {
                 ty: KrirMmioScalarType::U64,
                 cell: slot.clone(),
-                value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+                value: KrirMmioValueExpr::IntLiteral {
+                    value: n.to_string(),
+                },
             });
             Ok(slot)
         }
         ParserExpr::BoolLiteral(b) => {
             let slot = fresh_slot(slot_counter);
             let n: u64 = if *b { 1 } else { 0 };
-            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U8, cell: slot.clone() });
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U8,
+                cell: slot.clone(),
+            });
             ops.push(KrirOp::StackStore {
                 ty: KrirMmioScalarType::U8,
                 cell: slot.clone(),
-                value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+                value: KrirMmioValueExpr::IntLiteral {
+                    value: n.to_string(),
+                },
             });
             Ok(slot)
         }
         ParserExpr::FloatLiteral(v) => {
             let slot = fresh_slot(slot_counter);
-            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::F64, cell: slot.clone() });
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::F64,
+                cell: slot.clone(),
+            });
             ops.push(KrirOp::StackStore {
                 ty: KrirMmioScalarType::F64,
                 cell: slot.clone(),
-                value: KrirMmioValueExpr::FloatLiteral { value: v.to_string() },
+                value: KrirMmioValueExpr::FloatLiteral {
+                    value: v.to_string(),
+                },
             });
             Ok(slot)
         }
@@ -2681,7 +2707,12 @@ fn lower_expr(
                 let fop = binop_to_krir_farith(*op)
                     .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
                 let float_ty = KrirMmioScalarType::F64;
-                ops.push(KrirOp::FloatArith { ty: float_ty, fop, dst: l.clone(), src: r });
+                ops.push(KrirOp::FloatArith {
+                    ty: float_ty,
+                    fop,
+                    dst: l.clone(),
+                    src: r,
+                });
                 return Ok(l);
             }
             match op {
@@ -2700,7 +2731,10 @@ fn lower_expr(
             // Comparison ops produce 0 or 1 into a fresh bool slot.
             if let Some(cmp_op) = binop_to_krir_cmp(*op) {
                 let out = fresh_slot(slot_counter);
-                ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U8, cell: out.clone() });
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U8,
+                    cell: out.clone(),
+                });
                 ops.push(KrirOp::CompareIntoSlot {
                     cmp_op,
                     lhs: l,
@@ -2719,7 +2753,10 @@ fn lower_expr(
             });
             Ok(l)
         }
-        _ => Err(format!("expression type not yet supported in HIR lowering: {:?}", expr)),
+        _ => Err(format!(
+            "expression type not yet supported in HIR lowering: {:?}",
+            expr
+        )),
     }
 }
 
@@ -2767,6 +2804,7 @@ fn expr_is_float(expr: &ParserExpr) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_stmt(
     stmt: &Stmt,
     ops: &mut Vec<KrirOp>,
@@ -2790,13 +2828,35 @@ fn lower_stmt(
         Stmt::Critical(inner) => {
             ops.push(KrirOp::CriticalEnter);
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
+                lower_stmt(
+                    stmt,
+                    ops,
+                    eff_used,
+                    const_map,
+                    surface_profile,
+                    errors,
+                    slot_counter,
+                    device_regs,
+                    fn_counter,
+                    pending_fns,
+                );
             }
             ops.push(KrirOp::CriticalExit);
         }
         Stmt::Unsafe(inner) => {
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
+                lower_stmt(
+                    stmt,
+                    ops,
+                    eff_used,
+                    const_map,
+                    surface_profile,
+                    errors,
+                    slot_counter,
+                    device_regs,
+                    fn_counter,
+                    pending_fns,
+                );
             }
         }
         Stmt::YieldPoint => {
@@ -2950,7 +3010,10 @@ fn lower_stmt(
                 errors.push("call_with_args requires --surface experimental".to_string());
                 return;
             }
-            let krir_args = args.iter().map(|a| lower_mmio_value_expr(a, const_map)).collect();
+            let krir_args = args
+                .iter()
+                .map(|a| lower_mmio_value_expr(a, const_map))
+                .collect();
             ops.push(KrirOp::CallWithArgs {
                 callee: callee.clone(),
                 args: krir_args,
@@ -2961,7 +3024,10 @@ fn lower_stmt(
                 errors.push("tail_call requires --surface experimental".to_string());
                 return;
             }
-            let krir_args = args.iter().map(|a| lower_mmio_value_expr(a, const_map)).collect();
+            let krir_args = args
+                .iter()
+                .map(|a| lower_mmio_value_expr(a, const_map))
+                .collect();
             ops.push(KrirOp::TailCall {
                 callee: callee.clone(),
                 args: krir_args,
@@ -2969,7 +3035,9 @@ fn lower_stmt(
         }
         Stmt::ExprStmt(expr) => match expr {
             ParserExpr::Call { callee, args } if args.is_empty() => {
-                ops.push(KrirOp::Call { callee: callee.clone() });
+                ops.push(KrirOp::Call {
+                    callee: callee.clone(),
+                });
             }
             ParserExpr::Call { callee, args } => {
                 let mut krir_args = Vec::new();
@@ -2984,7 +3052,10 @@ fn lower_stmt(
                     }
                 }
                 if ok {
-                    ops.push(KrirOp::CallWithArgs { callee: callee.clone(), args: krir_args });
+                    ops.push(KrirOp::CallWithArgs {
+                        callee: callee.clone(),
+                        args: krir_args,
+                    });
                 }
             }
             _ => {
@@ -3024,10 +3095,7 @@ fn lower_stmt(
                 let reg = match device_regs.get(&(device.clone(), field.clone())) {
                     Some(r) => r.clone(),
                     None => {
-                        errors.push(format!(
-                            "unknown device register '{}.{}'",
-                            device, field
-                        ));
+                        errors.push(format!("unknown device register '{}.{}'", device, field));
                         return;
                     }
                 };
@@ -3099,14 +3167,21 @@ fn lower_stmt(
             });
             eff_used.insert(Eff::Mmio);
         }
-        Stmt::If { cond, then_body, else_body } => {
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
             // Lower condition into a bool slot.
             let cond_slot = match lower_expr(cond, ops, slot_counter, device_regs, eff_used) {
                 Ok(s) => s,
-                Err(e) => { errors.push(e); return; }
+                Err(e) => {
+                    errors.push(e);
+                    return;
+                }
             };
             let then_name = fresh_fn_name("__if_then", fn_counter);
-            let end_name  = fresh_fn_name("__if_end",  fn_counter);
+            let end_name = fresh_fn_name("__if_end", fn_counter);
             let else_name = if else_body.is_empty() {
                 end_name.clone()
             } else {
@@ -3115,8 +3190,8 @@ fn lower_stmt(
             // BranchIfZero: slot==0 → false → else/end; slot!=0 → true → then
             ops.push(KrirOp::BranchIfZero {
                 slot: cond_slot,
-                then_callee: else_name.clone(),  // zero = false
-                else_callee: then_name.clone(),  // nonzero = true
+                then_callee: else_name.clone(), // zero = false
+                else_callee: then_name.clone(), // nonzero = true
             });
             pending_fns.push(PendingFn {
                 name: then_name,
@@ -3140,33 +3215,69 @@ fn lower_stmt(
             ops.push(KrirOp::LoopBegin);
             match lower_expr(cond, ops, slot_counter, device_regs, eff_used) {
                 Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
-                Err(e) => { errors.push(e); return; }
+                Err(e) => {
+                    errors.push(e);
+                    return;
+                }
             }
             for s in body {
-                lower_stmt(s, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
+                lower_stmt(
+                    s,
+                    ops,
+                    eff_used,
+                    const_map,
+                    surface_profile,
+                    errors,
+                    slot_counter,
+                    device_regs,
+                    fn_counter,
+                    pending_fns,
+                );
             }
             ops.push(KrirOp::LoopEnd);
         }
-        Stmt::For { var, start, end, inclusive, body } => {
+        Stmt::For {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        } => {
             // Initialize loop variable.
-            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U32, cell: var.clone() });
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U32,
+                cell: var.clone(),
+            });
             match lower_expr(start, ops, slot_counter, device_regs, eff_used) {
                 Ok(start_slot) => ops.push(KrirOp::StackStore {
                     ty: KrirMmioScalarType::U32,
                     cell: var.clone(),
                     value: KrirMmioValueExpr::Ident { name: start_slot },
                 }),
-                Err(e) => { errors.push(e); return; }
+                Err(e) => {
+                    errors.push(e);
+                    return;
+                }
             }
             ops.push(KrirOp::LoopBegin);
             // Compute end bound and break if var >= end (exclusive) or var > end (inclusive).
             let end_slot = match lower_expr(end, ops, slot_counter, device_regs, eff_used) {
                 Ok(s) => s,
-                Err(e) => { errors.push(e); return; }
+                Err(e) => {
+                    errors.push(e);
+                    return;
+                }
             };
             let cmp_slot = fresh_slot(slot_counter);
-            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U8, cell: cmp_slot.clone() });
-            let cmp_op = if *inclusive { KrirCmpOp::Gt } else { KrirCmpOp::Ge };
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U8,
+                cell: cmp_slot.clone(),
+            });
+            let cmp_op = if *inclusive {
+                KrirCmpOp::Gt
+            } else {
+                KrirCmpOp::Ge
+            };
             ops.push(KrirOp::CompareIntoSlot {
                 cmp_op,
                 lhs: var.clone(),
@@ -3176,15 +3287,31 @@ fn lower_stmt(
             ops.push(KrirOp::BranchIfNonZeroLoopBreak { slot: cmp_slot });
             // Loop body.
             for s in body {
-                lower_stmt(s, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
+                lower_stmt(
+                    s,
+                    ops,
+                    eff_used,
+                    const_map,
+                    surface_profile,
+                    errors,
+                    slot_counter,
+                    device_regs,
+                    fn_counter,
+                    pending_fns,
+                );
             }
             // Increment: var += 1.
             let one_slot = fresh_slot(slot_counter);
-            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U32, cell: one_slot.clone() });
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U32,
+                cell: one_slot.clone(),
+            });
             ops.push(KrirOp::StackStore {
                 ty: KrirMmioScalarType::U32,
                 cell: one_slot.clone(),
-                value: KrirMmioValueExpr::IntLiteral { value: "1".to_string() },
+                value: KrirMmioValueExpr::IntLiteral {
+                    value: "1".to_string(),
+                },
             });
             ops.push(KrirOp::SlotArith {
                 ty: KrirMmioScalarType::U32,
@@ -3210,10 +3337,13 @@ fn lower_stmt(
 
 fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
     match ty {
-        ParserMmioScalarType::U8  | ParserMmioScalarType::I8
-        | ParserMmioScalarType::Bool | ParserMmioScalarType::Char => KrirMmioScalarType::U8,
-        ParserMmioScalarType::U16 | ParserMmioScalarType::I16 | ParserMmioScalarType::F16
-            => KrirMmioScalarType::U16,
+        ParserMmioScalarType::U8
+        | ParserMmioScalarType::I8
+        | ParserMmioScalarType::Bool
+        | ParserMmioScalarType::Char => KrirMmioScalarType::U8,
+        ParserMmioScalarType::U16 | ParserMmioScalarType::I16 | ParserMmioScalarType::F16 => {
+            KrirMmioScalarType::U16
+        }
         ParserMmioScalarType::U32 | ParserMmioScalarType::I32 => KrirMmioScalarType::U32,
         ParserMmioScalarType::U64 | ParserMmioScalarType::I64 => KrirMmioScalarType::U64,
         ParserMmioScalarType::F32 => KrirMmioScalarType::F32,
@@ -3668,7 +3798,9 @@ mod tests {
             .expect_err("typed mmio must be rejected in canonical executable lowering");
         assert_eq!(
             errs,
-            vec!["canonical-exec: function 'entry' contains unsupported mmio_read<uint16>(mmio_addr)"]
+            vec![
+                "canonical-exec: function 'entry' contains unsupported mmio_read<uint16>(mmio_addr)"
+            ]
         );
     }
 
@@ -3782,7 +3914,8 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "mmio_write<uint32>(UART0, x) width mismatch: register 'UART0.CR' is uint16".to_string()
+                "mmio_write<uint32>(UART0, x) width mismatch: register 'UART0.CR' is uint16"
+                    .to_string()
             ]
         );
     }
@@ -3823,7 +3956,8 @@ mod tests {
             vec![
                 "mmio_write<uint32>(0x1004, x) violates register access: 'UART0.SR' is read-only"
                     .to_string(),
-                "mmio_write<uint32>(0x1008, x) width mismatch: register 'UART0.CR' is uint16".to_string()
+                "mmio_write<uint32>(0x1008, x) width mismatch: register 'UART0.CR' is uint16"
+                    .to_string()
             ]
         );
     }
@@ -3972,7 +4106,8 @@ mod tests {
             errs,
             vec![
                 "undeclared mmio base 'UART0' used in mmio_read<uint32>(UART0)".to_string(),
-                "undeclared mmio base 'UART0' used in mmio_write<uint8>(UART0 + 4, 0xff)".to_string()
+                "undeclared mmio base 'UART0' used in mmio_write<uint8>(UART0 + 4, 0xff)"
+                    .to_string()
             ]
         );
     }

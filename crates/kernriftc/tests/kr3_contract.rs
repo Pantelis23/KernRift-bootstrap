@@ -17,7 +17,7 @@ use kernriftc::{
     compile_source_with_surface,
 };
 use krir::{
-    ArithOp, BackendTargetContract, BackendTargetId, ExecutableCallArg, ExecutableOp,
+    ArithOp, BackendTargetContract, ExecutableCallArg, ExecutableOp,
     ExecutableTerminator, emit_x86_64_asm_text, lower_current_krir_to_executable_krir,
     lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
 };
@@ -321,7 +321,10 @@ fn multiple_stack_cells_compile_to_x86_64_elf_object() {
     let target = BackendTargetContract::x86_64_sysv();
     let object =
         lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
-    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+    assert!(
+        !object.text_bytes.is_empty(),
+        "must emit non-empty text section"
+    );
 }
 
 #[test]
@@ -468,7 +471,10 @@ fn cell_arith_imm_compiles_to_x86_64_elf_object() {
     let target = BackendTargetContract::x86_64_sysv();
     let object =
         lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
-    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+    assert!(
+        !object.text_bytes.is_empty(),
+        "must emit non-empty text section"
+    );
 }
 
 // ── PR-4: Call with args ──────────────────────────────────────────────────────
@@ -522,30 +528,75 @@ fn call_with_args_accepted_on_experimental_surface() {
     let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
 
     // send_imm: one CallWithArgs with Imm(0x42)
-    let send_imm = exec.functions.iter().find(|f| f.name == "send_imm").expect("send_imm");
-    let imm_args: Vec<_> = send_imm.blocks[0].ops.iter().filter_map(|op| {
-        if let ExecutableOp::CallWithArgs { args, .. } = op { Some(args.clone()) } else { None }
-    }).collect();
+    let send_imm = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "send_imm")
+        .expect("send_imm");
+    let imm_args: Vec<_> = send_imm.blocks[0]
+        .ops
+        .iter()
+        .filter_map(|op| {
+            if let ExecutableOp::CallWithArgs { args, .. } = op {
+                Some(args.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(imm_args.len(), 1, "send_imm must have one CallWithArgs");
-    assert!(matches!(imm_args[0][0], ExecutableCallArg::Imm { value: 0x42 }));
+    assert!(matches!(
+        imm_args[0][0],
+        ExecutableCallArg::Imm { value: 0x42 }
+    ));
 
     // send_slot: one CallWithArgs with Slot
-    let send_slot = exec.functions.iter().find(|f| f.name == "send_slot").expect("send_slot");
-    let slot_args: Vec<_> = send_slot.blocks[0].ops.iter().filter_map(|op| {
-        if let ExecutableOp::CallWithArgs { args, .. } = op { Some(args.clone()) } else { None }
-    }).collect();
+    let send_slot = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "send_slot")
+        .expect("send_slot");
+    let slot_args: Vec<_> = send_slot.blocks[0]
+        .ops
+        .iter()
+        .filter_map(|op| {
+            if let ExecutableOp::CallWithArgs { args, .. } = op {
+                Some(args.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(slot_args.len(), 1, "send_slot must have one CallWithArgs");
     assert!(matches!(slot_args[0][0], ExecutableCallArg::Slot { .. }));
 
     // send_two_imm: one CallWithArgs with two Imm args
-    let send_two = exec.functions.iter().find(|f| f.name == "send_two_imm").expect("send_two_imm");
-    let two_args: Vec<_> = send_two.blocks[0].ops.iter().filter_map(|op| {
-        if let ExecutableOp::CallWithArgs { args, .. } = op { Some(args.clone()) } else { None }
-    }).collect();
+    let send_two = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "send_two_imm")
+        .expect("send_two_imm");
+    let two_args: Vec<_> = send_two.blocks[0]
+        .ops
+        .iter()
+        .filter_map(|op| {
+            if let ExecutableOp::CallWithArgs { args, .. } = op {
+                Some(args.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(two_args.len(), 1);
     assert_eq!(two_args[0].len(), 2);
-    assert!(matches!(two_args[0][0], ExecutableCallArg::Imm { value: 1 }));
-    assert!(matches!(two_args[0][1], ExecutableCallArg::Imm { value: 2 }));
+    assert!(matches!(
+        two_args[0][0],
+        ExecutableCallArg::Imm { value: 1 }
+    ));
+    assert!(matches!(
+        two_args[0][1],
+        ExecutableCallArg::Imm { value: 2 }
+    ));
 }
 
 #[test]
@@ -571,7 +622,10 @@ fn call_with_args_compiles_to_x86_64_elf_object() {
     let target = BackendTargetContract::x86_64_sysv();
     let object =
         lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
-    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+    assert!(
+        !object.text_bytes.is_empty(),
+        "must emit non-empty text section"
+    );
 }
 
 // ── PR-5: Tail-call loop ──────────────────────────────────────────────────────
@@ -614,7 +668,11 @@ fn tail_call_produces_tail_call_terminator() {
         compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
     let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
 
-    let spin = exec.functions.iter().find(|f| f.name == "spin").expect("spin");
+    let spin = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "spin")
+        .expect("spin");
     assert!(
         matches!(
             &spin.blocks[0].terminator,
@@ -623,7 +681,11 @@ fn tail_call_produces_tail_call_terminator() {
         "spin must have TailCall terminator to self with no args"
     );
 
-    let relay = exec.functions.iter().find(|f| f.name == "relay").expect("relay");
+    let relay = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "relay")
+        .expect("relay");
     match &relay.blocks[0].terminator {
         ExecutableTerminator::TailCall { callee, args } => {
             assert_eq!(callee, "relay");
@@ -653,7 +715,10 @@ fn tail_call_compiles_to_x86_64_elf_object() {
     let target = BackendTargetContract::x86_64_sysv();
     let object =
         lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
-    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+    assert!(
+        !object.text_bytes.is_empty(),
+        "must emit non-empty text section"
+    );
 }
 
 // ── PR-6: Telemetry layer ─────────────────────────────────────────────────────
@@ -789,10 +854,16 @@ fn living_compiler_detects_tail_call_opportunity_on_stable_module() {
         ids
     );
 
-    let tc = suggestions.iter().find(|m| m.id == "try_tail_call").unwrap();
+    let tc = suggestions
+        .iter()
+        .find(|m| m.id == "try_tail_call")
+        .unwrap();
     assert!(tc.fitness > 0, "fitness must be non-zero");
     assert!(tc.fitness <= 100, "fitness must not exceed 100");
-    assert!(tc.requires_experimental, "must require experimental on stable surface");
+    assert!(
+        tc.requires_experimental,
+        "must require experimental on stable surface"
+    );
 }
 
 #[test]
@@ -869,7 +940,12 @@ fn living_compiler_fitness_bounded_and_sorted() {
 
     assert!(!suggestions.is_empty(), "must produce suggestions");
     for m in &suggestions {
-        assert!(m.fitness <= 100, "fitness {} for '{}' exceeds 100", m.fitness, m.id);
+        assert!(
+            m.fitness <= 100,
+            "fitness {} for '{}' exceeds 100",
+            m.fitness,
+            m.id
+        );
     }
     // Verify sorted: fitness descending.
     for window in suggestions.windows(2) {
@@ -901,8 +977,14 @@ fn living_compiler_detects_high_extern_ratio() {
         "high_extern_ratio must fire when externs >= half total functions: got {:?}",
         ids
     );
-    let he = suggestions.iter().find(|m| m.id == "high_extern_ratio").unwrap();
-    assert!(!he.requires_experimental, "high_extern_ratio does not need experimental surface");
+    let he = suggestions
+        .iter()
+        .find(|m| m.id == "high_extern_ratio")
+        .unwrap();
+    assert!(
+        !he.requires_experimental,
+        "high_extern_ratio does not need experimental surface"
+    );
 }
 
 // ── PR-8: Two-source slot arithmetic (slot_add/sub/and/or/xor/shl/shr) ───────
@@ -924,9 +1006,19 @@ fn slot_arith_parses_and_lowers_to_executable_krir() {
         compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
     let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
 
-    let f = exec.functions.iter().find(|f| f.name == "add_slots").expect("add_slots");
+    let f = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "add_slots")
+        .expect("add_slots");
     let slot_arith = f.blocks[0].ops.iter().find(|op| {
-        matches!(op, ExecutableOp::SlotArithSlot { arith_op: ArithOp::Add, .. })
+        matches!(
+            op,
+            ExecutableOp::SlotArithSlot {
+                arith_op: ArithOp::Add,
+                ..
+            }
+        )
     });
     assert!(
         slot_arith.is_some(),
@@ -934,7 +1026,13 @@ fn slot_arith_parses_and_lowers_to_executable_krir() {
         f.blocks[0].ops
     );
     // Verify dst=0 (slot 'a') and src=1 (slot 'b').
-    if let Some(ExecutableOp::SlotArithSlot { dst_slot_idx, src_slot_idx, ty, .. }) = slot_arith {
+    if let Some(ExecutableOp::SlotArithSlot {
+        dst_slot_idx,
+        src_slot_idx,
+        ty,
+        ..
+    }) = slot_arith
+    {
         assert_eq!(*dst_slot_idx, 0, "dst slot must be 0 (a)");
         assert_eq!(*src_slot_idx, 1, "src slot must be 1 (b)");
         assert_eq!(*ty, krir::MmioScalarType::U64);
@@ -983,12 +1081,15 @@ fn slot_arith_compiles_to_x86_64_elf_object() {
     let target = BackendTargetContract::x86_64_sysv();
     let object =
         lower_executable_krir_to_x86_64_object(&exec, &target).expect("must produce ELF object");
-    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+    assert!(
+        !object.text_bytes.is_empty(),
+        "must emit non-empty text section"
+    );
 }
 
 #[test]
 fn slot_arith_shift_emits_typed_asm_text() {
-    use krir::{lower_executable_krir_to_x86_64_asm, emit_x86_64_asm_text};
+    use krir::{emit_x86_64_asm_text, lower_executable_krir_to_x86_64_asm};
 
     let src = r#"
         @module_caps();
@@ -1005,8 +1106,8 @@ fn slot_arith_shift_emits_typed_asm_text() {
         compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
     let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
     let target = BackendTargetContract::x86_64_sysv();
-    let asm_module = lower_executable_krir_to_x86_64_asm(&exec, &target)
-        .expect("must produce asm module");
+    let asm_module =
+        lower_executable_krir_to_x86_64_asm(&exec, &target).expect("must produce asm module");
     let asm_text = emit_x86_64_asm_text(&asm_module);
 
     assert!(
@@ -1033,7 +1134,10 @@ fn win64_target_contract_validates() {
 #[test]
 fn macho_target_contract_validates() {
     let contract = BackendTargetContract::x86_64_macho();
-    assert!(contract.validate().is_ok(), "macOS Mach-O contract must validate");
+    assert!(
+        contract.validate().is_ok(),
+        "macOS Mach-O contract must validate"
+    );
     assert_eq!(contract.target_id.as_str(), "x86_64-macho");
     assert_eq!(contract.symbols.function_prefix, "_");
     assert_eq!(contract.sections.text, "__TEXT,__text");
@@ -1052,8 +1156,8 @@ fn macho_asm_emits_underscore_prefix_and_macho_section() {
     let module = compile_source(src).expect("must compile");
     let executable = lower_current_krir_to_executable_krir(&module).expect("must lower");
     let contract = BackendTargetContract::x86_64_macho();
-    let asm = lower_executable_krir_to_x86_64_asm(&executable, &contract)
-        .expect("must lower to asm");
+    let asm =
+        lower_executable_krir_to_x86_64_asm(&executable, &contract).expect("must lower to asm");
     let text = emit_x86_64_asm_text(&asm);
 
     assert!(
@@ -1160,7 +1264,11 @@ fn classify(uint32 val) {
 "#;
     let module = compile_source(src).unwrap();
     // Main fn + 3 synthesized fns (then, else, end)
-    assert!(module.functions.len() >= 4, "expected ≥4 functions, got {}", module.functions.len());
+    assert!(
+        module.functions.len() >= 4,
+        "expected ≥4 functions, got {}",
+        module.functions.len()
+    );
 }
 
 #[test]
@@ -1176,8 +1284,15 @@ fn check(uint32 x) {
 "#;
     let module = compile_source(src).unwrap();
     let main_fn = module.functions.iter().find(|f| f.name == "check").unwrap();
-    let has_compare = main_fn.ops.iter().any(|op| matches!(op, KrirOp::CompareIntoSlot { .. }));
-    assert!(has_compare, "expected CompareIntoSlot in 'check' ops, got: {:?}", main_fn.ops);
+    let has_compare = main_fn
+        .ops
+        .iter()
+        .any(|op| matches!(op, KrirOp::CompareIntoSlot { .. }));
+    assert!(
+        has_compare,
+        "expected CompareIntoSlot in 'check' ops, got: {:?}",
+        main_fn.ops
+    );
 }
 
 #[test]
@@ -1193,12 +1308,20 @@ fn dummy() {}
 "#;
     use kernriftc::compile_source;
     let module = compile_source(src).unwrap();
-    assert!(module.mmio_bases.iter().any(|b| b.name == "UART0"),
-        "expected UART0 in mmio_bases, got: {:?}", module.mmio_bases);
-    assert!(module.mmio_registers.iter().any(|r| r.name == "Status"),
-        "expected Status in mmio_registers, got: {:?}", module.mmio_registers);
-    assert!(module.mmio_registers.iter().any(|r| r.name == "Data"),
-        "expected Data in mmio_registers");
+    assert!(
+        module.mmio_bases.iter().any(|b| b.name == "UART0"),
+        "expected UART0 in mmio_bases, got: {:?}",
+        module.mmio_bases
+    );
+    assert!(
+        module.mmio_registers.iter().any(|r| r.name == "Status"),
+        "expected Status in mmio_registers, got: {:?}",
+        module.mmio_registers
+    );
+    assert!(
+        module.mmio_registers.iter().any(|r| r.name == "Data"),
+        "expected Data in mmio_registers"
+    );
 }
 
 #[test]
@@ -1215,12 +1338,23 @@ fn count(uint32 n) {
 "#;
     let module = compile_source(src).unwrap();
     let f = module.functions.iter().find(|f| f.name == "count").unwrap();
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
-        "expected LoopBegin, got: {:?}", f.ops);
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopEnd)),
-        "expected LoopEnd, got: {:?}", f.ops);
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::BranchIfZeroLoopBreak { .. })),
-        "expected BranchIfZeroLoopBreak, got: {:?}", f.ops);
+    assert!(
+        f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
+        "expected LoopBegin, got: {:?}",
+        f.ops
+    );
+    assert!(
+        f.ops.iter().any(|op| matches!(op, KrirOp::LoopEnd)),
+        "expected LoopEnd, got: {:?}",
+        f.ops
+    );
+    assert!(
+        f.ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::BranchIfZeroLoopBreak { .. })),
+        "expected BranchIfZeroLoopBreak, got: {:?}",
+        f.ops
+    );
 }
 
 #[test]
@@ -1237,14 +1371,30 @@ fn sum(uint32 n) {
 "#;
     let module = compile_source(src).unwrap();
     let f = module.functions.iter().find(|f| f.name == "sum").unwrap();
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
-        "expected LoopBegin, got: {:?}", f.ops);
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopEnd)),
-        "expected LoopEnd, got: {:?}", f.ops);
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::CompareIntoSlot { .. })),
-        "expected CompareIntoSlot in for loop, got: {:?}", f.ops);
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::BranchIfNonZeroLoopBreak { .. })),
-        "expected BranchIfNonZeroLoopBreak, got: {:?}", f.ops);
+    assert!(
+        f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
+        "expected LoopBegin, got: {:?}",
+        f.ops
+    );
+    assert!(
+        f.ops.iter().any(|op| matches!(op, KrirOp::LoopEnd)),
+        "expected LoopEnd, got: {:?}",
+        f.ops
+    );
+    assert!(
+        f.ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::CompareIntoSlot { .. })),
+        "expected CompareIntoSlot in for loop, got: {:?}",
+        f.ops
+    );
+    assert!(
+        f.ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::BranchIfNonZeroLoopBreak { .. })),
+        "expected BranchIfNonZeroLoopBreak, got: {:?}",
+        f.ops
+    );
 }
 
 #[test]
@@ -1258,9 +1408,18 @@ fn get_val() -> uint32 {
 }
 "#;
     let module = compile_source(src).unwrap();
-    let f = module.functions.iter().find(|f| f.name == "get_val").unwrap();
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::ReturnSlot { .. })),
-        "expected ReturnSlot in get_val ops, got: {:?}", f.ops);
+    let f = module
+        .functions
+        .iter()
+        .find(|f| f.name == "get_val")
+        .unwrap();
+    assert!(
+        f.ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::ReturnSlot { .. })),
+        "expected ReturnSlot in get_val ops, got: {:?}",
+        f.ops
+    );
 }
 
 #[test]
@@ -1275,8 +1434,11 @@ fn bad(uint32 x) -> uint32 {
     let result = compile_source(src);
     assert!(result.is_err(), "expected compile error for multiplication");
     let errs = result.unwrap_err();
-    assert!(errs.iter().any(|e| e.contains("multiplication")),
-        "expected 'multiplication' in error, got: {:?}", errs);
+    assert!(
+        errs.iter().any(|e| e.contains("multiplication")),
+        "expected 'multiplication' in error, got: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -1290,15 +1452,24 @@ fn scale_f(float32 x) -> float32 {
 }
 "#;
     let module = compile_source(src).unwrap();
-    let f = module.functions.iter().find(|f| f.name == "scale_f").unwrap();
-    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::FloatArith { .. })),
-        "expected FloatArith in scale_f ops, got: {:?}", f.ops);
+    let f = module
+        .functions
+        .iter()
+        .find(|f| f.name == "scale_f")
+        .unwrap();
+    assert!(
+        f.ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::FloatArith { .. })),
+        "expected FloatArith in scale_f ops, got: {:?}",
+        f.ops
+    );
 }
 
 #[test]
 fn while_loop_compiles_to_asm_with_labels() {
     use krir::{
-        BackendTargetContract, CmpOp, ExecutableBlock, ExecutableFunction, ExecutableFacts,
+        BackendTargetContract, ExecutableBlock, ExecutableFacts, ExecutableFunction,
         ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
         ExecutableValue, ExecutableValueType, FunctionAttrs, KrirOp, MmioScalarType,
     };
@@ -1314,10 +1485,15 @@ fn simple_loop() {
 }
 "#;
     let module = compile_source(src).unwrap();
-    let f = module.functions.iter().find(|f| f.name == "simple_loop").unwrap();
+    let f = module
+        .functions
+        .iter()
+        .find(|f| f.name == "simple_loop")
+        .unwrap();
     assert!(
         f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
-        "expected KrirOp::LoopBegin in simple_loop, got: {:?}", f.ops
+        "expected KrirOp::LoopBegin in simple_loop, got: {:?}",
+        f.ops
     );
 
     // Part 2: directly construct an ExecutableKrirModule with loop ops and verify
@@ -1368,28 +1544,47 @@ fn simple_loop() {
 
     // Verify ExecutableOp variants are present
     let ef = &exec.functions[0];
-    assert!(ef.blocks[0].ops.iter().any(|op| matches!(op, ExecutableOp::LoopBegin)));
-    assert!(ef.blocks[0].ops.iter().any(|op| matches!(op, ExecutableOp::LoopEnd)));
-    assert!(ef.blocks[0].ops.iter().any(|op| matches!(op, ExecutableOp::BranchIfZeroLoopBreak { .. })));
+    assert!(
+        ef.blocks[0]
+            .ops
+            .iter()
+            .any(|op| matches!(op, ExecutableOp::LoopBegin))
+    );
+    assert!(
+        ef.blocks[0]
+            .ops
+            .iter()
+            .any(|op| matches!(op, ExecutableOp::LoopEnd))
+    );
+    assert!(
+        ef.blocks[0]
+            .ops
+            .iter()
+            .any(|op| matches!(op, ExecutableOp::BranchIfZeroLoopBreak { .. }))
+    );
 
     // Lower to ASM text and verify labels and jumps are emitted
-    let asm_module = lower_executable_krir_to_x86_64_asm(&exec, &target)
-        .expect("must lower to x86_64 ASM");
+    let asm_module =
+        lower_executable_krir_to_x86_64_asm(&exec, &target).expect("must lower to x86_64 ASM");
     let asm_text = emit_x86_64_asm_text(&asm_module);
     assert!(
         asm_text.contains("loop_fn__loop_0_head:"),
-        "expected loop head label in ASM output, got:\n{}", asm_text
+        "expected loop head label in ASM output, got:\n{}",
+        asm_text
     );
     assert!(
         asm_text.contains("loop_fn__loop_0_end:"),
-        "expected loop end label in ASM output, got:\n{}", asm_text
+        "expected loop end label in ASM output, got:\n{}",
+        asm_text
     );
     assert!(
         asm_text.contains("jmp loop_fn__loop_0_head"),
-        "expected backward jmp to head in ASM output, got:\n{}", asm_text
+        "expected backward jmp to head in ASM output, got:\n{}",
+        asm_text
     );
     assert!(
         asm_text.contains("jz loop_fn__loop_0_end"),
-        "expected jz to end in ASM output, got:\n{}", asm_text
+        "expected jz to end in ASM output, got:\n{}",
+        asm_text
     );
 }

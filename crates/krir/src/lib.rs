@@ -323,9 +323,13 @@ pub enum KrirOp {
     /// Jumps to the condition check of the innermost loop.
     LoopContinue,
     /// If `slot == 0`, exit the innermost loop.
-    BranchIfZeroLoopBreak { slot: String },
+    BranchIfZeroLoopBreak {
+        slot: String,
+    },
     /// If `slot != 0`, exit the innermost loop.
-    BranchIfNonZeroLoopBreak { slot: String },
+    BranchIfNonZeroLoopBreak {
+        slot: String,
+    },
     /// Floating-point arithmetic: `dst = dst op src` (SSE2 scalar). Requires Task 11 backend.
     FloatArith {
         ty: MmioScalarType,
@@ -699,10 +703,15 @@ pub enum ExecutableOp {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "terminator", rename_all = "snake_case")]
 pub enum ExecutableTerminator {
-    Return { value: ExecutableValue },
+    Return {
+        value: ExecutableValue,
+    },
     /// Tear down the current frame, load args into SysV registers, then `jmp callee`.
     /// No return address is pushed — enables infinite loops with zero stack growth.
-    TailCall { callee: String, args: Vec<ExecutableCallArg> },
+    TailCall {
+        callee: String,
+        args: Vec<ExecutableCallArg>,
+    },
 }
 
 impl ExecutableTerminator {
@@ -1571,20 +1580,22 @@ pub fn lower_current_krir_to_executable_krir(
                 }
                 KrirOp::StackStore { ty, cell, value } => {
                     let invocation = format_cell_store_invocation(*ty, cell, value);
-                    let slot_idx = match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
-                        Ok(idx) => idx,
-                        Err(reason) => {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: {}",
-                                function.name, invocation, reason
-                            ));
-                            continue;
-                        }
-                    };
+                    let slot_idx =
+                        match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
+                            Ok(idx) => idx,
+                            Err(reason) => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported {}: {}",
+                                    function.name, invocation, reason
+                                ));
+                                continue;
+                            }
+                        };
                     let resolved_value = match value {
-                        MmioValueExpr::FloatLiteral { value: fv } => {
-                            Err(format!("float literal '{}' not supported in MMIO write", fv))
-                        }
+                        MmioValueExpr::FloatLiteral { value: fv } => Err(format!(
+                            "float literal '{}' not supported in MMIO write",
+                            fv
+                        )),
                         MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
                             *ty,
                             value,
@@ -1637,7 +1648,11 @@ pub fn lower_current_krir_to_executable_krir(
                     };
                     match resolved_value {
                         ExecutableMmioWriteValue::Immediate(value) => {
-                            exec_ops.push(ExecutableOp::StackStoreImm { ty: *ty, value, slot_idx });
+                            exec_ops.push(ExecutableOp::StackStoreImm {
+                                ty: *ty,
+                                value,
+                                slot_idx,
+                            });
                         }
                         ExecutableMmioWriteValue::SavedValue => {
                             if let Some(current_value) = last_value.as_ref()
@@ -1659,16 +1674,17 @@ pub fn lower_current_krir_to_executable_krir(
                 }
                 KrirOp::StackLoad { ty, cell, slot } => {
                     let invocation = format_cell_load_invocation(*ty, cell, slot);
-                    let slot_idx = match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
-                        Ok(idx) => idx,
-                        Err(reason) => {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: {}",
-                                function.name, invocation, reason
-                            ));
-                            continue;
-                        }
-                    };
+                    let slot_idx =
+                        match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
+                            Ok(idx) => idx,
+                            Err(reason) => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported {}: {}",
+                                    function.name, invocation, reason
+                                ));
+                                continue;
+                            }
+                        };
                     if let Some(existing) = &executable_slot_name {
                         if existing != slot {
                             errors.push(format!(
@@ -1690,19 +1706,25 @@ pub fn lower_current_krir_to_executable_krir(
                         source: ExecutableCapturedValueSource::SavedSlot,
                     });
                 }
-                KrirOp::CellArithImm { ty, cell, arith_op, imm } => {
+                KrirOp::CellArithImm {
+                    ty,
+                    cell,
+                    arith_op,
+                    imm,
+                } => {
                     let invocation =
                         format!("cell_{}<{}>({})", arith_op.as_str(), ty.as_str(), cell);
-                    let slot_idx = match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
-                        Ok(idx) => idx,
-                        Err(reason) => {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: {}",
-                                function.name, invocation, reason
-                            ));
-                            continue;
-                        }
-                    };
+                    let slot_idx =
+                        match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
+                            Ok(idx) => idx,
+                            Err(reason) => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported {}: {}",
+                                    function.name, invocation, reason
+                                ));
+                                continue;
+                            }
+                        };
                     let valid = match arith_op {
                         ArithOp::Shl | ArithOp::Shr => {
                             if *imm > 63 {
@@ -1737,7 +1759,12 @@ pub fn lower_current_krir_to_executable_krir(
                         imm: *imm,
                     });
                 }
-                KrirOp::SlotArith { ty, dst, src, arith_op } => {
+                KrirOp::SlotArith {
+                    ty,
+                    dst,
+                    src,
+                    arith_op,
+                } => {
                     let invocation =
                         format!("slot_{}<{}>({})", arith_op.as_str(), ty.as_str(), dst);
                     let dst_slot_idx =
@@ -1893,9 +1920,10 @@ pub fn lower_current_krir_to_executable_krir(
                         }
                     };
                     let resolved_value = match value {
-                        MmioValueExpr::FloatLiteral { value: fv } => {
-                            Err(format!("float literal '{}' not supported in MMIO write", fv))
-                        }
+                        MmioValueExpr::FloatLiteral { value: fv } => Err(format!(
+                            "float literal '{}' not supported in MMIO write",
+                            fv
+                        )),
                         MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
                             *ty,
                             value,
@@ -2069,7 +2097,12 @@ pub fn lower_current_krir_to_executable_krir(
                     name,
                     value.as_source()
                 )),
-                KrirOp::CompareIntoSlot { cmp_op, lhs, rhs, out } => {
+                KrirOp::CompareIntoSlot {
+                    cmp_op,
+                    lhs,
+                    rhs,
+                    out,
+                } => {
                     let lhs_idx = if let Some(&(idx, _)) = cell_slot_map.get(lhs.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(lhs.as_str()) {
@@ -2194,7 +2227,10 @@ pub fn lower_current_krir_to_executable_krir(
                 label: "entry".to_string(),
                 ops: exec_ops,
                 terminator: if let Some((tc_callee, tc_args)) = tail_call_terminator {
-                    ExecutableTerminator::TailCall { callee: tc_callee, args: tc_args }
+                    ExecutableTerminator::TailCall {
+                        callee: tc_callee,
+                        args: tc_args,
+                    }
                 } else {
                     ExecutableTerminator::Return {
                         value: result_ty
@@ -2298,7 +2334,10 @@ fn resolve_executable_mmio_write_value(
 ) -> Result<ExecutableMmioWriteValue, String> {
     match value {
         MmioValueExpr::FloatLiteral { value } => {
-            return Err(format!("float literal '{}' not supported in MMIO write", value));
+            Err(format!(
+                "float literal '{}' not supported in MMIO write",
+                value
+            ))
         }
         MmioValueExpr::IntLiteral { value } => {
             let parsed = parse_integer_literal_u64(value)?;
@@ -2971,9 +3010,19 @@ impl BackendTargetContract {
     pub fn validate(&self) -> Result<(), String> {
         let known_combo = matches!(
             (self.target_id, self.arch, self.abi),
-            (BackendTargetId::X86_64Sysv, TargetArch::X86_64, TargetAbi::Sysv)
-                | (BackendTargetId::X86_64Win64, TargetArch::X86_64, TargetAbi::Win64)
-                | (BackendTargetId::X86_64MachO, TargetArch::X86_64, TargetAbi::Sysv)
+            (
+                BackendTargetId::X86_64Sysv,
+                TargetArch::X86_64,
+                TargetAbi::Sysv
+            ) | (
+                BackendTargetId::X86_64Win64,
+                TargetArch::X86_64,
+                TargetAbi::Win64
+            ) | (
+                BackendTargetId::X86_64MachO,
+                TargetArch::X86_64,
+                TargetAbi::Sysv
+            )
         );
         if !known_combo {
             return Err(format!(
@@ -3635,19 +3684,33 @@ pub fn lower_executable_krir_to_x86_64_asm(
             for op in &function.blocks[0].ops {
                 match op {
                     ExecutableOp::Call { callee } => {
-                        instrs.push(X86_64AsmInstruction::Call { symbol: callee.clone() });
+                        instrs.push(X86_64AsmInstruction::Call {
+                            symbol: callee.clone(),
+                        });
                     }
                     ExecutableOp::CallCapture { callee, ty } => {
-                        instrs.push(X86_64AsmInstruction::CallCapture { ty: *ty, symbol: callee.clone() });
+                        instrs.push(X86_64AsmInstruction::CallCapture {
+                            ty: *ty,
+                            symbol: callee.clone(),
+                        });
                     }
-                    ExecutableOp::BranchIfZero { ty, then_callee, else_callee } => {
+                    ExecutableOp::BranchIfZero {
+                        ty,
+                        then_callee,
+                        else_callee,
+                    } => {
                         instrs.push(X86_64AsmInstruction::BranchIfZero {
                             ty: *ty,
                             then_symbol: then_callee.clone(),
                             else_symbol: else_callee.clone(),
                         });
                     }
-                    ExecutableOp::BranchIfEqImm { ty, compare_value, then_callee, else_callee } => {
+                    ExecutableOp::BranchIfEqImm {
+                        ty,
+                        compare_value,
+                        then_callee,
+                        else_callee,
+                    } => {
                         instrs.push(X86_64AsmInstruction::BranchIfEqImm {
                             ty: *ty,
                             compare_value: *compare_value,
@@ -3655,7 +3718,12 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             else_symbol: else_callee.clone(),
                         });
                     }
-                    ExecutableOp::BranchIfMaskNonZeroImm { ty, mask_value, then_callee, else_callee } => {
+                    ExecutableOp::BranchIfMaskNonZeroImm {
+                        ty,
+                        mask_value,
+                        then_callee,
+                        else_callee,
+                    } => {
                         instrs.push(X86_64AsmInstruction::BranchIfMaskNonZeroImm {
                             ty: *ty,
                             mask_value: *mask_value,
@@ -3663,7 +3731,11 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             else_symbol: else_callee.clone(),
                         });
                     }
-                    ExecutableOp::MmioRead { ty, addr, capture_value } => {
+                    ExecutableOp::MmioRead {
+                        ty,
+                        addr,
+                        capture_value,
+                    } => {
                         instrs.push(X86_64AsmInstruction::MmioRead {
                             ty: *ty,
                             addr: *addr,
@@ -3678,9 +3750,16 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         });
                     }
                     ExecutableOp::MmioWriteValue { ty, addr } => {
-                        instrs.push(X86_64AsmInstruction::MmioWriteValue { ty: *ty, addr: *addr });
+                        instrs.push(X86_64AsmInstruction::MmioWriteValue {
+                            ty: *ty,
+                            addr: *addr,
+                        });
                     }
-                    ExecutableOp::StackStoreImm { ty, value, slot_idx } => {
+                    ExecutableOp::StackStoreImm {
+                        ty,
+                        value,
+                        slot_idx,
+                    } => {
                         instrs.push(X86_64AsmInstruction::StackStoreImm {
                             ty: *ty,
                             value: *value,
@@ -3688,12 +3767,23 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         });
                     }
                     ExecutableOp::StackStoreValue { ty, slot_idx } => {
-                        instrs.push(X86_64AsmInstruction::StackStoreValue { ty: *ty, slot_idx: *slot_idx });
+                        instrs.push(X86_64AsmInstruction::StackStoreValue {
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                        });
                     }
                     ExecutableOp::StackLoad { ty, slot_idx } => {
-                        instrs.push(X86_64AsmInstruction::StackLoad { ty: *ty, slot_idx: *slot_idx });
+                        instrs.push(X86_64AsmInstruction::StackLoad {
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                        });
                     }
-                    ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+                    ExecutableOp::SlotArithImm {
+                        ty,
+                        slot_idx,
+                        arith_op,
+                        imm,
+                    } => {
                         instrs.push(X86_64AsmInstruction::SlotArithImm {
                             ty: *ty,
                             slot_idx: *slot_idx,
@@ -3701,7 +3791,12 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             imm: *imm,
                         });
                     }
-                    ExecutableOp::SlotArithSlot { ty, dst_slot_idx, src_slot_idx, arith_op } => {
+                    ExecutableOp::SlotArithSlot {
+                        ty,
+                        dst_slot_idx,
+                        src_slot_idx,
+                        arith_op,
+                    } => {
                         instrs.push(X86_64AsmInstruction::SlotArithSlot {
                             ty: *ty,
                             dst_slot_idx: *dst_slot_idx,
@@ -3710,16 +3805,27 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         });
                     }
                     ExecutableOp::ParamLoad { param_idx, ty } => {
-                        instrs.push(X86_64AsmInstruction::ParamLoad { param_idx: *param_idx, ty: *ty });
+                        instrs.push(X86_64AsmInstruction::ParamLoad {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                        });
                     }
-                    ExecutableOp::MmioReadParamAddr { param_idx, ty, capture_value } => {
+                    ExecutableOp::MmioReadParamAddr {
+                        param_idx,
+                        ty,
+                        capture_value,
+                    } => {
                         instrs.push(X86_64AsmInstruction::MmioReadParamAddr {
                             param_idx: *param_idx,
                             ty: *ty,
                             capture_value: *capture_value,
                         });
                     }
-                    ExecutableOp::MmioWriteImmParamAddr { param_idx, ty, value } => {
+                    ExecutableOp::MmioWriteImmParamAddr {
+                        param_idx,
+                        ty,
+                        value,
+                    } => {
                         instrs.push(X86_64AsmInstruction::MmioWriteImmParamAddr {
                             param_idx: *param_idx,
                             ty: *ty,
@@ -3743,7 +3849,10 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         let end = format!("{}__loop_{}_end", function.name, loop_counter);
                         loop_counter += 1;
                         instrs.push(X86_64AsmInstruction::Label(head.clone()));
-                        loop_stack.push(LoopFrame { head_label: head, end_label: end });
+                        loop_stack.push(LoopFrame {
+                            head_label: head,
+                            end_label: end,
+                        });
                     }
                     ExecutableOp::LoopEnd => {
                         let frame = loop_stack.last().expect("LoopEnd without LoopBegin");
@@ -3752,26 +3861,51 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         instrs.push(X86_64AsmInstruction::Label(frame.end_label));
                     }
                     ExecutableOp::LoopBreak => {
-                        let end = loop_stack.last().expect("LoopBreak outside loop").end_label.clone();
+                        let end = loop_stack
+                            .last()
+                            .expect("LoopBreak outside loop")
+                            .end_label
+                            .clone();
                         instrs.push(X86_64AsmInstruction::JmpLabel(end));
                     }
                     ExecutableOp::LoopContinue => {
-                        let head = loop_stack.last().expect("LoopContinue outside loop").head_label.clone();
+                        let head = loop_stack
+                            .last()
+                            .expect("LoopContinue outside loop")
+                            .head_label
+                            .clone();
                         instrs.push(X86_64AsmInstruction::JmpLabel(head));
                     }
                     ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
-                        let end = loop_stack.last().expect("BranchIfZeroLoopBreak outside loop").end_label.clone();
-                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax { slot_idx: *slot_idx });
+                        let end = loop_stack
+                            .last()
+                            .expect("BranchIfZeroLoopBreak outside loop")
+                            .end_label
+                            .clone();
+                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax {
+                            slot_idx: *slot_idx,
+                        });
                         instrs.push(X86_64AsmInstruction::TestEaxEax);
                         instrs.push(X86_64AsmInstruction::JmpIfZeroLabel(end));
                     }
                     ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
-                        let end = loop_stack.last().expect("BranchIfNonZeroLoopBreak outside loop").end_label.clone();
-                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax { slot_idx: *slot_idx });
+                        let end = loop_stack
+                            .last()
+                            .expect("BranchIfNonZeroLoopBreak outside loop")
+                            .end_label
+                            .clone();
+                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax {
+                            slot_idx: *slot_idx,
+                        });
                         instrs.push(X86_64AsmInstruction::TestEaxEax);
                         instrs.push(X86_64AsmInstruction::JmpIfNonZeroLabel(end));
                     }
-                    ExecutableOp::CompareIntoSlot { cmp_op, lhs_idx, rhs_idx, out_idx } => {
+                    ExecutableOp::CompareIntoSlot {
+                        cmp_op,
+                        lhs_idx,
+                        rhs_idx,
+                        out_idx,
+                    } => {
                         instrs.push(X86_64AsmInstruction::CompareSlots {
                             cmp_op: *cmp_op,
                             lhs_idx: *lhs_idx,
@@ -3784,15 +3918,22 @@ pub fn lower_executable_krir_to_x86_64_asm(
 
             // Terminator
             match function.blocks[0].terminator.clone() {
-                ExecutableTerminator::Return { value: ExecutableValue::SavedValue { ty } } => {
+                ExecutableTerminator::Return {
+                    value: ExecutableValue::SavedValue { ty },
+                } => {
                     instrs.push(X86_64AsmInstruction::ReturnSavedValue { ty });
                     instrs.push(X86_64AsmInstruction::Ret);
                 }
-                ExecutableTerminator::Return { value: ExecutableValue::Unit } => {
+                ExecutableTerminator::Return {
+                    value: ExecutableValue::Unit,
+                } => {
                     instrs.push(X86_64AsmInstruction::Ret);
                 }
                 ExecutableTerminator::TailCall { callee, args } => {
-                    instrs.push(X86_64AsmInstruction::TailCall { symbol: callee, args });
+                    instrs.push(X86_64AsmInstruction::TailCall {
+                        symbol: callee,
+                        args,
+                    });
                 }
             }
 
@@ -3849,14 +3990,19 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                 ExecutableOp::StackStoreValue { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::StackLoad { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::SlotArithImm { slot_idx, .. } => Some(*slot_idx),
-                ExecutableOp::SlotArithSlot { dst_slot_idx, src_slot_idx, .. } => {
-                    Some((*dst_slot_idx).max(*src_slot_idx))
-                }
+                ExecutableOp::SlotArithSlot {
+                    dst_slot_idx,
+                    src_slot_idx,
+                    ..
+                } => Some((*dst_slot_idx).max(*src_slot_idx)),
                 ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => Some(*slot_idx),
                 ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => Some(*slot_idx),
-                ExecutableOp::CompareIntoSlot { lhs_idx, rhs_idx, out_idx, .. } => {
-                    Some((*lhs_idx).max(*rhs_idx).max(*out_idx))
-                }
+                ExecutableOp::CompareIntoSlot {
+                    lhs_idx,
+                    rhs_idx,
+                    out_idx,
+                    ..
+                } => Some((*lhs_idx).max(*rhs_idx).max(*out_idx)),
                 _ => None,
             };
             if let Some(s) = slot {
@@ -4057,7 +4203,11 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
                 }
-                X86_64AsmInstruction::StackStoreImm { ty, value, slot_idx } => {
+                X86_64AsmInstruction::StackStoreImm {
+                    ty,
+                    value,
+                    slot_idx,
+                } => {
                     let offset = 8u32 * u32::from(*slot_idx);
                     out.push_str("    ");
                     out.push_str(&mmio_immediate_mnemonic(*ty, *value));
@@ -4096,7 +4246,12 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push('\n');
                 }
-                X86_64AsmInstruction::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+                X86_64AsmInstruction::SlotArithImm {
+                    ty,
+                    slot_idx,
+                    arith_op,
+                    imm,
+                } => {
                     let offset = 8u32 * u32::from(*slot_idx);
                     // load from stack slot into saved-value register (%rbx family)
                     out.push_str("    ");
@@ -4175,7 +4330,10 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                                 if *byte_offset == 0 {
                                     out.push_str(&format!("    movq (%rsp), {}\n", reg));
                                 } else {
-                                    out.push_str(&format!("    movq {}(%rsp), {}\n", byte_offset, reg));
+                                    out.push_str(&format!(
+                                        "    movq {}(%rsp), {}\n",
+                                        byte_offset, reg
+                                    ));
                                 }
                             }
                             ExecutableCallArg::SavedValue => {
@@ -4258,7 +4416,10 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                                 if *byte_offset == 0 {
                                     out.push_str(&format!("    movq (%rsp), {}\n", reg));
                                 } else {
-                                    out.push_str(&format!("    movq {}(%rsp), {}\n", byte_offset, reg));
+                                    out.push_str(&format!(
+                                        "    movq {}(%rsp), {}\n",
+                                        byte_offset, reg
+                                    ));
                                 }
                             }
                             ExecutableCallArg::SavedValue => {
@@ -4330,7 +4491,12 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 X86_64AsmInstruction::TestEaxEax => {
                     out.push_str("    test %eax, %eax\n");
                 }
-                X86_64AsmInstruction::CompareSlots { cmp_op, lhs_idx, rhs_idx, out_idx } => {
+                X86_64AsmInstruction::CompareSlots {
+                    cmp_op,
+                    lhs_idx,
+                    rhs_idx,
+                    out_idx,
+                } => {
                     // Load lhs into eax (zero-extended from qword slot)
                     let lhs_offset = 8u32 * u32::from(*lhs_idx);
                     let rhs_offset = 8u32 * u32::from(*rhs_idx);
@@ -4548,21 +4714,34 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         }
         ExecutableOp::StackStoreValue { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx),
         ExecutableOp::StackLoad { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx),
-        ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+        ExecutableOp::SlotArithImm {
+            ty,
+            slot_idx,
+            arith_op,
+            imm,
+        } => {
             // load + arith_op + store
             let access = stack_cell_access_bytes(*ty, *slot_idx);
             let op_bytes = slot_arith_imm_op_bytes(*arith_op, *imm);
             access + op_bytes + access
         }
-        ExecutableOp::SlotArithSlot { ty, dst_slot_idx, src_slot_idx, .. } => {
+        ExecutableOp::SlotArithSlot {
+            ty,
+            dst_slot_idx,
+            src_slot_idx,
+            ..
+        } => {
             // load src into scratch reg + typed op into dst memory
-            stack_cell_access_bytes(*ty, *src_slot_idx) + stack_cell_access_bytes(*ty, *dst_slot_idx)
+            stack_cell_access_bytes(*ty, *src_slot_idx)
+                + stack_cell_access_bytes(*ty, *dst_slot_idx)
         }
         // ParamLoad: movb/movw/movl/movq disp8(%rsp), %bl/%bx/%ebx/%rbx
         ExecutableOp::ParamLoad { ty, .. } => match ty {
             MmioScalarType::U8 | MmioScalarType::U32 => 4,
             MmioScalarType::U16 | MmioScalarType::U64 => 5,
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         },
         // Param-addr MMIO: load addr from stack (5 bytes) then same as constant-addr variant minus movabs (10 bytes).
         ExecutableOp::MmioReadParamAddr {
@@ -4583,9 +4762,9 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             args.iter().map(call_arg_encoded_bytes).sum::<u64>() + 5
         }
         // Loop ops:
-        ExecutableOp::LoopBegin => 0,   // label only, no bytes
-        ExecutableOp::LoopEnd => 5,     // jmp rel32
-        ExecutableOp::LoopBreak => 5,   // jmp rel32
+        ExecutableOp::LoopBegin => 0,    // label only, no bytes
+        ExecutableOp::LoopEnd => 5,      // jmp rel32
+        ExecutableOp::LoopBreak => 5,    // jmp rel32
         ExecutableOp::LoopContinue => 5, // jmp rel32
         // movzx eax, byte ptr [rsp+disp8] (4 bytes) + test eax, eax (2 bytes) + jz rel32 (6 bytes) = 12
         ExecutableOp::BranchIfZeroLoopBreak { .. } => 12,
@@ -4597,7 +4776,13 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
 
 fn call_arg_encoded_bytes(arg: &ExecutableCallArg) -> u64 {
     match arg {
-        ExecutableCallArg::Imm { value } => if *value <= 0x7FFF_FFFF { 7 } else { 10 },
+        ExecutableCallArg::Imm { value } => {
+            if *value <= 0x7FFF_FFFF {
+                7
+            } else {
+                10
+            }
+        }
         ExecutableCallArg::Slot { .. } => 5,
         ExecutableCallArg::SavedValue => 3,
     }
@@ -4609,7 +4794,11 @@ fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
     } else {
         0
     };
-    let pop_rbx = if executable_function_uses_saved_value_slot(function) { 1u64 } else { 0u64 };
+    let pop_rbx = if executable_function_uses_saved_value_slot(function) {
+        1u64
+    } else {
+        0u64
+    };
     match &function.blocks[0].terminator {
         ExecutableTerminator::Return {
             value: ExecutableValue::SavedValue { ty },
@@ -4631,7 +4820,9 @@ fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64, capt
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
     if capture_value {
         push_mov_accumulator_to_saved_value_register(out, ty);
@@ -4646,7 +4837,9 @@ fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64,
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -4657,11 +4850,18 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
-fn encode_stack_cell_store_imm_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, value: u64, slot_idx: u8) {
+fn encode_stack_cell_store_imm_slot_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    value: u64,
+    slot_idx: u8,
+) {
     let offset = 8u8 * slot_idx;
     push_mov_imm_to_value_register(out, ty, value);
     if offset == 0 {
@@ -4670,7 +4870,9 @@ fn encode_stack_cell_store_imm_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType,
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x0C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     } else {
         match ty {
@@ -4678,12 +4880,18 @@ fn encode_stack_cell_store_imm_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType,
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x4C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x4C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x4C, 0x24, offset]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     }
 }
 
-fn encode_stack_cell_store_saved_value_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
+fn encode_stack_cell_store_saved_value_slot_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    slot_idx: u8,
+) {
     let offset = 8u8 * slot_idx;
     if offset == 0 {
         match ty {
@@ -4691,7 +4899,9 @@ fn encode_stack_cell_store_saved_value_slot_bytes(out: &mut Vec<u8>, ty: MmioSca
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x1C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     } else {
         match ty {
@@ -4699,7 +4909,9 @@ fn encode_stack_cell_store_saved_value_slot_bytes(out: &mut Vec<u8>, ty: MmioSca
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x5C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x5C, 0x24, offset]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     }
 }
@@ -4712,7 +4924,9 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x1C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     } else {
         match ty {
@@ -4720,7 +4934,9 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     }
 }
@@ -4734,7 +4950,9 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x04, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     } else {
         match ty {
@@ -4742,7 +4960,9 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x44, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x44, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     }
 }
@@ -4756,7 +4976,9 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x0C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     } else {
         match ty {
@@ -4764,7 +4986,9 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x4C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset]),
-            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            }
         }
     }
 }
@@ -4794,22 +5018,40 @@ fn encode_slot_arith_slot_op_bytes(
                 ArithOp::Xor => 0x30,
                 _ => unreachable!(),
             };
-            let (modrm_no, modrm_d8) = if offset == 0 { (0x04u8, 0x04u8) } else { (0x04u8, 0x44u8) };
+            let (modrm_no, modrm_d8) = if offset == 0 {
+                (0x04u8, 0x04u8)
+            } else {
+                (0x04u8, 0x44u8)
+            };
             if offset == 0 {
                 match ty {
                     MmioScalarType::U8 => out.extend_from_slice(&[opcode8, modrm_no, 0x24]),
-                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, opcode8 + 1, modrm_no, 0x24]),
+                    MmioScalarType::U16 => {
+                        out.extend_from_slice(&[0x66, opcode8 + 1, modrm_no, 0x24])
+                    }
                     MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_no, 0x24]),
-                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24]),
-                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+                    MmioScalarType::U64 => {
+                        out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24])
+                    }
+                    MmioScalarType::F32 | MmioScalarType::F64 => {
+                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                    }
                 }
             } else {
                 match ty {
                     MmioScalarType::U8 => out.extend_from_slice(&[opcode8, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, opcode8 + 1, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset]),
-                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+                    MmioScalarType::U16 => {
+                        out.extend_from_slice(&[0x66, opcode8 + 1, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::U32 => {
+                        out.extend_from_slice(&[opcode8 + 1, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::U64 => {
+                        out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::F32 | MmioScalarType::F64 => {
+                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                    }
                 }
             }
         }
@@ -4827,15 +5069,23 @@ fn encode_slot_arith_slot_op_bytes(
                     MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_no, 0x24]),
                     MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_no, 0x24]),
                     MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24]),
-                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+                    MmioScalarType::F32 | MmioScalarType::F64 => {
+                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                    }
                 }
             } else {
                 match ty {
                     MmioScalarType::U8 => out.extend_from_slice(&[0xD2, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U16 => {
+                        out.extend_from_slice(&[0x66, 0xD3, modrm_d8, 0x24, offset])
+                    }
                     MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset]),
-                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+                    MmioScalarType::U64 => {
+                        out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::F32 | MmioScalarType::F64 => {
+                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                    }
                 }
             }
         }
@@ -4855,7 +5105,7 @@ fn encode_slot_arith_imm_bytes(out: &mut Vec<u8>, op: ArithOp, imm: u64) {
         ArithOp::Add => encode_rbx_arith_imm(out, 0xC3, imm),
         ArithOp::Sub => encode_rbx_arith_imm(out, 0xEB, imm),
         ArithOp::And => encode_rbx_arith_imm(out, 0xE3, imm),
-        ArithOp::Or  => encode_rbx_arith_imm(out, 0xCB, imm),
+        ArithOp::Or => encode_rbx_arith_imm(out, 0xCB, imm),
         ArithOp::Xor => encode_rbx_arith_imm(out, 0xF3, imm),
         // 64-bit shift on %rbx:
         // SHL /4 → ModRM 0xE3, SHR /5 → ModRM 0xEB
@@ -4990,7 +5240,9 @@ fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u8) {
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
         // movq  disp8(%rsp), %rbx — REX.W 0x8B /r
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5012,7 +5264,9 @@ fn encode_mmio_read_param_addr_bytes(
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
     if capture_value {
         push_mov_accumulator_to_saved_value_register(out, ty);
@@ -5032,7 +5286,9 @@ fn encode_mmio_write_imm_param_addr_bytes(
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5047,7 +5303,9 @@ fn encode_mmio_write_saved_value_param_addr_bytes(
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5112,7 +5370,9 @@ fn push_mov_imm_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType, v
             out.extend_from_slice(&[0x48, 0xB8]);
             push_u64_le(out, value);
         }
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5134,7 +5394,9 @@ fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: 
             out.extend_from_slice(&[0x48, 0xB9]);
             push_u64_le(out, value);
         }
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5144,7 +5406,9 @@ fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5154,7 +5418,9 @@ fn push_mov_saved_value_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xD8]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xD8]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xD8]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5164,7 +5430,9 @@ fn push_test_saved_value_register_zero(out: &mut Vec<u8>, ty: MmioScalarType) {
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xDB]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xDB]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xDB]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5174,7 +5442,9 @@ fn push_cmp_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x39, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x39, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x39, 0xC3]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5184,7 +5454,9 @@ fn push_test_accumulator_with_saved_value_register(out: &mut Vec<u8>, ty: MmioSc
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xC3]),
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5192,7 +5464,9 @@ fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5202,7 +5476,9 @@ fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U16 => 4,
         MmioScalarType::U32 => 5,
         MmioScalarType::U64 => 10,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5210,7 +5486,9 @@ fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5218,7 +5496,9 @@ fn mmio_saved_value_zero_test_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5228,7 +5508,9 @@ fn mmio_accumulator_immediate_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U16 => 4,
         MmioScalarType::U32 => 5,
         MmioScalarType::U64 => 10,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5236,7 +5518,9 @@ fn mmio_saved_value_compare_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5252,7 +5536,9 @@ fn mmio_store_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5267,7 +5553,9 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
     let base: u64 = match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 3,
         MmioScalarType::U16 | MmioScalarType::U64 => 4,
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     };
     base + if slot_idx > 0 { 1 } else { 0 }
 }
@@ -5278,10 +5566,18 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
 fn slot_arith_imm_op_bytes(op: ArithOp, imm: u64) -> u64 {
     match op {
         ArithOp::Shl | ArithOp::Shr => {
-            if imm == 1 { 3 } else { 4 }
+            if imm == 1 {
+                3
+            } else {
+                4
+            }
         }
         _ => {
-            if imm <= 127 { 4 } else { 7 }
+            if imm <= 127 {
+                4
+            } else {
+                7
+            }
         }
     }
 }
@@ -5289,35 +5585,37 @@ fn slot_arith_imm_op_bytes(op: ArithOp, imm: u64) -> u64 {
 /// AT&T mnemonic for a typed `op r/m, reg` instruction used in `SlotArithSlot`.
 fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str {
     match (ty, op) {
-        (MmioScalarType::U8,  ArithOp::Add) => "addb",
-        (MmioScalarType::U8,  ArithOp::Sub) => "subb",
-        (MmioScalarType::U8,  ArithOp::And) => "andb",
-        (MmioScalarType::U8,  ArithOp::Or)  => "orb",
-        (MmioScalarType::U8,  ArithOp::Xor) => "xorb",
-        (MmioScalarType::U8,  ArithOp::Shl) => "shlb",
-        (MmioScalarType::U8,  ArithOp::Shr) => "shrb",
+        (MmioScalarType::U8, ArithOp::Add) => "addb",
+        (MmioScalarType::U8, ArithOp::Sub) => "subb",
+        (MmioScalarType::U8, ArithOp::And) => "andb",
+        (MmioScalarType::U8, ArithOp::Or) => "orb",
+        (MmioScalarType::U8, ArithOp::Xor) => "xorb",
+        (MmioScalarType::U8, ArithOp::Shl) => "shlb",
+        (MmioScalarType::U8, ArithOp::Shr) => "shrb",
         (MmioScalarType::U16, ArithOp::Add) => "addw",
         (MmioScalarType::U16, ArithOp::Sub) => "subw",
         (MmioScalarType::U16, ArithOp::And) => "andw",
-        (MmioScalarType::U16, ArithOp::Or)  => "orw",
+        (MmioScalarType::U16, ArithOp::Or) => "orw",
         (MmioScalarType::U16, ArithOp::Xor) => "xorw",
         (MmioScalarType::U16, ArithOp::Shl) => "shlw",
         (MmioScalarType::U16, ArithOp::Shr) => "shrw",
         (MmioScalarType::U32, ArithOp::Add) => "addl",
         (MmioScalarType::U32, ArithOp::Sub) => "subl",
         (MmioScalarType::U32, ArithOp::And) => "andl",
-        (MmioScalarType::U32, ArithOp::Or)  => "orl",
+        (MmioScalarType::U32, ArithOp::Or) => "orl",
         (MmioScalarType::U32, ArithOp::Xor) => "xorl",
         (MmioScalarType::U32, ArithOp::Shl) => "shll",
         (MmioScalarType::U32, ArithOp::Shr) => "shrl",
         (MmioScalarType::U64, ArithOp::Add) => "addq",
         (MmioScalarType::U64, ArithOp::Sub) => "subq",
         (MmioScalarType::U64, ArithOp::And) => "andq",
-        (MmioScalarType::U64, ArithOp::Or)  => "orq",
+        (MmioScalarType::U64, ArithOp::Or) => "orq",
         (MmioScalarType::U64, ArithOp::Xor) => "xorq",
         (MmioScalarType::U64, ArithOp::Shl) => "shlq",
         (MmioScalarType::U64, ArithOp::Shr) => "shrq",
-        (MmioScalarType::F32 | MmioScalarType::F64, _) => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        (MmioScalarType::F32 | MmioScalarType::F64, _) => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5327,7 +5625,9 @@ fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "%ax",
         MmioScalarType::U32 => "%eax",
         MmioScalarType::U64 => "%rax",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5337,7 +5637,9 @@ fn mmio_value_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "%cx",
         MmioScalarType::U32 => "%ecx",
         MmioScalarType::U64 => "%rcx",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5359,7 +5661,9 @@ fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "%bx",
         MmioScalarType::U32 => "%ebx",
         MmioScalarType::U64 => "%rbx",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5369,7 +5673,9 @@ fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "movw",
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movq",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5391,7 +5697,9 @@ fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "testw %bx, %bx",
         MmioScalarType::U32 => "testl %ebx, %ebx",
         MmioScalarType::U64 => "testq %rbx, %rbx",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5401,7 +5709,9 @@ fn mmio_saved_value_compare_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "cmpw %ax, %bx",
         MmioScalarType::U32 => "cmpl %eax, %ebx",
         MmioScalarType::U64 => "cmpq %rax, %rbx",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5411,7 +5721,9 @@ fn mmio_saved_value_mask_test_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "testw %ax, %bx",
         MmioScalarType::U32 => "testl %eax, %ebx",
         MmioScalarType::U64 => "testq %rax, %rbx",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     }
 }
 
@@ -5421,7 +5733,9 @@ fn mmio_accumulator_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String
         MmioScalarType::U16 => "movw",
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movabs",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     };
     format!(
         "{} ${}, {}",
@@ -5437,7 +5751,9 @@ fn mmio_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
         MmioScalarType::U16 => "movw",
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movabs",
-        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
     };
     format!(
         "{mnemonic} ${}, {}",
@@ -5692,7 +6008,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_mmio_write_saved_value_bytes(&mut code_bytes, *ty, *addr);
                     local_offset += executable_op_encoded_len(op);
                 }
-                ExecutableOp::StackStoreImm { ty, value, slot_idx } => {
+                ExecutableOp::StackStoreImm {
+                    ty,
+                    value,
+                    slot_idx,
+                } => {
                     encode_stack_cell_store_imm_slot_bytes(&mut code_bytes, *ty, *value, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
@@ -5704,13 +6024,23 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
-                ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+                ExecutableOp::SlotArithImm {
+                    ty,
+                    slot_idx,
+                    arith_op,
+                    imm,
+                } => {
                     encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     encode_slot_arith_imm_bytes(&mut code_bytes, *arith_op, *imm);
                     encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
-                ExecutableOp::SlotArithSlot { ty, dst_slot_idx, src_slot_idx, arith_op } => {
+                ExecutableOp::SlotArithSlot {
+                    ty,
+                    dst_slot_idx,
+                    src_slot_idx,
+                    arith_op,
+                } => {
                     match arith_op {
                         ArithOp::Shl | ArithOp::Shr => {
                             encode_stack_cell_load_slot_bytes_into_rcx(
@@ -5731,7 +6061,8 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::ParamLoad { param_idx, ty } => {
-                    let offset = (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset =
+                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
                     encode_param_load_bytes(&mut code_bytes, *ty, offset);
                     local_offset += executable_op_encoded_len(op);
                 }
@@ -5740,7 +6071,8 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     ty,
                     capture_value,
                 } => {
-                    let offset = (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset =
+                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
                     encode_mmio_read_param_addr_bytes(&mut code_bytes, *ty, offset, *capture_value);
                     local_offset += executable_op_encoded_len(op);
                 }
@@ -5749,12 +6081,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     ty,
                     value,
                 } => {
-                    let offset = (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset =
+                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
                     encode_mmio_write_imm_param_addr_bytes(&mut code_bytes, *ty, offset, *value);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
-                    let offset = (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset =
+                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
                     encode_mmio_write_saved_value_param_addr_bytes(&mut code_bytes, *ty, offset);
                     local_offset += executable_op_encoded_len(op);
                 }
@@ -5805,18 +6139,28 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             } => {
                 push_mov_saved_value_to_accumulator_register(&mut code_bytes, *ty);
                 if uses_frame {
-                    emit_add_rsp(&mut code_bytes, 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32);
+                    emit_add_rsp(
+                        &mut code_bytes,
+                        8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32,
+                    );
                 }
-                if uses_saved_value_slot { code_bytes.push(0x5B); }
+                if uses_saved_value_slot {
+                    code_bytes.push(0x5B);
+                }
                 code_bytes.push(0xC3);
             }
             ExecutableTerminator::Return {
                 value: ExecutableValue::Unit,
             } => {
                 if uses_frame {
-                    emit_add_rsp(&mut code_bytes, 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32);
+                    emit_add_rsp(
+                        &mut code_bytes,
+                        8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32,
+                    );
                 }
-                if uses_saved_value_slot { code_bytes.push(0x5B); }
+                if uses_saved_value_slot {
+                    code_bytes.push(0x5B);
+                }
                 code_bytes.push(0xC3);
             }
             ExecutableTerminator::TailCall { callee, args } => {
@@ -5834,17 +6178,30 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                 }
                 let frame_size = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
-                let frame_bytes: u64 = if uses_frame { rsp_adj_encoded_len(frame_size) } else { 0 };
+                let frame_bytes: u64 = if uses_frame {
+                    rsp_adj_encoded_len(frame_size)
+                } else {
+                    0
+                };
                 let pop_bytes: u64 = if uses_saved_value_slot { 1 } else { 0 };
-                if uses_frame { emit_add_rsp(&mut code_bytes, frame_size); }
-                if uses_saved_value_slot { code_bytes.push(0x5B); }
+                if uses_frame {
+                    emit_add_rsp(&mut code_bytes, frame_size);
+                }
+                if uses_saved_value_slot {
+                    code_bytes.push(0x5B);
+                }
                 let args_bytes: u64 = args.iter().map(call_arg_encoded_bytes).sum();
                 // jmp rel32 = 0xE9 + 4-byte displacement
                 code_bytes.push(0xE9);
                 code_bytes.extend_from_slice(&[0, 0, 0, 0]);
                 fixups.push(CompilerOwnedObjectFixup {
                     source_symbol: function.name.clone(),
-                    patch_offset: function_offset + local_offset + args_bytes + frame_bytes + pop_bytes + 1,
+                    patch_offset: function_offset
+                        + local_offset
+                        + args_bytes
+                        + frame_bytes
+                        + pop_bytes
+                        + 1,
                     kind: CompilerOwnedFixupKind::X86_64CallRel32,
                     target_symbol: callee.clone(),
                     width_bytes: 4,
@@ -9979,10 +10336,18 @@ mod tests {
         // frame_size = 128 > 127 → 7-byte SUB RSP / ADD RSP
         let mut buf = Vec::new();
         emit_sub_rsp(&mut buf, 128);
-        assert_eq!(buf, &[0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00], "imm32 SUB RSP");
+        assert_eq!(
+            buf,
+            &[0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00],
+            "imm32 SUB RSP"
+        );
         let mut buf = Vec::new();
         emit_add_rsp(&mut buf, 128);
-        assert_eq!(buf, &[0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00], "imm32 ADD RSP");
+        assert_eq!(
+            buf,
+            &[0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00],
+            "imm32 ADD RSP"
+        );
         assert_eq!(rsp_adj_encoded_len(128), 7);
     }
 

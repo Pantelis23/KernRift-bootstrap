@@ -17,13 +17,13 @@ pub use hir::{
     frontend_canonical_rewrites, frontend_migration_features_for_profile,
     frontend_migration_preview, irq_handler_alias_proposal, validate_adaptive_feature_governance,
 };
+pub use krir::BackendTargetId as CompilerBackendTargetId;
 use krir::{
     BackendTargetContract, BackendTargetId, KrirModule, KrirOp, emit_compiler_owned_object_bytes,
     emit_x86_64_asm_text, emit_x86_64_object_bytes, lower_current_krir_to_executable_krir,
     lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
     lower_executable_krir_to_x86_64_object,
 };
-pub use krir::BackendTargetId as CompilerBackendTargetId;
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
 use passes::{CheckError, analyze_module, run_checks};
@@ -458,13 +458,11 @@ fn emit_x86_64_executable_bytes(
     target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
     if !cfg!(target_os = "linux") {
-        return Err(
-            "compiling to a runnable .krbo requires a Linux host — \
+        return Err("compiling to a runnable .krbo requires a Linux host — \
              the output format is a Linux ELF executable.\n\
              On Windows: use WSL (wsl --install) and run kernriftc from inside it.\n\
              Analysis commands (kernriftc check, kernriftc policy, etc.) work on all platforms."
-                .to_string(),
-        );
+            .to_string());
     }
 
     if !executable.extern_declarations.is_empty() {
@@ -865,10 +863,14 @@ pub fn collect_telemetry(module: &KrirModule, surface: SurfaceProfile) -> Teleme
 
     for func in &module.functions {
         for ctx in &func.ctx_ok {
-            *ctx_distribution.entry(ctx.as_str().to_string()).or_insert(0) += 1;
+            *ctx_distribution
+                .entry(ctx.as_str().to_string())
+                .or_insert(0) += 1;
         }
         for eff in &func.eff_used {
-            *eff_distribution.entry(eff.as_str().to_string()).or_insert(0) += 1;
+            *eff_distribution
+                .entry(eff.as_str().to_string())
+                .or_insert(0) += 1;
         }
         for op in &func.ops {
             total_ops += 1;
@@ -1066,6 +1068,6 @@ pub fn detect_patterns(report: &TelemetryReport) -> Vec<PatternMatch> {
     }
 
     // Sort: fitness descending, then id ascending for deterministic output.
-    matches.sort_by(|a, b| b.fitness.cmp(&a.fitness).then(a.id.cmp(&b.id)));
+    matches.sort_by(|a, b| b.fitness.cmp(&a.fitness).then(a.id.cmp(b.id)));
     matches
 }

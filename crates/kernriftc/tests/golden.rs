@@ -1510,7 +1510,9 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_access_fail.stderr.lines().next(),
-        Some("mmio_write<uint32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
+        Some(
+            "mmio_write<uint32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only"
+        )
     );
 
     let reg_abs_access_fail_fixture = root

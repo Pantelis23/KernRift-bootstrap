@@ -61,7 +61,7 @@ pub(crate) fn parse_backend_emit_args(
                 }
                 let Some(value) = args.get(idx + 1) else {
                     return Err(
-                        "invalid emit mode: --telemetry-out requires a file path".to_string(),
+                        "invalid emit mode: --telemetry-out requires a file path".to_string()
                     );
                 };
                 telemetry_output_path = Some(value.clone());
