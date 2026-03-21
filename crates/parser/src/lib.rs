@@ -47,41 +47,71 @@ pub struct RawAttr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmioScalarType {
-    U8,
-    U16,
-    U32,
-    U64,
+    U8, U16, U32, U64,
+    I8, I16, I32, I64,
+    F32, F64, F16,
+    Bool,
+    Char,
 }
 
 impl MmioScalarType {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::U8 => "u8",
-            Self::U16 => "u16",
-            Self::U32 => "u32",
-            Self::U64 => "u64",
+            Self::U8  => "uint8",  Self::U16 => "uint16",
+            Self::U32 => "uint32", Self::U64 => "uint64",
+            Self::I8  => "int8",   Self::I16 => "int16",
+            Self::I32 => "int32",  Self::I64 => "int64",
+            Self::F32 => "float32",Self::F64 => "float64",
+            Self::F16 => "float16",
+            Self::Bool => "bool",  Self::Char => "char",
+        }
+    }
+
+    /// Returns the underlying unsigned integer storage type.
+    /// Signed types and bool/char all have unsigned backing storage.
+    pub fn storage_type(self) -> Self {
+        match self {
+            Self::I8  => Self::U8,  Self::I16 => Self::U16,
+            Self::I32 => Self::U32, Self::I64 => Self::U64,
+            Self::Bool | Self::Char => Self::U8,
+            Self::F16 => Self::U16,
+            other => other,
         }
     }
 
     pub fn byte_size(self) -> u8 {
         match self {
-            Self::U8 => 1,
-            Self::U16 => 2,
-            Self::U32 => 4,
-            Self::U64 => 8,
+            Self::U8  | Self::I8  | Self::Bool | Self::Char => 1,
+            Self::U16 | Self::I16 | Self::F16               => 2,
+            Self::U32 | Self::I32 | Self::F32               => 4,
+            Self::U64 | Self::I64 | Self::F64               => 8,
         }
     }
 
-    fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "u8" => Ok(Self::U8),
-            "u16" => Ok(Self::U16),
-            "u32" => Ok(Self::U32),
-            "u64" => Ok(Self::U64),
-            other => Err(format!(
-                "unsupported mmio element type '{}'; expected one of: u8, u16, u32, u64",
-                other
-            )),
+    pub fn is_signed(self) -> bool {
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, Self::F32 | Self::F64 | Self::F16)
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "uint8"  | "u8"   | "byte" => Ok(Self::U8),
+            "uint16" | "u16"           => Ok(Self::U16),
+            "uint32" | "u32"           => Ok(Self::U32),
+            "uint64" | "u64"  | "addr" => Ok(Self::U64),
+            "int8"   | "i8"            => Ok(Self::I8),
+            "int16"  | "i16"           => Ok(Self::I16),
+            "int32"  | "i32"           => Ok(Self::I32),
+            "int64"  | "i64"           => Ok(Self::I64),
+            "float32"| "f32"           => Ok(Self::F32),
+            "float64"| "f64"           => Ok(Self::F64),
+            "float16"| "f16"           => Ok(Self::F16),
+            "bool"                     => Ok(Self::Bool),
+            "char"                     => Ok(Self::Char),
+            other => Err(format!("unknown type '{}'", other)),
         }
     }
 }
@@ -2727,7 +2757,7 @@ mod tests {
             vec![diagnostic_at(
                 src,
                 13,
-                "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64",
+                "unknown type 'u128'",
             )]
         );
     }
@@ -2970,5 +3000,24 @@ mod tests {
             let result = std::panic::catch_unwind(|| parse_module(&input));
             prop_assert!(result.is_ok());
         }
+    }
+}
+
+#[cfg(test)]
+mod type_tests {
+    use super::*;
+    #[test]
+    fn scalar_type_roundtrip() {
+        assert_eq!(MmioScalarType::parse("float32"), Ok(MmioScalarType::F32));
+        assert_eq!(MmioScalarType::parse("float64"), Ok(MmioScalarType::F64));
+        assert_eq!(MmioScalarType::parse("float16"), Ok(MmioScalarType::F16));
+        assert_eq!(MmioScalarType::parse("uint8"),   Ok(MmioScalarType::U8));
+        assert_eq!(MmioScalarType::parse("uint32"),  Ok(MmioScalarType::U32));
+        assert_eq!(MmioScalarType::parse("int8"),    Ok(MmioScalarType::I8));
+        assert_eq!(MmioScalarType::parse("int32"),   Ok(MmioScalarType::I32));
+        assert_eq!(MmioScalarType::parse("bool"),    Ok(MmioScalarType::Bool));
+        assert_eq!(MmioScalarType::parse("char"),    Ok(MmioScalarType::Char));
+        assert_eq!(MmioScalarType::parse("byte"),    Ok(MmioScalarType::U8));
+        assert_eq!(MmioScalarType::parse("addr"),    Ok(MmioScalarType::U64));
     }
 }

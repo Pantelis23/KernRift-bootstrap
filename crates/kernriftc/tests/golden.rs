@@ -325,7 +325,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         fail.stderr.lines().collect::<Vec<_>>(),
         vec![
-            "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at 2:3",
+            "unknown type 'u128' at 2:3",
             "  2 |   mmio_read<u128>(mmio_base);",
         ],
         "unexpected invalid typed mmio diagnostic: {}",
@@ -423,7 +423,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         undeclared_base.stderr.lines().next(),
-        Some("undeclared mmio base 'UART0' used in mmio_read<u32>(UART0)")
+        Some("undeclared mmio base 'UART0' used in mmio_read<uint32>(UART0)")
     );
 
     let invalid_decl_fixture = root
@@ -1510,7 +1510,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_access_fail.stderr.lines().next(),
-        Some("mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
+        Some("mmio_write<uint32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
     );
 
     let reg_abs_access_fail_fixture = root
@@ -1532,7 +1532,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_abs_access_fail.stderr.lines().next(),
-        Some("mmio_write<u32>(0x1004, x) violates register access: 'UART0.SR' is read-only")
+        Some("mmio_write<uint32>(0x1004, x) violates register access: 'UART0.SR' is read-only")
     );
 
     let reg_base_zero_access_fixture = root
@@ -1554,7 +1554,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_base_zero_access.stderr.lines().next(),
-        Some("mmio_write<u32>(UART0, x) violates register access: 'UART0.SR' is read-only")
+        Some("mmio_write<uint32>(UART0, x) violates register access: 'UART0.SR' is read-only")
     );
 
     let reg_width_fail_fixture = root
@@ -1576,7 +1576,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_width_fail.stderr.lines().next(),
-        Some("mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16")
+        Some("mmio_write<uint32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is uint16")
     );
 
     let reg_abs_width_fail_fixture = root
@@ -1598,7 +1598,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_abs_width_fail.stderr.lines().next(),
-        Some("mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16")
+        Some("mmio_write<uint32>(0x1008, x) width mismatch: register 'UART0.CR' is uint16")
     );
 
     let reg_raw_literal_no_optin_fixture = root
@@ -1644,7 +1644,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         raw_mmio_no_optin.stderr.lines().next(),
-        Some("raw_mmio_write<u32>(0x1014, x) requires @module_caps(MmioRaw)")
+        Some("raw_mmio_write<uint32>(0x1014, x) requires @module_caps(MmioRaw)")
     );
 
     let reg_base_zero_width_fixture = root
@@ -1666,7 +1666,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     assert_eq!(
         reg_base_zero_width.stderr.lines().next(),
-        Some("mmio_write<u32>(UART0, x) width mismatch: register 'UART0.CR' is u16")
+        Some("mmio_write<uint32>(UART0, x) width mismatch: register 'UART0.CR' is uint16")
     );
 
     let reg_base_fail_fixture = root

@@ -2673,11 +2673,14 @@ fn lower_stmt(
 }
 
 fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
-    match ty {
-        ParserMmioScalarType::U8 => KrirMmioScalarType::U8,
+    // Map new signed/float/bool/char variants to their unsigned storage equivalent.
+    match ty.storage_type() {
+        ParserMmioScalarType::U8  => KrirMmioScalarType::U8,
         ParserMmioScalarType::U16 => KrirMmioScalarType::U16,
         ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
         ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
+        // storage_type() only ever returns U8/U16/U32/U64; other arms are unreachable.
+        _ => unreachable!("storage_type() returned non-unsigned variant"),
     }
 }
 
@@ -3128,7 +3131,7 @@ mod tests {
             .expect_err("typed mmio must be rejected in canonical executable lowering");
         assert_eq!(
             errs,
-            vec!["canonical-exec: function 'entry' contains unsupported mmio_read<u16>(mmio_addr)"]
+            vec!["canonical-exec: function 'entry' contains unsupported mmio_read<uint16>(mmio_addr)"]
         );
     }
 
@@ -3225,7 +3228,7 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "mmio_write<u32>(UART0, x) violates register access: 'UART0.SR' is read-only"
+                "mmio_write<uint32>(UART0, x) violates register access: 'UART0.SR' is read-only"
                     .to_string()
             ]
         );
@@ -3242,7 +3245,7 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "mmio_write<u32>(UART0, x) width mismatch: register 'UART0.CR' is u16".to_string()
+                "mmio_write<uint32>(UART0, x) width mismatch: register 'UART0.CR' is uint16".to_string()
             ]
         );
     }
@@ -3281,9 +3284,9 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "mmio_write<u32>(0x1004, x) violates register access: 'UART0.SR' is read-only"
+                "mmio_write<uint32>(0x1004, x) violates register access: 'UART0.SR' is read-only"
                     .to_string(),
-                "mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16".to_string()
+                "mmio_write<uint32>(0x1008, x) width mismatch: register 'UART0.CR' is uint16".to_string()
             ]
         );
     }
@@ -3395,9 +3398,9 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only"
+                "mmio_write<uint32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only"
                     .to_string(),
-                "mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16"
+                "mmio_write<uint32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is uint16"
                     .to_string()
             ]
         );
@@ -3431,8 +3434,8 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "undeclared mmio base 'UART0' used in mmio_read<u32>(UART0)".to_string(),
-                "undeclared mmio base 'UART0' used in mmio_write<u8>(UART0 + 4, 0xff)".to_string()
+                "undeclared mmio base 'UART0' used in mmio_read<uint32>(UART0)".to_string(),
+                "undeclared mmio base 'UART0' used in mmio_write<uint8>(UART0 + 4, 0xff)".to_string()
             ]
         );
     }
@@ -3501,7 +3504,7 @@ mod tests {
             lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
         assert_eq!(
             errs,
-            vec!["raw_mmio_write<u32>(0x1014, x) requires @module_caps(MmioRaw)".to_string()]
+            vec!["raw_mmio_write<uint32>(0x1014, x) requires @module_caps(MmioRaw)".to_string()]
         );
     }
 
@@ -3544,7 +3547,7 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "canonical-exec: function 'entry' contains unsupported raw_mmio_read<u32>(0x1000)"
+                "canonical-exec: function 'entry' contains unsupported raw_mmio_read<uint32>(0x1000)"
                     .to_string()
             ]
         );
