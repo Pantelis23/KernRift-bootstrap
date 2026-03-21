@@ -1673,7 +1673,7 @@ fn print_errors(errs: &[String]) {
 
 fn print_usage() {
     eprintln!("usage:");
-    eprintln!("  kernriftc -o <output.o> <file.kr>");
+    eprintln!("  kernriftc <file.kr>                  # compile to <stem>.krbo");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
     eprintln!("  kernriftc check --canonical <file.kr>");
