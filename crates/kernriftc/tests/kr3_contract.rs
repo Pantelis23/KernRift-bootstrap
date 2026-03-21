@@ -1102,6 +1102,31 @@ fn helper() {}
 }
 
 #[test]
+fn var_decl_and_compound_assign_lower_ok() {
+    let src = r#"
+@module_caps(MmioRaw)
+@ctx(thread)
+fn compute() {
+    uint32 x = 10
+    x &= 255
+}
+"#;
+    compile_source(src).unwrap();
+}
+
+#[test]
+fn print_intrinsic_lowers_to_raw_mmio_writes() {
+    let src = r#"
+@module_caps(MmioRaw)
+@ctx(thread)
+fn greet() {
+    print("Hi")
+}
+"#;
+    compile_source(src).unwrap();
+}
+
+#[test]
 fn device_field_read_lowers_via_lower_expr() {
     // helper(UART0.Status) — device field used as call arg; lower_expr reads via MmioRead.
     let src = r#"

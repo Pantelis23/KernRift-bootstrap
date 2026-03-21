@@ -10,12 +10,12 @@ use krir::{
     MmioValueExpr as KrirMmioValueExpr, PercpuDecl as KrirPercpuDecl, SchedHook,
 };
 use parser::{
-    ArithOp as ParserArithOp, BinOpKind as ParserBinOpKind, Expr as ParserExpr, FnAst,
-    MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
-    MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
-    MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    ParamTy as ParserParamTy, RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
-    split_csv_allow_trailing_comma,
+    ArithOp as ParserArithOp, AssignTarget as ParserAssignTarget, BinOpKind as ParserBinOpKind,
+    Expr as ParserExpr, FnAst, MmioAddrExpr as ParserMmioAddrExpr,
+    MmioBaseDecl as ParserMmioBaseDecl, MmioRegAccess as ParserMmioRegAccess,
+    MmioRegisterDecl as ParserMmioRegisterDecl, MmioScalarType as ParserMmioScalarType,
+    MmioValueExpr as ParserMmioValueExpr, ModuleAst, ParamTy as ParserParamTy, RawAttr, Stmt,
+    format_source_diagnostic, int_literal_numeric_value, split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -2865,11 +2865,116 @@ fn lower_stmt(
                 }
             }
         },
-        Stmt::VarDecl { .. } | Stmt::Assign { .. } | Stmt::CompoundAssign { .. }
-        | Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
-        | Stmt::Return(_) | Stmt::Break | Stmt::Continue | Stmt::Print(_) => {
+        Stmt::VarDecl { ty, name, init } => {
+            ops.push(KrirOp::StackCell {
+                ty: lower_mmio_scalar_type(ty.storage_type()),
+                cell: name.clone(),
+            });
+            if let Some(init_expr) = init {
+                match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used) {
+                    Ok(src) => ops.push(KrirOp::StackStore {
+                        ty: lower_mmio_scalar_type(ty.storage_type()),
+                        cell: name.clone(),
+                        value: KrirMmioValueExpr::Ident { name: src },
+                    }),
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+        Stmt::Assign { target, value } => match target {
+            ParserAssignTarget::Ident(name) => {
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+                    Ok(src) => ops.push(KrirOp::StackStore {
+                        ty: KrirMmioScalarType::U64,
+                        cell: name.clone(),
+                        value: KrirMmioValueExpr::Ident { name: src },
+                    }),
+                    Err(e) => errors.push(e),
+                }
+            }
+            ParserAssignTarget::DeviceField { device, field } => {
+                let reg = match device_regs.get(&(device.clone(), field.clone())) {
+                    Some(r) => r.clone(),
+                    None => {
+                        errors.push(format!(
+                            "unknown device register '{}.{}'",
+                            device, field
+                        ));
+                        return;
+                    }
+                };
+                if reg.access == ParserMmioRegAccess::Ro {
+                    errors.push(format!("register '{}.{}' is read-only", device, field));
+                    return;
+                }
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+                    Ok(src) => {
+                        ops.push(KrirOp::MmioWrite {
+                            ty: lower_mmio_scalar_type(reg.ty),
+                            addr: KrirMmioAddrExpr::IdentPlusOffset {
+                                base: device.clone(),
+                                offset: reg.offset.clone(),
+                            },
+                            value: KrirMmioValueExpr::Ident { name: src },
+                        });
+                        eff_used.insert(Eff::Mmio);
+                    }
+                    Err(e) => errors.push(e),
+                }
+            }
+        },
+        Stmt::CompoundAssign { target, op, value } => match target {
+            ParserAssignTarget::Ident(name) => {
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+                    Ok(rhs) => match binop_to_krir_arith(*op) {
+                        Some(arith_op) => ops.push(KrirOp::SlotArith {
+                            ty: KrirMmioScalarType::U64,
+                            dst: name.clone(),
+                            src: rhs,
+                            arith_op,
+                        }),
+                        None => errors.push(format!(
+                            "compound assignment operator {:?} not supported",
+                            op
+                        )),
+                    },
+                    Err(e) => errors.push(e),
+                }
+            }
+            ParserAssignTarget::DeviceField { .. } => {
+                errors.push("compound assignment to device register not supported".into());
+            }
+        },
+        Stmt::Print(text) => {
+            const UART_BASE: u64 = 0x10000000;
+            let bytes: Vec<u8> = text.bytes().collect();
+            for (i, byte) in bytes.iter().enumerate() {
+                ops.push(KrirOp::RawMmioWrite {
+                    ty: KrirMmioScalarType::U8,
+                    addr: KrirMmioAddrExpr::IntLiteral {
+                        value: format!("{:#x}", UART_BASE + i as u64),
+                    },
+                    value: KrirMmioValueExpr::IntLiteral {
+                        value: byte.to_string(),
+                    },
+                });
+            }
+            let end = UART_BASE + bytes.len() as u64;
+            ops.push(KrirOp::RawMmioWrite {
+                ty: KrirMmioScalarType::U8,
+                addr: KrirMmioAddrExpr::IntLiteral {
+                    value: format!("{:#x}", end),
+                },
+                value: KrirMmioValueExpr::IntLiteral {
+                    value: "0".to_string(),
+                },
+            });
+            eff_used.insert(Eff::Mmio);
+        }
+        Stmt::If { .. } | Stmt::While { .. } | Stmt::For { .. }
+        | Stmt::Return(_) | Stmt::Break | Stmt::Continue => {
             errors.push(format!(
-                "surface syntax statement not yet lowered (Task 8-12): {:?}",
+                "surface syntax statement not yet lowered (Task 9-12): {:?}",
                 stmt
             ));
         }
