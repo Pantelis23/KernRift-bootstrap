@@ -341,10 +341,10 @@ fn main() -> ExitCode {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
-            let output = format!("{}.krbo", stem);
+            let output = stem.to_string();
             let synthetic: Vec<String> =
                 vec!["-o".to_string(), output, arg.to_string()];
-            match parse_backend_emit_args("krbo", &synthetic, SurfaceProfile::Stable) {
+            match parse_backend_emit_args("elfexe", &synthetic, SurfaceProfile::Stable) {
                 Ok(parsed) => run_backend_emit(&parsed),
                 Err(err) => {
                     eprintln!("{}", err);
@@ -1673,7 +1673,7 @@ fn print_errors(errs: &[String]) {
 
 fn print_usage() {
     eprintln!("usage:");
-    eprintln!("  kernriftc <file.kr>                  # compile to <stem>.krbo");
+    eprintln!("  kernriftc <file.kr>                  # compile to executable <stem>");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
     eprintln!("  kernriftc check --canonical <file.kr>");

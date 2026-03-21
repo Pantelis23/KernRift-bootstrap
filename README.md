@@ -32,9 +32,9 @@ fn entry() {
 }
 EOF
 
-# Compile to a kernel object
+# Compile to an executable
 kernriftc hello.kr
-# → hello.krbo  (relocatable kernel object, not a userspace binary)
+# → hello  (ELF executable)
 
 # Or run the analysis pass only
 kernriftc check hello.kr

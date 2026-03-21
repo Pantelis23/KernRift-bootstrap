@@ -1,5 +1,5 @@
 #[test]
-fn default_compile_produces_krbo_in_cwd() {
+fn default_compile_produces_executable_in_cwd() {
     let tmp = std::env::temp_dir().join(format!(
         "kernriftc_test_{}",
         std::time::SystemTime::now()
@@ -19,8 +19,8 @@ fn default_compile_produces_krbo_in_cwd() {
         .success();
 
     assert!(
-        tmp.join("hello.krbo").exists(),
-        "expected hello.krbo in CWD after kernriftc hello.kr"
+        tmp.join("hello").exists(),
+        "expected hello (ELF executable) in CWD after kernriftc hello.kr"
     );
 
     std::fs::remove_dir_all(&tmp).ok();

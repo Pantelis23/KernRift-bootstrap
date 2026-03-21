@@ -74,9 +74,7 @@ Compile it:
 kernriftc hello.kr
 ```
 
-On success, `kernriftc` exits 0 and produces `hello.krbo` in the current directory.
-
-> **Note:** `.krbo` is a relocatable kernel object — like a `.o` file. It is **not** a standalone executable and cannot be run directly with `./hello.krbo`. KernRift targets bare-metal kernel environments; the output is meant to be linked into a kernel image.
+On success, `kernriftc` exits 0 and produces `hello` (an ELF executable) in the current directory.
 
 A context violation looks like this:
 
@@ -98,7 +96,7 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 
 | Command | Output | Description |
 |---------|--------|-------------|
-| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** |
+| `kernriftc <file.kr>` | `<stem>` executable in CWD | **Default compile** |
 | `kernriftc check <file.kr>` | stderr diagnostics | Analysis only, no binary |
 | `kernriftc check --emit=krir <file.kr>` | JSON to **stdout** | KRIR canonical IR |
 | `kernriftc check --emit=lockgraph <file.kr>` | JSON to **stdout** | Lock graph analysis |
