@@ -108,14 +108,16 @@ bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scri
 
 **Windows** <a name="windows"></a>
 
-Download-and-execute in a single PowerShell block (antivirus can scan the file before it runs):
+Antivirus software (including Bitdefender) blocks PowerShell scripts that download executables, regardless of their content. Use the manual steps below instead — they go through your browser and the official rustup installer, which AV products trust.
+
+1. **Install Rust** — follow [Install rustup on Windows](#install-rustup-on-windows) above if you haven't already.
+2. **Open a new terminal** (PowerShell or Command Prompt) and run:
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-windows.ps1" -OutFile "$env:TEMP\install-kernrift.ps1"
-powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-kernrift.ps1"
+cargo install --git https://github.com/Pantelis23/KernRift --bin kernriftc --bin kernrift --locked
 ```
 
-> **Why two steps?** Piping directly from the web (`irm | iex`) bypasses antivirus scanning. Downloading to a file first lets your AV inspect it before execution.
+That's it. Both `kernriftc` and `kernrift` are now on your PATH.
 
 ### From source (manual)
 
