@@ -17,8 +17,8 @@ use kernriftc::{
     compile_source_with_surface,
 };
 use krir::{
-    ArithOp, BackendTargetContract, ExecutableCallArg, ExecutableOp,
-    ExecutableTerminator, emit_x86_64_asm_text, lower_current_krir_to_executable_krir,
+    ArithOp, BackendTargetContract, ExecutableCallArg, ExecutableOp, ExecutableTerminator,
+    emit_x86_64_asm_text, lower_current_krir_to_executable_krir,
     lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
 };
 

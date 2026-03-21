@@ -2333,12 +2333,10 @@ fn resolve_executable_mmio_write_value(
     available_read_value: Option<(&str, MmioScalarType)>,
 ) -> Result<ExecutableMmioWriteValue, String> {
     match value {
-        MmioValueExpr::FloatLiteral { value } => {
-            Err(format!(
-                "float literal '{}' not supported in MMIO write",
-                value
-            ))
-        }
+        MmioValueExpr::FloatLiteral { value } => Err(format!(
+            "float literal '{}' not supported in MMIO write",
+            value
+        )),
         MmioValueExpr::IntLiteral { value } => {
             let parsed = parse_integer_literal_u64(value)?;
             let max_value = match ty {
