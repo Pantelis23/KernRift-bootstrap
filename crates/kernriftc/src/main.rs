@@ -154,7 +154,7 @@ fn main() -> ExitCode {
         println!("kernriftc {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if args.len() < 2 {
+    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         print_usage();
         return ExitCode::from(2);
     }
