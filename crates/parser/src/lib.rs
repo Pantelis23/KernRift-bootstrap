@@ -207,6 +207,22 @@ pub enum Stmt {
         op: ArithOp,
         imm: u64,
     },
+    /// `slot_add/sub/and/or/xor/shl/shr<T>(dst, src)` — two-source slot arithmetic.
+    CellArithSlot {
+        ty: MmioScalarType,
+        dst: String,
+        src: String,
+        op: ArithOp,
+    },
+    CallWithArgs {
+        callee: String,
+        args: Vec<MmioValueExpr>,
+    },
+    /// `tail_call(callee[, args...])` — jump to `callee` discarding the current frame.
+    TailCall {
+        callee: String,
+        args: Vec<MmioValueExpr>,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
@@ -1509,6 +1525,42 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
         return Ok(Some(Stmt::CallCapture { callee, slot }));
     }
 
+    if lowered == "call_with_args" {
+        let parts = split_csv(&args);
+        if parts.is_empty() {
+            return Err(
+                "call_with_args(callee[, arg, ...]) requires at least a callee".to_string(),
+            );
+        }
+        let callee = parse_branch_target_operand(parts[0].trim())?;
+        let call_args: Result<Vec<MmioValueExpr>, String> = parts[1..]
+            .iter()
+            .map(|a| parse_mmio_value_operand(a.trim()))
+            .collect();
+        return Ok(Some(Stmt::CallWithArgs {
+            callee,
+            args: call_args?,
+        }));
+    }
+
+    if lowered == "tail_call" {
+        let parts = split_csv(&args);
+        if parts.is_empty() {
+            return Err(
+                "tail_call(callee[, arg, ...]) requires at least a callee".to_string(),
+            );
+        }
+        let callee = parse_branch_target_operand(parts[0].trim())?;
+        let tail_args: Result<Vec<MmioValueExpr>, String> = parts[1..]
+            .iter()
+            .map(|a| parse_mmio_value_operand(a.trim()))
+            .collect();
+        return Ok(Some(Stmt::TailCall {
+            callee,
+            args: tail_args?,
+        }));
+    }
+
     if lowered == "return_slot" {
         let slot = parse_branch_slot_operand(args.trim())?;
         if slot.is_empty() {
@@ -1673,6 +1725,19 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
         }
         let imm = parse_integer_literal_u64(imm_str)?;
         return Ok(Some(Stmt::CellArithImm { ty, cell, op, imm }));
+    }
+
+    if let Some((ty, op)) = parse_slot_arith_from_name(name)? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(format!(
+                "slot_{}<T>(dst, src) requires exactly two arguments: dst cell name and src cell name",
+                op.as_str()
+            ));
+        }
+        let dst = parse_mmio_capture_operand(parts[0].trim())?;
+        let src = parse_mmio_capture_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::CellArithSlot { ty, dst, src, op }));
     }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
@@ -1954,6 +2019,24 @@ fn parse_cell_arith_from_name(name: &str) -> Result<Option<(MmioScalarType, Arit
         ("cell_xor", ArithOp::Xor),
         ("cell_shl", ArithOp::Shl),
         ("cell_shr", ArithOp::Shr),
+    ];
+    for (base, op) in &OPS {
+        if let Some(ty) = parse_mmio_scalar_from_name(name, base)? {
+            return Ok(Some((ty, *op)));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_slot_arith_from_name(name: &str) -> Result<Option<(MmioScalarType, ArithOp)>, String> {
+    const OPS: [(&str, ArithOp); 7] = [
+        ("slot_add", ArithOp::Add),
+        ("slot_sub", ArithOp::Sub),
+        ("slot_and", ArithOp::And),
+        ("slot_or", ArithOp::Or),
+        ("slot_xor", ArithOp::Xor),
+        ("slot_shl", ArithOp::Shl),
+        ("slot_shr", ArithOp::Shr),
     ];
     for (base, op) in &OPS {
         if let Some(ty) = parse_mmio_scalar_from_name(name, base)? {

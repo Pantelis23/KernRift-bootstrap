@@ -2450,6 +2450,25 @@ fn lower_stmts_to_canonical_executable(
                 ty.as_str(),
                 cell
             )),
+            Stmt::CellArithSlot { ty, dst, op, .. } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported slot_{}<{}>({})",
+                function_name,
+                op.as_str(),
+                ty.as_str(),
+                dst
+            )),
+            Stmt::CallWithArgs { callee, args } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported call_with_args({}, ...{} args)",
+                function_name,
+                callee,
+                args.len()
+            )),
+            Stmt::TailCall { callee, args } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported tail_call({}, ...{} args)",
+                function_name,
+                callee,
+                args.len()
+            )),
         }
     }
 }
@@ -2610,6 +2629,44 @@ fn lower_stmt(
                 cell: cell.clone(),
                 arith_op: lower_arith_op(*op),
                 imm: *imm,
+            });
+        }
+        Stmt::CellArithSlot { ty, dst, src, op } => {
+            if surface_profile != SurfaceProfile::Experimental {
+                errors.push(format!(
+                    "slot_{}<{}> requires --surface experimental",
+                    op.as_str(),
+                    ty.as_str()
+                ));
+                return;
+            }
+            ops.push(KrirOp::SlotArith {
+                ty: lower_mmio_scalar_type(*ty),
+                dst: dst.clone(),
+                src: src.clone(),
+                arith_op: lower_arith_op(*op),
+            });
+        }
+        Stmt::CallWithArgs { callee, args } => {
+            if surface_profile != SurfaceProfile::Experimental {
+                errors.push("call_with_args requires --surface experimental".to_string());
+                return;
+            }
+            let krir_args = args.iter().map(|a| lower_mmio_value_expr(a, const_map)).collect();
+            ops.push(KrirOp::CallWithArgs {
+                callee: callee.clone(),
+                args: krir_args,
+            });
+        }
+        Stmt::TailCall { callee, args } => {
+            if surface_profile != SurfaceProfile::Experimental {
+                errors.push("tail_call requires --surface experimental".to_string());
+                return;
+            }
+            let krir_args = args.iter().map(|a| lower_mmio_value_expr(a, const_map)).collect();
+            ops.push(KrirOp::TailCall {
+                callee: callee.clone(),
+                args: krir_args,
             });
         }
     }

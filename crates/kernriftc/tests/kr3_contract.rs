@@ -8,13 +8,18 @@
 //   - Trivial branch fold eliminates identical branch arms
 //   - Dead extern declarations are stripped by optimizer
 //   - KR2 features (locks, percpu, hooks) still enforced in KR3 modules
+//   - Telemetry layer: collect_telemetry() produces accurate reports (PR-6)
 
 use std::path::{Path, PathBuf};
 
-use kernriftc::{SurfaceProfile, check_module, compile_file, compile_source, compile_source_with_surface};
+use kernriftc::{
+    SurfaceProfile, check_module, collect_telemetry, compile_file, compile_source,
+    compile_source_with_surface,
+};
 use krir::{
-    ArithOp, BackendTargetContract, ExecutableOp, lower_current_krir_to_executable_krir,
-    lower_executable_krir_to_x86_64_object,
+    ArithOp, BackendTargetContract, BackendTargetId, ExecutableCallArg, ExecutableOp,
+    ExecutableTerminator, emit_x86_64_asm_text, lower_current_krir_to_executable_krir,
+    lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
 };
 
 fn repo_root() -> PathBuf {
@@ -464,4 +469,618 @@ fn cell_arith_imm_compiles_to_x86_64_elf_object() {
     let object =
         lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
     assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+}
+
+// ── PR-4: Call with args ──────────────────────────────────────────────────────
+
+#[test]
+fn call_with_args_rejected_on_stable_surface() {
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        extern @ctx(thread, boot) @eff() @caps() fn log_byte(b: u8);
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn send_status() {
+            call_with_args(log_byte, 0x42);
+        }
+    "#;
+    let errs = compile_source_with_surface(src, SurfaceProfile::Stable)
+        .expect_err("must reject on stable surface");
+    assert!(
+        errs.iter().any(|e| e.contains("experimental")),
+        "expected 'experimental' in errors, got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn call_with_args_accepted_on_experimental_surface() {
+    // Verifies that call_with_args lowers to CallWithArgs ops with the right arg types.
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        mmio_reg DEV.Status = 0x05 : u8 ro;
+        extern @ctx(thread, boot) @eff() @caps() fn log_byte(b: u8);
+        extern @ctx(thread, boot) @eff() @caps() fn log_two(a: u64, b: u64);
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn send_imm() {
+            call_with_args(log_byte, 0x42);
+        }
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn send_slot() {
+            stack_cell<u8>(val);
+            cell_store<u8>(val, 0xFF);
+            call_with_args(log_byte, val);
+        }
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn send_two_imm() {
+            call_with_args(log_two, 1, 2);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+
+    // send_imm: one CallWithArgs with Imm(0x42)
+    let send_imm = exec.functions.iter().find(|f| f.name == "send_imm").expect("send_imm");
+    let imm_args: Vec<_> = send_imm.blocks[0].ops.iter().filter_map(|op| {
+        if let ExecutableOp::CallWithArgs { args, .. } = op { Some(args.clone()) } else { None }
+    }).collect();
+    assert_eq!(imm_args.len(), 1, "send_imm must have one CallWithArgs");
+    assert!(matches!(imm_args[0][0], ExecutableCallArg::Imm { value: 0x42 }));
+
+    // send_slot: one CallWithArgs with Slot
+    let send_slot = exec.functions.iter().find(|f| f.name == "send_slot").expect("send_slot");
+    let slot_args: Vec<_> = send_slot.blocks[0].ops.iter().filter_map(|op| {
+        if let ExecutableOp::CallWithArgs { args, .. } = op { Some(args.clone()) } else { None }
+    }).collect();
+    assert_eq!(slot_args.len(), 1, "send_slot must have one CallWithArgs");
+    assert!(matches!(slot_args[0][0], ExecutableCallArg::Slot { .. }));
+
+    // send_two_imm: one CallWithArgs with two Imm args
+    let send_two = exec.functions.iter().find(|f| f.name == "send_two_imm").expect("send_two_imm");
+    let two_args: Vec<_> = send_two.blocks[0].ops.iter().filter_map(|op| {
+        if let ExecutableOp::CallWithArgs { args, .. } = op { Some(args.clone()) } else { None }
+    }).collect();
+    assert_eq!(two_args.len(), 1);
+    assert_eq!(two_args[0].len(), 2);
+    assert!(matches!(two_args[0][0], ExecutableCallArg::Imm { value: 1 }));
+    assert!(matches!(two_args[0][1], ExecutableCallArg::Imm { value: 2 }));
+}
+
+#[test]
+fn call_with_args_compiles_to_x86_64_elf_object() {
+    // Verifies that CallWithArgs ops survive the full pipeline to ELF bytes.
+    let src = r#"
+        @module_caps(Mmio);
+        extern @ctx(thread, boot) @eff() @caps() fn write_byte(b: u64);
+        @ctx(thread, boot) @eff() @caps()
+        fn emit() {
+            call_with_args(write_byte, 0x41);
+        }
+        @ctx(thread, boot) @eff() @caps()
+        fn emit_two(x: u64) {
+            stack_cell<u64>(val);
+            cell_store<u64>(val, 0x10);
+            call_with_args(write_byte, val);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object =
+        lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
+    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+}
+
+// ── PR-5: Tail-call loop ──────────────────────────────────────────────────────
+
+#[test]
+fn tail_call_rejected_on_stable_surface() {
+    let src = r#"
+        @module_caps();
+        @ctx(thread, boot) @eff() @caps()
+        fn spin() {
+            tail_call(spin);
+        }
+    "#;
+    let errs = compile_source_with_surface(src, SurfaceProfile::Stable)
+        .expect_err("must reject on stable surface");
+    assert!(
+        errs.iter().any(|e| e.contains("experimental")),
+        "expected 'experimental' in errors, got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn tail_call_produces_tail_call_terminator() {
+    let src = r#"
+        @module_caps();
+        @ctx(thread, boot) @eff() @caps()
+        fn spin() {
+            tail_call(spin);
+        }
+        @ctx(thread, boot) @eff() @caps()
+        fn relay(x: u64) {
+            stack_cell<u64>(val);
+            cell_store<u64>(val, 0);
+            cell_add<u64>(val, 1);
+            tail_call(relay, val);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+
+    let spin = exec.functions.iter().find(|f| f.name == "spin").expect("spin");
+    assert!(
+        matches!(
+            &spin.blocks[0].terminator,
+            ExecutableTerminator::TailCall { callee, args } if callee == "spin" && args.is_empty()
+        ),
+        "spin must have TailCall terminator to self with no args"
+    );
+
+    let relay = exec.functions.iter().find(|f| f.name == "relay").expect("relay");
+    match &relay.blocks[0].terminator {
+        ExecutableTerminator::TailCall { callee, args } => {
+            assert_eq!(callee, "relay");
+            assert_eq!(args.len(), 1);
+            assert!(matches!(args[0], ExecutableCallArg::Slot { .. }));
+        }
+        other => panic!("relay must have TailCall terminator, got {:?}", other),
+    }
+}
+
+#[test]
+fn tail_call_compiles_to_x86_64_elf_object() {
+    let src = r#"
+        @module_caps();
+        @ctx(thread, boot) @eff() @caps()
+        fn counter(n: u64) {
+            stack_cell<u64>(next);
+            cell_store<u64>(next, n);
+            cell_add<u64>(next, 1);
+            cell_and<u64>(next, 255);
+            tail_call(counter, next);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object =
+        lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
+    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+}
+
+// ── PR-6: Telemetry layer ─────────────────────────────────────────────────────
+
+#[test]
+fn telemetry_counts_functions_and_ops_on_stable_surface() {
+    // Uses stack ops (stable) to verify per-op counting and distribution fields.
+    let src = r#"
+        @module_caps();
+        @ctx(irq) @eff() @caps()
+        fn irq_handler() {
+            stack_cell<u64>(x);
+            cell_store<u64>(x, 0);
+        }
+        @ctx(boot) @eff() @caps()
+        fn boot_init() {
+            stack_cell<u64>(y);
+            cell_store<u64>(y, 1);
+        }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Stable);
+
+    assert_eq!(report.surface, "stable");
+    assert_eq!(report.function_count, 2);
+    assert_eq!(report.extern_function_count, 0);
+    assert_eq!(report.total_ops, 4); // 2 ops per function
+    assert_eq!(report.op_counts.get("stack_cell"), Some(&2));
+    assert_eq!(report.op_counts.get("stack_store"), Some(&2));
+    assert!(
+        report.experimental_features.is_empty(),
+        "stable surface must report no experimental features"
+    );
+    assert_eq!(*report.ctx_distribution.get("irq").unwrap_or(&0), 1);
+    assert_eq!(*report.ctx_distribution.get("boot").unwrap_or(&0), 1);
+}
+
+#[test]
+fn telemetry_reports_experimental_features_when_present() {
+    let src = r#"
+        @module_caps();
+        @ctx(thread) @eff() @caps()
+        fn loop_forever(n: u64) {
+            stack_cell<u64>(next);
+            cell_store<u64>(next, n);
+            cell_add<u64>(next, 1);
+            call_with_args(loop_forever, next);
+            tail_call(loop_forever, next);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Experimental);
+
+    assert_eq!(report.surface, "experimental");
+    assert!(
+        report.experimental_features.contains(&"call_with_args"),
+        "call_with_args must appear in experimental_features"
+    );
+    assert!(
+        report.experimental_features.contains(&"tail_call"),
+        "tail_call must appear in experimental_features"
+    );
+    assert!(
+        report.experimental_features.contains(&"cell_arith_imm"),
+        "cell_arith_imm must appear in experimental_features"
+    );
+}
+
+#[test]
+fn telemetry_extern_count_is_accurate() {
+    let src = r#"
+        @module_caps();
+        extern @ctx(boot, thread) @eff() @caps() fn printk(msg: u64);
+        @ctx(boot) @eff() @caps()
+        fn entry() {
+            call_with_args(printk, 0xDEAD);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Experimental);
+
+    assert_eq!(report.function_count, 2, "entry + printk");
+    assert_eq!(report.extern_function_count, 1, "only printk is extern");
+    assert_eq!(report.op_counts.get("call_with_args"), Some(&1));
+}
+
+#[test]
+fn telemetry_serializes_to_valid_json() {
+    let src = r#"
+        @module_caps();
+        @ctx(irq) @eff() @caps()
+        fn handler() { }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Stable);
+    let json_text = serde_json::to_string_pretty(&report).expect("must serialize to JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_text).expect("output must be valid JSON");
+    assert_eq!(parsed["surface"], "stable");
+    assert!(parsed["function_count"].is_number());
+    assert!(parsed["op_counts"].is_object());
+    assert!(parsed["experimental_features"].is_array());
+}
+
+// ── PR-7: Living Compiler — pattern detection ─────────────────────────────────
+
+use kernriftc::detect_patterns;
+
+#[test]
+fn living_compiler_detects_tail_call_opportunity_on_stable_module() {
+    // A module with plain calls but no tail_call should trigger try_tail_call.
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn init() {
+            setup();
+            setup();
+            setup();
+        }
+        @ctx(boot) @eff() @caps()
+        fn setup() { }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Stable);
+    let suggestions = detect_patterns(&report);
+
+    let ids: Vec<&str> = suggestions.iter().map(|m| m.id).collect();
+    assert!(
+        ids.contains(&"try_tail_call"),
+        "try_tail_call must fire when call ops exist and no tail_call: got {:?}",
+        ids
+    );
+
+    let tc = suggestions.iter().find(|m| m.id == "try_tail_call").unwrap();
+    assert!(tc.fitness > 0, "fitness must be non-zero");
+    assert!(tc.fitness <= 100, "fitness must not exceed 100");
+    assert!(tc.requires_experimental, "must require experimental on stable surface");
+}
+
+#[test]
+fn living_compiler_silent_on_fully_optimized_experimental_module() {
+    // A module that already uses tail_call and call_with_args should produce
+    // no suggestions for those patterns.
+    let src = r#"
+        @module_caps();
+        @ctx(thread) @eff() @caps()
+        fn loop_fn(n: u64) {
+            stack_cell<u64>(next);
+            cell_store<u64>(next, n);
+            cell_add<u64>(next, 1);
+            call_with_args(loop_fn, next);
+            tail_call(loop_fn, next);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Experimental);
+    let suggestions = detect_patterns(&report);
+
+    let ids: Vec<&str> = suggestions.iter().map(|m| m.id).collect();
+    assert!(
+        !ids.contains(&"try_tail_call"),
+        "try_tail_call must not fire when tail_call is already present"
+    );
+    assert!(
+        !ids.contains(&"try_call_with_args"),
+        "try_call_with_args must not fire when call_with_args is already present"
+    );
+    assert!(
+        !ids.contains(&"try_cell_arith"),
+        "try_cell_arith must not fire when cell_arith_imm is already present"
+    );
+}
+
+#[test]
+fn living_compiler_detects_cell_arith_opportunity() {
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn counter() {
+            stack_cell<u64>(a);
+            stack_cell<u64>(b);
+            cell_store<u64>(a, 0);
+            cell_store<u64>(b, 0);
+        }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Stable);
+    let suggestions = detect_patterns(&report);
+
+    let ids: Vec<&str> = suggestions.iter().map(|m| m.id).collect();
+    assert!(
+        ids.contains(&"try_cell_arith"),
+        "try_cell_arith must fire when 2+ stack_cells exist and no cell_arith_imm: got {:?}",
+        ids
+    );
+}
+
+#[test]
+fn living_compiler_fitness_bounded_and_sorted() {
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn a() { b(); b(); b(); b(); b(); b(); b(); b(); b(); b(); }
+        @ctx(boot) @eff() @caps()
+        fn b() { }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Stable);
+    let suggestions = detect_patterns(&report);
+
+    assert!(!suggestions.is_empty(), "must produce suggestions");
+    for m in &suggestions {
+        assert!(m.fitness <= 100, "fitness {} for '{}' exceeds 100", m.fitness, m.id);
+    }
+    // Verify sorted: fitness descending.
+    for window in suggestions.windows(2) {
+        assert!(
+            window[0].fitness >= window[1].fitness,
+            "suggestions must be sorted by fitness descending: {} < {}",
+            window[0].fitness,
+            window[1].fitness
+        );
+    }
+}
+
+#[test]
+fn living_compiler_detects_high_extern_ratio() {
+    let src = r#"
+        @module_caps();
+        extern @ctx(boot) @eff() @caps() fn ext_a();
+        extern @ctx(boot) @eff() @caps() fn ext_b();
+        @ctx(boot) @eff() @caps()
+        fn local() { ext_a(); }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let report = collect_telemetry(&module, SurfaceProfile::Stable);
+    let suggestions = detect_patterns(&report);
+
+    let ids: Vec<&str> = suggestions.iter().map(|m| m.id).collect();
+    assert!(
+        ids.contains(&"high_extern_ratio"),
+        "high_extern_ratio must fire when externs >= half total functions: got {:?}",
+        ids
+    );
+    let he = suggestions.iter().find(|m| m.id == "high_extern_ratio").unwrap();
+    assert!(!he.requires_experimental, "high_extern_ratio does not need experimental surface");
+}
+
+// ── PR-8: Two-source slot arithmetic (slot_add/sub/and/or/xor/shl/shr) ───────
+
+#[test]
+fn slot_arith_parses_and_lowers_to_executable_krir() {
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn add_slots() {
+            stack_cell<u64>(a);
+            stack_cell<u64>(b);
+            cell_store<u64>(a, 10);
+            cell_store<u64>(b, 32);
+            slot_add<u64>(a, b);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+
+    let f = exec.functions.iter().find(|f| f.name == "add_slots").expect("add_slots");
+    let slot_arith = f.blocks[0].ops.iter().find(|op| {
+        matches!(op, ExecutableOp::SlotArithSlot { arith_op: ArithOp::Add, .. })
+    });
+    assert!(
+        slot_arith.is_some(),
+        "slot_add<u64> must lower to ExecutableOp::SlotArithSlot(Add), got: {:?}",
+        f.blocks[0].ops
+    );
+    // Verify dst=0 (slot 'a') and src=1 (slot 'b').
+    if let Some(ExecutableOp::SlotArithSlot { dst_slot_idx, src_slot_idx, ty, .. }) = slot_arith {
+        assert_eq!(*dst_slot_idx, 0, "dst slot must be 0 (a)");
+        assert_eq!(*src_slot_idx, 1, "src slot must be 1 (b)");
+        assert_eq!(*ty, krir::MmioScalarType::U64);
+    }
+}
+
+#[test]
+fn slot_arith_rejected_on_stable_surface() {
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn compute() {
+            stack_cell<u64>(a);
+            stack_cell<u64>(b);
+            cell_store<u64>(a, 5);
+            cell_store<u64>(b, 3);
+            slot_sub<u64>(a, b);
+        }
+    "#;
+    let errs = compile_source_with_surface(src, SurfaceProfile::Stable)
+        .expect_err("slot_sub on stable surface must fail");
+    assert!(
+        errs.iter().any(|e| e.contains("experimental")),
+        "error must mention 'experimental', got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn slot_arith_compiles_to_x86_64_elf_object() {
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn bitops() {
+            stack_cell<u64>(mask);
+            stack_cell<u64>(val);
+            cell_store<u64>(mask, 0xff);
+            cell_store<u64>(val, 0x1234);
+            slot_and<u64>(val, mask);
+            slot_xor<u64>(val, mask);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object =
+        lower_executable_krir_to_x86_64_object(&exec, &target).expect("must produce ELF object");
+    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+}
+
+#[test]
+fn slot_arith_shift_emits_typed_asm_text() {
+    use krir::{lower_executable_krir_to_x86_64_asm, emit_x86_64_asm_text};
+
+    let src = r#"
+        @module_caps();
+        @ctx(boot) @eff() @caps()
+        fn shift_slots() {
+            stack_cell<u64>(val);
+            stack_cell<u64>(cnt);
+            cell_store<u64>(val, 0x80);
+            cell_store<u64>(cnt, 3);
+            slot_shl<u64>(val, cnt);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let target = BackendTargetContract::x86_64_sysv();
+    let asm_module = lower_executable_krir_to_x86_64_asm(&exec, &target)
+        .expect("must produce asm module");
+    let asm_text = emit_x86_64_asm_text(&asm_module);
+
+    assert!(
+        asm_text.contains("shlq"),
+        "slot_shl<u64> must emit 'shlq' in ASM text:\n{}",
+        asm_text
+    );
+    assert!(
+        asm_text.contains("%rcx"),
+        "slot_shl<u64> shift must use %rcx as count register:\n{}",
+        asm_text
+    );
+}
+
+// ── Multi-OS target tests ────────────────────────────────────────────────────
+
+#[test]
+fn win64_target_contract_validates() {
+    let contract = BackendTargetContract::x86_64_win64();
+    assert!(contract.validate().is_ok(), "Win64 contract must validate");
+    assert_eq!(contract.target_id.as_str(), "x86_64-win64");
+}
+
+#[test]
+fn macho_target_contract_validates() {
+    let contract = BackendTargetContract::x86_64_macho();
+    assert!(contract.validate().is_ok(), "macOS Mach-O contract must validate");
+    assert_eq!(contract.target_id.as_str(), "x86_64-macho");
+    assert_eq!(contract.symbols.function_prefix, "_");
+    assert_eq!(contract.sections.text, "__TEXT,__text");
+}
+
+#[test]
+fn macho_asm_emits_underscore_prefix_and_macho_section() {
+    let src = r#"
+        @module_caps(MmioRaw);
+        mmio UART0 = 0x1000;
+        @ctx(thread, boot)
+        fn uart_init() {
+            raw_mmio_write<u32>(0x1000, 0x01);
+        }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let executable = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let contract = BackendTargetContract::x86_64_macho();
+    let asm = lower_executable_krir_to_x86_64_asm(&executable, &contract)
+        .expect("must lower to asm");
+    let text = emit_x86_64_asm_text(&asm);
+
+    assert!(
+        text.contains("__TEXT,__text"),
+        "macOS ASM must use __TEXT,__text section:\n{}",
+        text
+    );
+    assert!(
+        text.contains("_uart_init"),
+        "macOS ASM must prefix function symbol with underscore:\n{}",
+        text
+    );
+}
+
+#[test]
+fn target_id_parse_roundtrip() {
+    use krir::BackendTargetId;
+    for (s, expected) in [
+        ("x86_64-sysv", BackendTargetId::X86_64Sysv),
+        ("x86_64-linux", BackendTargetId::X86_64Sysv),
+        ("x86_64-win64", BackendTargetId::X86_64Win64),
+        ("x86_64-windows", BackendTargetId::X86_64Win64),
+        ("x86_64-macho", BackendTargetId::X86_64MachO),
+        ("x86_64-darwin", BackendTargetId::X86_64MachO),
+    ] {
+        let parsed = BackendTargetId::parse(s).expect("must parse");
+        assert_eq!(parsed, expected, "parse('{}') must equal {:?}", s, expected);
+    }
+    assert!(BackendTargetId::parse("unknown-target").is_err());
 }

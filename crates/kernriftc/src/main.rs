@@ -23,8 +23,10 @@ mod backend_emit;
 mod canonical_input;
 mod canonical_text;
 mod check_verify;
+mod living_compiler;
 mod policy_engine;
 mod proposals;
+mod telemetry;
 mod verify_artifact_meta;
 
 use crate::artifact_inspect::{
@@ -44,6 +46,7 @@ use crate::policy_engine::{
     CONTRACTS_SCHEMA_V1, CONTRACTS_SCHEMA_V2, CONTRACTS_SCHEMA_VERSION_V2, ContractsBundle,
     evaluate_policy, format_policy_violation, parse_policy_text, validate_json_against_schema_text,
 };
+use crate::living_compiler::{parse_living_compiler_args, run_living_compiler};
 use crate::proposals::{parse_proposals_args, run_proposals};
 use crate::verify_artifact_meta::{parse_verify_artifact_meta_args, run_verify_artifact_meta};
 
@@ -249,6 +252,14 @@ fn main() -> ExitCode {
         },
         "features" => match parse_features_args(&args[2..]) {
             Ok(parsed) => run_features(parsed.surface),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "living-compiler" => match parse_living_compiler_args(&args[2..]) {
+            Ok(parsed) => run_living_compiler(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();

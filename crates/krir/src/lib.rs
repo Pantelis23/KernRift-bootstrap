@@ -95,6 +95,20 @@ pub struct PercpuDecl {
     pub ty: MmioScalarType,
 }
 
+/// A resolved argument value for `CallWithArgs` — either an immediate, a
+/// stack-frame slot (by byte offset from %rsp), or the current saved-value
+/// register (%rbx).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecutableCallArg {
+    /// Load an immediate constant into the argument register.
+    Imm { value: u64 },
+    /// Load a value from `byte_offset(%rsp)` into the argument register.
+    Slot { byte_offset: u32 },
+    /// Move the current saved-value register (%rbx) into the argument register.
+    SavedValue,
+}
+
 /// Arithmetic operation for `CellArithImm` / `SlotArithImm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +141,16 @@ impl ArithOp {
 pub enum KrirOp {
     Call {
         callee: String,
+    },
+    CallWithArgs {
+        callee: String,
+        args: Vec<MmioValueExpr>,
+    },
+    /// `tail_call(callee[, args...])` — jump to `callee` after tearing down the current frame.
+    /// Enables infinite driver loops with zero stack growth.
+    TailCall {
+        callee: String,
+        args: Vec<MmioValueExpr>,
     },
     CallCapture {
         callee: String,
@@ -182,6 +206,15 @@ pub enum KrirOp {
         cell: String,
         arith_op: ArithOp,
         imm: u64,
+    },
+    /// `slot_add/sub/and/or/xor/shl/shr<T>(dst, src)` — two-source slot arithmetic.
+    /// Reads `src` slot, applies `arith_op`, stores result back into `dst` slot.
+    /// Uses `%rax`/`%rcx` as scratch — does not touch the saved-value `%rbx`.
+    SlotArith {
+        ty: MmioScalarType,
+        dst: String,
+        src: String,
+        arith_op: ArithOp,
     },
     MmioRead {
         ty: MmioScalarType,
@@ -459,6 +492,10 @@ pub enum ExecutableOp {
     Call {
         callee: String,
     },
+    CallWithArgs {
+        callee: String,
+        args: Vec<ExecutableCallArg>,
+    },
     CallCapture {
         callee: String,
         ty: MmioScalarType,
@@ -513,6 +550,12 @@ pub enum ExecutableOp {
         arith_op: ArithOp,
         imm: u64,
     },
+    SlotArithSlot {
+        ty: MmioScalarType,
+        dst_slot_idx: u8,
+        src_slot_idx: u8,
+        arith_op: ArithOp,
+    },
     ParamLoad {
         param_idx: u8,
         ty: MmioScalarType,
@@ -538,12 +581,16 @@ pub enum ExecutableOp {
 #[serde(tag = "terminator", rename_all = "snake_case")]
 pub enum ExecutableTerminator {
     Return { value: ExecutableValue },
+    /// Tear down the current frame, load args into SysV registers, then `jmp callee`.
+    /// No return address is pushed — enables infinite loops with zero stack growth.
+    TailCall { callee: String, args: Vec<ExecutableCallArg> },
 }
 
 impl ExecutableTerminator {
     fn value_type(&self) -> ExecutableValueType {
         match self {
             Self::Return { value } => value.value_type(),
+            Self::TailCall { .. } => ExecutableValueType::Unit,
         }
     }
 }
@@ -676,7 +723,8 @@ impl ExecutableKrirModule {
             for block in &function.blocks {
                 for op in &block.ops {
                     match op {
-                        ExecutableOp::Call { callee } => {
+                        ExecutableOp::Call { callee }
+                        | ExecutableOp::CallWithArgs { callee, .. } => {
                             if !function_names.contains(callee.as_str())
                                 && !extern_names.contains(callee.as_str())
                             {
@@ -764,6 +812,7 @@ impl ExecutableKrirModule {
                         | ExecutableOp::StackStoreValue { .. }
                         | ExecutableOp::StackLoad { .. }
                         | ExecutableOp::SlotArithImm { .. }
+                        | ExecutableOp::SlotArithSlot { .. }
                         | ExecutableOp::ParamLoad { .. }
                         | ExecutableOp::MmioReadParamAddr { .. }
                         | ExecutableOp::MmioWriteImmParamAddr { .. }
@@ -913,6 +962,7 @@ pub fn lower_current_krir_to_executable_krir(
         let mut cell_slot_map: BTreeMap<String, (u8, MmioScalarType)> = BTreeMap::new();
         let mut next_slot_idx: u8 = 0;
         let mut last_value = None::<ExecutableCapturedValue>;
+        let mut tail_call_terminator: Option<(String, Vec<ExecutableCallArg>)> = None;
         // Build lookup maps from param name to ABI slot indices.
         // Scalar params: 1 ABI slot each.  Slice params: 2 ABI slots (ptr then len).
         let mut param_map: std::collections::BTreeMap<&str, (u8, MmioScalarType)> =
@@ -937,6 +987,115 @@ pub fn lower_current_krir_to_executable_krir(
                 KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
                     callee: callee.clone(),
                 }),
+                KrirOp::CallWithArgs { callee, args } => {
+                    if args.len() > 6 {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' calls '{}' with {} args; SysV ABI allows at most 6",
+                            function.name, callee, args.len()
+                        ));
+                        continue;
+                    }
+                    let mut exec_args = Vec::with_capacity(args.len());
+                    let mut arg_ok = true;
+                    for arg_val in args {
+                        let exec_arg = match arg_val {
+                            MmioValueExpr::IntLiteral { value } => {
+                                match parse_integer_literal_u64(value) {
+                                    Ok(v) => ExecutableCallArg::Imm { value: v },
+                                    Err(reason) => {
+                                        errors.push(format!(
+                                            "canonical-exec: function '{}' call_with_args immediate '{}': {}",
+                                            function.name, value, reason
+                                        ));
+                                        arg_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            MmioValueExpr::Ident { name } => {
+                                if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
+                                    ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(slot_idx),
+                                    }
+                                } else if let Some(&(param_idx, _)) = param_map.get(name.as_str()) {
+                                    ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(next_slot_idx)
+                                            + 8u32 * u32::from(param_idx),
+                                    }
+                                } else if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    ExecutableCallArg::SavedValue
+                                } else {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' call_with_args arg '{}': not a declared stack cell, param, or captured slot",
+                                        function.name, name
+                                    ));
+                                    arg_ok = false;
+                                    break;
+                                }
+                            }
+                        };
+                        exec_args.push(exec_arg);
+                    }
+                    if arg_ok {
+                        exec_ops.push(ExecutableOp::CallWithArgs {
+                            callee: callee.clone(),
+                            args: exec_args,
+                        });
+                    }
+                }
+                KrirOp::TailCall { callee, args } => {
+                    if args.len() > 6 {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' tail_calls '{}' with {} args; SysV ABI allows at most 6",
+                            function.name, callee, args.len()
+                        ));
+                        continue;
+                    }
+                    let mut exec_args = Vec::with_capacity(args.len());
+                    let mut arg_ok = true;
+                    for arg_val in args {
+                        let exec_arg = match arg_val {
+                            MmioValueExpr::IntLiteral { value } => {
+                                match parse_integer_literal_u64(value) {
+                                    Ok(v) => ExecutableCallArg::Imm { value: v },
+                                    Err(reason) => {
+                                        errors.push(format!(
+                                            "canonical-exec: function '{}' tail_call immediate '{}': {}",
+                                            function.name, value, reason
+                                        ));
+                                        arg_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            MmioValueExpr::Ident { name } => {
+                                if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
+                                    ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(slot_idx),
+                                    }
+                                } else if let Some(&(param_idx, _)) = param_map.get(name.as_str()) {
+                                    ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(next_slot_idx)
+                                            + 8u32 * u32::from(param_idx),
+                                    }
+                                } else if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    ExecutableCallArg::SavedValue
+                                } else {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' tail_call arg '{}': not a declared stack cell, param, or captured slot",
+                                        function.name, name
+                                    ));
+                                    arg_ok = false;
+                                    break;
+                                }
+                            }
+                        };
+                        exec_args.push(exec_arg);
+                    }
+                    if arg_ok {
+                        tail_call_terminator = Some((callee.clone(), exec_args));
+                    }
+                }
                 KrirOp::CallCapture {
                     callee,
                     capture_slot,
@@ -1433,6 +1592,38 @@ pub fn lower_current_krir_to_executable_krir(
                         imm: *imm,
                     });
                 }
+                KrirOp::SlotArith { ty, dst, src, arith_op } => {
+                    let invocation =
+                        format!("slot_{}<{}>({})", arith_op.as_str(), ty.as_str(), dst);
+                    let dst_slot_idx =
+                        match resolve_executable_stack_cell_slot(*ty, dst, &cell_slot_map) {
+                            Ok(idx) => idx,
+                            Err(reason) => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported {}: {}",
+                                    function.name, invocation, reason
+                                ));
+                                continue;
+                            }
+                        };
+                    let src_slot_idx =
+                        match resolve_executable_stack_cell_slot(*ty, src, &cell_slot_map) {
+                            Ok(idx) => idx,
+                            Err(reason) => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported {}: {}",
+                                    function.name, invocation, reason
+                                ));
+                                continue;
+                            }
+                        };
+                    exec_ops.push(ExecutableOp::SlotArithSlot {
+                        ty: *ty,
+                        dst_slot_idx,
+                        src_slot_idx,
+                        arith_op: *arith_op,
+                    });
+                }
                 KrirOp::MmioRead {
                     ty,
                     addr,
@@ -1769,10 +1960,14 @@ pub fn lower_current_krir_to_executable_krir(
             blocks: vec![ExecutableBlock {
                 label: "entry".to_string(),
                 ops: exec_ops,
-                terminator: ExecutableTerminator::Return {
-                    value: result_ty
-                        .map(|ty| ExecutableValue::SavedValue { ty })
-                        .unwrap_or(ExecutableValue::Unit),
+                terminator: if let Some((tc_callee, tc_args)) = tail_call_terminator {
+                    ExecutableTerminator::TailCall { callee: tc_callee, args: tc_args }
+                } else {
+                    ExecutableTerminator::Return {
+                        value: result_ty
+                            .map(|ty| ExecutableValue::SavedValue { ty })
+                            .unwrap_or(ExecutableValue::Unit),
+                    }
                 },
             }],
         });
@@ -2156,12 +2351,37 @@ fn format_branch_if_mask_nonzero_invocation(
 #[serde(rename_all = "snake_case")]
 pub enum BackendTargetId {
     X86_64Sysv,
+    X86_64Win64,
+    X86_64MachO,
 }
 
 impl BackendTargetId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::X86_64Sysv => "x86_64-sysv",
+            Self::X86_64Win64 => "x86_64-win64",
+            Self::X86_64MachO => "x86_64-macho",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "x86_64-sysv" | "x86_64-linux" => Ok(Self::X86_64Sysv),
+            "x86_64-win64" | "x86_64-windows" => Ok(Self::X86_64Win64),
+            "x86_64-macho" | "x86_64-darwin" | "x86_64-macos" => Ok(Self::X86_64MachO),
+            _ => Err(format!(
+                "unknown target '{}'; supported: x86_64-sysv, x86_64-win64, x86_64-macho",
+                s
+            )),
+        }
+    }
+
+    /// Return the default `BackendTargetContract` for this target ID.
+    pub fn default_contract(self) -> BackendTargetContract {
+        match self {
+            Self::X86_64Sysv => BackendTargetContract::x86_64_sysv(),
+            Self::X86_64Win64 => BackendTargetContract::x86_64_win64(),
+            Self::X86_64MachO => BackendTargetContract::x86_64_macho(),
         }
     }
 }
@@ -2176,6 +2396,7 @@ pub enum TargetArch {
 #[serde(rename_all = "snake_case")]
 pub enum TargetAbi {
     Sysv,
+    Win64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2345,15 +2566,181 @@ impl BackendTargetContract {
         }
     }
 
+    /// Windows x86-64 ABI (Microsoft calling convention).
+    ///
+    /// Parameter registers: rcx, rdx, r8, r9 (first 4 integer args).
+    /// Callee-saved: rbx, rbp, rdi, rsi, r12–r15.
+    /// Shadow space: 32 bytes allocated by the caller (not yet emitted by codegen).
+    pub fn x86_64_win64() -> Self {
+        Self {
+            target_id: BackendTargetId::X86_64Win64,
+            arch: TargetArch::X86_64,
+            abi: TargetAbi::Win64,
+            endian: TargetEndian::Little,
+            pointer_bits: 64,
+            stack_alignment_bytes: 16,
+            integer_registers: vec![
+                X86_64IntegerRegister::Rax,
+                X86_64IntegerRegister::Rbx,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rbp,
+                X86_64IntegerRegister::Rsp,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+                X86_64IntegerRegister::R10,
+                X86_64IntegerRegister::R11,
+                X86_64IntegerRegister::R12,
+                X86_64IntegerRegister::R13,
+                X86_64IntegerRegister::R14,
+                X86_64IntegerRegister::R15,
+            ],
+            stack_pointer: X86_64IntegerRegister::Rsp,
+            frame_pointer: X86_64IntegerRegister::Rbp,
+            instruction_pointer: "rip",
+            caller_saved: vec![
+                X86_64IntegerRegister::Rax,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+                X86_64IntegerRegister::R10,
+                X86_64IntegerRegister::R11,
+            ],
+            callee_saved: vec![
+                X86_64IntegerRegister::Rbx,
+                X86_64IntegerRegister::Rbp,
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::R12,
+                X86_64IntegerRegister::R13,
+                X86_64IntegerRegister::R14,
+                X86_64IntegerRegister::R15,
+            ],
+            current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
+            future_scalar_return: FutureScalarReturnConvention::IntegerRax,
+            future_argument_registers: vec![
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+            ],
+            symbols: SymbolNamingConvention {
+                function_prefix: "",
+                preserve_source_names: true,
+            },
+            sections: SectionNamingConvention {
+                text: ".text",
+                rodata: ".rdata",
+                data: ".data",
+                bss: ".bss",
+            },
+            freestanding: FreestandingTargetAssumptions {
+                no_libc: true,
+                no_host_runtime: true,
+                toolchain_bridge_not_yet_exercised: true,
+            },
+        }
+    }
+
+    /// macOS x86-64 (Mach-O, SysV ABI with underscore-prefixed symbols).
+    ///
+    /// Same calling convention as Linux SysV.  Differs in:
+    ///   - Symbol prefix: `_` on all exported functions.
+    ///   - Section names: `__TEXT,__text` etc.
+    pub fn x86_64_macho() -> Self {
+        Self {
+            target_id: BackendTargetId::X86_64MachO,
+            arch: TargetArch::X86_64,
+            abi: TargetAbi::Sysv,
+            endian: TargetEndian::Little,
+            pointer_bits: 64,
+            stack_alignment_bytes: 16,
+            integer_registers: vec![
+                X86_64IntegerRegister::Rax,
+                X86_64IntegerRegister::Rbx,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rbp,
+                X86_64IntegerRegister::Rsp,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+                X86_64IntegerRegister::R10,
+                X86_64IntegerRegister::R11,
+                X86_64IntegerRegister::R12,
+                X86_64IntegerRegister::R13,
+                X86_64IntegerRegister::R14,
+                X86_64IntegerRegister::R15,
+            ],
+            stack_pointer: X86_64IntegerRegister::Rsp,
+            frame_pointer: X86_64IntegerRegister::Rbp,
+            instruction_pointer: "rip",
+            caller_saved: vec![
+                X86_64IntegerRegister::Rax,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+                X86_64IntegerRegister::R10,
+                X86_64IntegerRegister::R11,
+            ],
+            callee_saved: vec![
+                X86_64IntegerRegister::Rbx,
+                X86_64IntegerRegister::Rbp,
+                X86_64IntegerRegister::R12,
+                X86_64IntegerRegister::R13,
+                X86_64IntegerRegister::R14,
+                X86_64IntegerRegister::R15,
+            ],
+            current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
+            future_scalar_return: FutureScalarReturnConvention::IntegerRax,
+            future_argument_registers: vec![
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+            ],
+            symbols: SymbolNamingConvention {
+                function_prefix: "_",
+                preserve_source_names: true,
+            },
+            sections: SectionNamingConvention {
+                text: "__TEXT,__text",
+                rodata: "__TEXT,__const",
+                data: "__DATA,__data",
+                bss: "__DATA,__bss",
+            },
+            freestanding: FreestandingTargetAssumptions {
+                no_libc: true,
+                no_host_runtime: true,
+                toolchain_bridge_not_yet_exercised: true,
+            },
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.target_id != BackendTargetId::X86_64Sysv {
-            return Err("backend target contract target_id must be x86_64-sysv".to_string());
+        let known_combo = matches!(
+            (self.target_id, self.arch, self.abi),
+            (BackendTargetId::X86_64Sysv, TargetArch::X86_64, TargetAbi::Sysv)
+                | (BackendTargetId::X86_64Win64, TargetArch::X86_64, TargetAbi::Win64)
+                | (BackendTargetId::X86_64MachO, TargetArch::X86_64, TargetAbi::Sysv)
+        );
+        if !known_combo {
+            return Err(format!(
+                "unrecognized backend target combination: {}",
+                self.target_id.as_str()
+            ));
         }
         if self.arch != TargetArch::X86_64 {
             return Err("backend target contract arch must be x86_64".to_string());
-        }
-        if self.abi != TargetAbi::Sysv {
-            return Err("backend target contract abi must be sysv".to_string());
         }
         if self.endian != TargetEndian::Little {
             return Err("backend target contract endian must be little".to_string());
@@ -2475,6 +2862,14 @@ pub enum X86_64AsmInstruction {
     Call {
         symbol: String,
     },
+    CallWithArgs {
+        symbol: String,
+        args: Vec<ExecutableCallArg>,
+    },
+    TailCall {
+        symbol: String,
+        args: Vec<ExecutableCallArg>,
+    },
     CallCapture {
         ty: MmioScalarType,
         symbol: String,
@@ -2528,6 +2923,12 @@ pub enum X86_64AsmInstruction {
         slot_idx: u8,
         arith_op: ArithOp,
         imm: u64,
+    },
+    SlotArithSlot {
+        ty: MmioScalarType,
+        dst_slot_idx: u8,
+        src_slot_idx: u8,
+        arith_op: ArithOp,
     },
     ParamLoad {
         param_idx: u8,
@@ -2766,13 +3167,8 @@ fn validate_executable_krir_linear_structure(
     lowering_name: &str,
 ) -> Result<(), String> {
     target.validate()?;
-    if target.target_id != BackendTargetId::X86_64Sysv
-        || target.arch != TargetArch::X86_64
-        || target.abi != TargetAbi::Sysv
-    {
-        return Err(format!(
-            "{lowering_name} requires x86_64-sysv target contract"
-        ));
+    if target.arch != TargetArch::X86_64 {
+        return Err(format!("{lowering_name} requires x86_64 architecture"));
     }
 
     module.validate()?;
@@ -2936,7 +3332,7 @@ pub fn export_compiler_owned_object_to_x86_64_asm(
             }
 
             Ok(X86_64AsmFunction {
-                symbol: symbol.name.clone(),
+                symbol: format!("{}{}", target.symbols.function_prefix, symbol.name),
                 uses_saved_value_slot,
                 n_stack_cells: 0,
                 n_params: 0,
@@ -2963,7 +3359,7 @@ pub fn lower_executable_krir_to_x86_64_asm(
         .functions
         .iter()
         .map(|function| X86_64AsmFunction {
-            symbol: function.name.clone(),
+            symbol: format!("{}{}", target.symbols.function_prefix, function.name),
             uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
             n_stack_cells: executable_function_n_stack_cells(function),
             n_params: function.signature.params.len(),
@@ -3034,6 +3430,17 @@ pub fn lower_executable_krir_to_x86_64_asm(
                     ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
                         X86_64AsmInstruction::SlotArithImm { ty, slot_idx, arith_op, imm }
                     }
+                    ExecutableOp::SlotArithSlot {
+                        ty,
+                        dst_slot_idx,
+                        src_slot_idx,
+                        arith_op,
+                    } => X86_64AsmInstruction::SlotArithSlot {
+                        ty,
+                        dst_slot_idx,
+                        src_slot_idx,
+                        arith_op,
+                    },
                     ExecutableOp::ParamLoad { param_idx, ty } => {
                         X86_64AsmInstruction::ParamLoad { param_idx, ty }
                     }
@@ -3058,19 +3465,24 @@ pub fn lower_executable_krir_to_x86_64_asm(
                     ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
                         X86_64AsmInstruction::MmioWriteValueParamAddr { param_idx, ty }
                     }
+                    ExecutableOp::CallWithArgs { callee, args } => {
+                        X86_64AsmInstruction::CallWithArgs { symbol: callee, args }
+                    }
                 })
-                .chain(match function.blocks[0].terminator {
+                .chain(match function.blocks[0].terminator.clone() {
                     ExecutableTerminator::Return {
                         value: ExecutableValue::SavedValue { ty },
-                    } => std::iter::once(X86_64AsmInstruction::ReturnSavedValue { ty })
-                        .chain(std::iter::once(X86_64AsmInstruction::Ret))
-                        .collect::<Vec<_>>()
-                        .into_iter(),
+                    } => vec![
+                        X86_64AsmInstruction::ReturnSavedValue { ty },
+                        X86_64AsmInstruction::Ret,
+                    ]
+                    .into_iter(),
                     ExecutableTerminator::Return {
                         value: ExecutableValue::Unit,
-                    } => std::iter::once(X86_64AsmInstruction::Ret)
-                        .collect::<Vec<_>>()
-                        .into_iter(),
+                    } => vec![X86_64AsmInstruction::Ret].into_iter(),
+                    ExecutableTerminator::TailCall { callee, args } => {
+                        vec![X86_64AsmInstruction::TailCall { symbol: callee, args }].into_iter()
+                    }
                 })
                 .collect(),
         })
@@ -3119,6 +3531,9 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                 ExecutableOp::StackStoreValue { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::StackLoad { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::SlotArithImm { slot_idx, .. } => Some(*slot_idx),
+                ExecutableOp::SlotArithSlot { dst_slot_idx, src_slot_idx, .. } => {
+                    Some((*dst_slot_idx).max(*src_slot_idx))
+                }
                 _ => None,
             };
             if let Some(s) = slot {
@@ -3392,6 +3807,63 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                         out.push_str(&format!(", {}(%rsp)\n", offset));
                     }
                 }
+                X86_64AsmInstruction::SlotArithSlot {
+                    ty,
+                    dst_slot_idx,
+                    src_slot_idx,
+                    arith_op,
+                } => {
+                    let src_offset = 8u32 * u32::from(*src_slot_idx);
+                    let dst_offset = 8u32 * u32::from(*dst_slot_idx);
+                    // load src into scratch register (%rax for non-shifts, %rcx for shifts)
+                    let src_reg = match arith_op {
+                        ArithOp::Shl | ArithOp::Shr => mmio_value_register(*ty),
+                        _ => mmio_accumulator_register(*ty),
+                    };
+                    out.push_str("    ");
+                    out.push_str(mmio_load_mnemonic(*ty));
+                    if src_offset == 0 {
+                        out.push_str(" (%rsp), ");
+                    } else {
+                        out.push_str(&format!(" {}(%rsp), ", src_offset));
+                    }
+                    out.push_str(src_reg);
+                    out.push('\n');
+                    // typed op into dst memory slot
+                    out.push_str("    ");
+                    out.push_str(slot_arith_slot_op_mnemonic(*ty, *arith_op));
+                    out.push(' ');
+                    out.push_str(src_reg);
+                    out.push_str(", ");
+                    if dst_offset == 0 {
+                        out.push_str("(%rsp)\n");
+                    } else {
+                        out.push_str(&format!("{}(%rsp)\n", dst_offset));
+                    }
+                }
+                X86_64AsmInstruction::CallWithArgs { symbol, args } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let reg = asm_param_register(i as u8);
+                        match arg {
+                            ExecutableCallArg::Imm { value } => {
+                                out.push_str(&format!("    movq ${}, {}\n", value, reg));
+                            }
+                            ExecutableCallArg::Slot { byte_offset } => {
+                                if *byte_offset == 0 {
+                                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
+                                } else {
+                                    out.push_str(&format!("    movq {}(%rsp), {}\n", byte_offset, reg));
+                                }
+                            }
+                            ExecutableCallArg::SavedValue => {
+                                out.push_str(&format!("    movq %rbx, {}\n", reg));
+                            }
+                        }
+                    }
+                    out.push_str("    call ");
+                    out.push_str(symbol);
+                    out.push('\n');
+                }
                 X86_64AsmInstruction::ParamLoad { param_idx, ty } => {
                     let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
                     let offset = sc_bytes + 8u32 * u32::from(*param_idx);
@@ -3450,6 +3922,39 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push(' ');
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
+                }
+                X86_64AsmInstruction::TailCall { symbol, args } => {
+                    // Load args BEFORE frame teardown so stack slots are still valid.
+                    for (i, arg) in args.iter().enumerate() {
+                        let reg = asm_param_register(i as u8);
+                        match arg {
+                            ExecutableCallArg::Imm { value } => {
+                                out.push_str(&format!("    movq ${}, {}\n", value, reg));
+                            }
+                            ExecutableCallArg::Slot { byte_offset } => {
+                                if *byte_offset == 0 {
+                                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
+                                } else {
+                                    out.push_str(&format!("    movq {}(%rsp), {}\n", byte_offset, reg));
+                                }
+                            }
+                            ExecutableCallArg::SavedValue => {
+                                out.push_str(&format!("    movq %rbx, {}\n", reg));
+                            }
+                        }
+                    }
+                    let uses_frame = function.n_stack_cells > 0 || function.n_params > 0;
+                    if uses_frame {
+                        let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
+                        let frame_size = sc_bytes + 8u32 * function.n_params as u32;
+                        out.push_str(&format!("    add ${}, %rsp\n", frame_size));
+                    }
+                    if function.uses_saved_value_slot {
+                        out.push_str("    pop %rbx\n");
+                    }
+                    out.push_str("    jmp ");
+                    out.push_str(symbol);
+                    out.push('\n');
                 }
                 X86_64AsmInstruction::ReturnSavedValue { ty } => {
                     out.push_str("    ");
@@ -3649,6 +4154,10 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             let op_bytes = slot_arith_imm_op_bytes(*arith_op, *imm);
             access + op_bytes + access
         }
+        ExecutableOp::SlotArithSlot { ty, dst_slot_idx, src_slot_idx, .. } => {
+            // load src into scratch reg + typed op into dst memory
+            stack_cell_access_bytes(*ty, *src_slot_idx) + stack_cell_access_bytes(*ty, *dst_slot_idx)
+        }
         // ParamLoad: movb/movw/movl/movq disp8(%rsp), %bl/%bx/%ebx/%rbx
         ExecutableOp::ParamLoad { ty, .. } => match ty {
             MmioScalarType::U8 | MmioScalarType::U32 => 4,
@@ -3669,26 +4178,38 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             5 + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
         }
         ExecutableOp::MmioWriteValueParamAddr { ty, .. } => 5 + mmio_saved_value_store_bytes(*ty),
+        ExecutableOp::CallWithArgs { args, .. } => {
+            args.iter().map(call_arg_encoded_bytes).sum::<u64>() + 5
+        }
+    }
+}
+
+fn call_arg_encoded_bytes(arg: &ExecutableCallArg) -> u64 {
+    match arg {
+        ExecutableCallArg::Imm { value } => if *value <= 0x7FFF_FFFF { 7 } else { 10 },
+        ExecutableCallArg::Slot { .. } => 5,
+        ExecutableCallArg::SavedValue => 3,
     }
 }
 
 fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
-    let epilogue_bytes = (if executable_function_uses_frame(function) {
+    let frame_bytes = if executable_function_uses_frame(function) {
         rsp_adj_encoded_len(executable_function_frame_size(function))
     } else {
         0
-    }) + if executable_function_uses_saved_value_slot(function) {
-        2
-    } else {
-        1
     };
-    match function.blocks[0].terminator {
+    let pop_rbx = if executable_function_uses_saved_value_slot(function) { 1u64 } else { 0u64 };
+    match &function.blocks[0].terminator {
         ExecutableTerminator::Return {
             value: ExecutableValue::SavedValue { ty },
-        } => mmio_saved_value_copy_bytes(ty) + epilogue_bytes,
+        } => mmio_saved_value_copy_bytes(*ty) + frame_bytes + pop_rbx + 1,
         ExecutableTerminator::Return {
             value: ExecutableValue::Unit,
-        } => epilogue_bytes,
+        } => frame_bytes + pop_rbx + 1,
+        ExecutableTerminator::TailCall { args, .. } => {
+            let args_bytes: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+            frame_bytes + pop_rbx + args_bytes + 5 // 5 for jmp rel32
+        }
     }
 }
 
@@ -3784,6 +4305,115 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
     }
 }
 
+/// Load a stack slot into `%al/%ax/%eax/%rax` (scratch, reg field = 0).
+fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
+    let offset = 8u8 * slot_idx;
+    if offset == 0 {
+        match ty {
+            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x04, 0x24]),
+            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x04, 0x24]),
+            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
+            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24]),
+        }
+    } else {
+        match ty {
+            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x44, 0x24, offset]),
+            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x44, 0x24, offset]),
+            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x44, 0x24, offset]),
+            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset]),
+        }
+    }
+}
+
+/// Load a stack slot into `%cl/%cx/%ecx/%rcx` (shift-count register, reg field = 1).
+fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
+    let offset = 8u8 * slot_idx;
+    if offset == 0 {
+        match ty {
+            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x0C, 0x24]),
+            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x0C, 0x24]),
+            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
+            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24]),
+        }
+    } else {
+        match ty {
+            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x4C, 0x24, offset]),
+            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x4C, 0x24, offset]),
+            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset]),
+            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset]),
+        }
+    }
+}
+
+/// Emit a typed `op reg, dst_off(%rsp)` for `SlotArithSlot`.
+/// Non-shifts use `%al/%ax/%eax/%rax` (reg field = 0) as source.
+/// Shifts use `%cl` as count (D2/D3 /4 or /5 opcode form).
+fn encode_slot_arith_slot_op_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    op: ArithOp,
+    dst_slot_idx: u8,
+) {
+    let offset = 8u8 * dst_slot_idx;
+    // SIB byte for [rsp]: scale=00, index=100(none), base=100(rsp) = 0x24.
+    // ModRM for [rsp], no disp: mod=00, rm=100(SIB) → 0b00_rrr_100.
+    // ModRM for [rsp+disp8]:    mod=01, rm=100(SIB) → 0b01_rrr_100.
+    match op {
+        ArithOp::Add | ArithOp::Sub | ArithOp::And | ArithOp::Or | ArithOp::Xor => {
+            // `op r/m, r` family: U8 opcode X (/r), 16/32/64-bit opcode X+1 (/r).
+            // reg field = 0 (%rax family). ModRM base: 0b??_000_100.
+            let opcode8: u8 = match op {
+                ArithOp::Add => 0x00,
+                ArithOp::Sub => 0x28,
+                ArithOp::And => 0x20,
+                ArithOp::Or => 0x08,
+                ArithOp::Xor => 0x30,
+                _ => unreachable!(),
+            };
+            let (modrm_no, modrm_d8) = if offset == 0 { (0x04u8, 0x04u8) } else { (0x04u8, 0x44u8) };
+            if offset == 0 {
+                match ty {
+                    MmioScalarType::U8 => out.extend_from_slice(&[opcode8, modrm_no, 0x24]),
+                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, opcode8 + 1, modrm_no, 0x24]),
+                    MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_no, 0x24]),
+                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24]),
+                }
+            } else {
+                match ty {
+                    MmioScalarType::U8 => out.extend_from_slice(&[opcode8, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, opcode8 + 1, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset]),
+                }
+            }
+        }
+        ArithOp::Shl | ArithOp::Shr => {
+            // `shl/shr r/m, CL`: U8 opcode D2, others D3; /4 for SHL, /5 for SHR.
+            // ModRM: mod=00/01, reg=/4=4 or /5=5, rm=100(SIB).
+            let (modrm_no, modrm_d8) = match op {
+                ArithOp::Shl => (0x24u8, 0x64u8), // mod=00/01, reg=4, rm=4
+                ArithOp::Shr => (0x2Cu8, 0x6Cu8), // mod=00/01, reg=5, rm=4
+                _ => unreachable!(),
+            };
+            if offset == 0 {
+                match ty {
+                    MmioScalarType::U8 => out.extend_from_slice(&[0xD2, modrm_no, 0x24]),
+                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_no, 0x24]),
+                    MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_no, 0x24]),
+                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24]),
+                }
+            } else {
+                match ty {
+                    MmioScalarType::U8 => out.extend_from_slice(&[0xD2, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_d8, 0x24, offset]),
+                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset]),
+                }
+            }
+        }
+    }
+}
+
 /// Encode a 64-bit arithmetic-immediate instruction on %rbx.
 /// Arithmetic (add/sub/and/or/xor): imm ≤ 127 → imm8 form, else imm32 form.
 /// Shifts (shl/shr): count == 1 → one-bit shift form, else imm8 count form.
@@ -3869,6 +4499,56 @@ fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8) {
         _ => panic!("SysV ABI supports at most 6 integer register params"),
     };
     out.extend_from_slice(&[rex, 0x89, modrm, 0x24, offset]);
+}
+
+/// Encode one call-with-args argument into the corresponding SysV integer arg register.
+/// Registers by index: 0→%rdi, 1→%rsi, 2→%rdx, 3→%rcx, 4→%r8, 5→%r9.
+/// Sizes: Imm(≤0x7FFFFFFF)→7B, Imm(>0x7FFFFFFF)→10B, Slot→5B (disp8), SavedValue→3B.
+fn encode_call_arg_bytes(out: &mut Vec<u8>, arg_idx: u8, arg: &ExecutableCallArg) {
+    // (reg_field in ModRM/opcode, is_extended: register number ≥ 8)
+    let (reg_field, is_ext): (u8, bool) = match arg_idx {
+        0 => (7, false), // %rdi
+        1 => (6, false), // %rsi
+        2 => (2, false), // %rdx
+        3 => (1, false), // %rcx
+        4 => (0, true),  // %r8
+        5 => (1, true),  // %r9
+        _ => panic!("SysV ABI supports at most 6 integer register args"),
+    };
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            let v = *value;
+            if v <= 0x7FFF_FFFF {
+                // movq $imm32sext, %regN  (7 bytes)
+                // MOV r/m64, imm32 (0xC7); dest is R/M → REX.B for extended regs
+                let rex = if is_ext { 0x49u8 } else { 0x48u8 };
+                out.push(rex);
+                out.push(0xC7);
+                out.push(0xC0 | reg_field); // mod=11, opcode-ext=0, r/m=reg_field
+                out.extend_from_slice(&(v as u32).to_le_bytes());
+            } else {
+                // movq $imm64, %regN  (10 bytes)
+                // MOV r64, imm64 (0xB8+reg); reg in opcode → REX.B for extended regs
+                let rex = if is_ext { 0x49u8 } else { 0x48u8 };
+                out.push(rex);
+                out.push(0xB8 + reg_field);
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            // movq byte_offset(%rsp), %regN  (5 bytes, disp8)
+            // MOV r64, r/m64 (0x8B); dest is REG → REX.R for extended regs
+            let rex = if is_ext { 0x4Cu8 } else { 0x48u8 }; // REX.W + REX.R
+            let modrm = 0x40 | (reg_field << 3) | 4; // mod=01, reg=dest, rm=4 (SIB follows)
+            out.extend_from_slice(&[rex, 0x8B, modrm, 0x24, *byte_offset as u8]);
+        }
+        ExecutableCallArg::SavedValue => {
+            // movq %rbx, %regN  (3 bytes)
+            // MOV r/m64, r64 (0x89); src=%rbx(3) is REG, dest is R/M → REX.B for extended regs
+            let rex = if is_ext { 0x49u8 } else { 0x48u8 }; // REX.W + REX.B
+            out.extend_from_slice(&[rex, 0x89, 0xC0 | (3 << 3) | reg_field]);
+        }
+    }
 }
 
 // Emit `MOV ty-sized [rsp+offset] -> %rbx` (load param into saved-value register).
@@ -4156,6 +4836,40 @@ fn slot_arith_imm_op_bytes(op: ArithOp, imm: u64) -> u64 {
         _ => {
             if imm <= 127 { 4 } else { 7 }
         }
+    }
+}
+
+/// AT&T mnemonic for a typed `op r/m, reg` instruction used in `SlotArithSlot`.
+fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str {
+    match (ty, op) {
+        (MmioScalarType::U8,  ArithOp::Add) => "addb",
+        (MmioScalarType::U8,  ArithOp::Sub) => "subb",
+        (MmioScalarType::U8,  ArithOp::And) => "andb",
+        (MmioScalarType::U8,  ArithOp::Or)  => "orb",
+        (MmioScalarType::U8,  ArithOp::Xor) => "xorb",
+        (MmioScalarType::U8,  ArithOp::Shl) => "shlb",
+        (MmioScalarType::U8,  ArithOp::Shr) => "shrb",
+        (MmioScalarType::U16, ArithOp::Add) => "addw",
+        (MmioScalarType::U16, ArithOp::Sub) => "subw",
+        (MmioScalarType::U16, ArithOp::And) => "andw",
+        (MmioScalarType::U16, ArithOp::Or)  => "orw",
+        (MmioScalarType::U16, ArithOp::Xor) => "xorw",
+        (MmioScalarType::U16, ArithOp::Shl) => "shlw",
+        (MmioScalarType::U16, ArithOp::Shr) => "shrw",
+        (MmioScalarType::U32, ArithOp::Add) => "addl",
+        (MmioScalarType::U32, ArithOp::Sub) => "subl",
+        (MmioScalarType::U32, ArithOp::And) => "andl",
+        (MmioScalarType::U32, ArithOp::Or)  => "orl",
+        (MmioScalarType::U32, ArithOp::Xor) => "xorl",
+        (MmioScalarType::U32, ArithOp::Shl) => "shll",
+        (MmioScalarType::U32, ArithOp::Shr) => "shrl",
+        (MmioScalarType::U64, ArithOp::Add) => "addq",
+        (MmioScalarType::U64, ArithOp::Sub) => "subq",
+        (MmioScalarType::U64, ArithOp::And) => "andq",
+        (MmioScalarType::U64, ArithOp::Or)  => "orq",
+        (MmioScalarType::U64, ArithOp::Xor) => "xorq",
+        (MmioScalarType::U64, ArithOp::Shl) => "shlq",
+        (MmioScalarType::U64, ArithOp::Shr) => "shrq",
     }
 }
 
@@ -4539,6 +5253,26 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
+                ExecutableOp::SlotArithSlot { ty, dst_slot_idx, src_slot_idx, arith_op } => {
+                    match arith_op {
+                        ArithOp::Shl | ArithOp::Shr => {
+                            encode_stack_cell_load_slot_bytes_into_rcx(
+                                &mut code_bytes,
+                                *ty,
+                                *src_slot_idx,
+                            );
+                        }
+                        _ => {
+                            encode_stack_cell_load_slot_bytes_into_rax(
+                                &mut code_bytes,
+                                *ty,
+                                *src_slot_idx,
+                            );
+                        }
+                    }
+                    encode_slot_arith_slot_op_bytes(&mut code_bytes, *ty, *arith_op, *dst_slot_idx);
+                    local_offset += executable_op_encoded_len(op);
+                }
                 ExecutableOp::ParamLoad { param_idx, ty } => {
                     let offset = (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
                     encode_param_load_bytes(&mut code_bytes, *ty, offset);
@@ -4567,22 +5301,87 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_mmio_write_saved_value_param_addr_bytes(&mut code_bytes, *ty, offset);
                     local_offset += executable_op_encoded_len(op);
                 }
+                ExecutableOp::CallWithArgs { callee, args } => {
+                    if !function_offsets.contains_key(callee) {
+                        if !extern_names.contains(callee.as_str()) {
+                            return Err(format!(
+                                "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                                callee, function.name
+                            ));
+                        }
+                        unresolved_targets.insert(callee.clone());
+                    }
+                    // Emit per-arg movq instructions then a call rel32.
+                    for (i, arg) in args.iter().enumerate() {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
+                    }
+                    code_bytes.push(0xE8);
+                    code_bytes.extend_from_slice(&[0, 0, 0, 0]);
+                    // Displacement field is after the per-arg bytes and the E8 opcode.
+                    let args_len: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + args_len + 1,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: callee.clone(),
+                        width_bytes: 4,
+                    });
+                    local_offset += executable_op_encoded_len(op);
+                }
             }
         }
-        if let ExecutableTerminator::Return {
-            value: ExecutableValue::SavedValue { ty },
-        } = function.blocks[0].terminator
-        {
-            push_mov_saved_value_to_accumulator_register(&mut code_bytes, ty);
+        match &function.blocks[0].terminator {
+            ExecutableTerminator::Return {
+                value: ExecutableValue::SavedValue { ty },
+            } => {
+                push_mov_saved_value_to_accumulator_register(&mut code_bytes, *ty);
+                if uses_frame {
+                    emit_add_rsp(&mut code_bytes, 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32);
+                }
+                if uses_saved_value_slot { code_bytes.push(0x5B); }
+                code_bytes.push(0xC3);
+            }
+            ExecutableTerminator::Return {
+                value: ExecutableValue::Unit,
+            } => {
+                if uses_frame {
+                    emit_add_rsp(&mut code_bytes, 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32);
+                }
+                if uses_saved_value_slot { code_bytes.push(0x5B); }
+                code_bytes.push(0xC3);
+            }
+            ExecutableTerminator::TailCall { callee, args } => {
+                if !function_offsets.contains_key(callee) {
+                    if !extern_names.contains(callee.as_str()) {
+                        return Err(format!(
+                            "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                            callee, function.name
+                        ));
+                    }
+                    unresolved_targets.insert(callee.clone());
+                }
+                // Load args into SysV registers BEFORE frame teardown (stack slots still valid).
+                for (i, arg) in args.iter().enumerate() {
+                    encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
+                }
+                let frame_size = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
+                let frame_bytes: u64 = if uses_frame { rsp_adj_encoded_len(frame_size) } else { 0 };
+                let pop_bytes: u64 = if uses_saved_value_slot { 1 } else { 0 };
+                if uses_frame { emit_add_rsp(&mut code_bytes, frame_size); }
+                if uses_saved_value_slot { code_bytes.push(0x5B); }
+                let args_bytes: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+                // jmp rel32 = 0xE9 + 4-byte displacement
+                code_bytes.push(0xE9);
+                code_bytes.extend_from_slice(&[0, 0, 0, 0]);
+                fixups.push(CompilerOwnedObjectFixup {
+                    source_symbol: function.name.clone(),
+                    patch_offset: function_offset + local_offset + args_bytes + frame_bytes + pop_bytes + 1,
+                    kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                    target_symbol: callee.clone(),
+                    width_bytes: 4,
+                });
+            }
         }
-        if uses_frame {
-            let frame_size = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
-            emit_add_rsp(&mut code_bytes, frame_size);
-        }
-        if uses_saved_value_slot {
-            code_bytes.push(0x5B);
-        }
-        code_bytes.push(0xC3);
         symbols.push(CompilerOwnedObjectSymbol {
             name: function.name.clone(),
             kind: CompilerOwnedObjectSymbolKind::Function,
@@ -5315,6 +6114,8 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
     bytes[8] = object.header.object_kind.tag();
     bytes[9] = match object.header.target_id {
         BackendTargetId::X86_64Sysv => 1,
+        BackendTargetId::X86_64Win64 => 2,
+        BackendTargetId::X86_64MachO => 3,
     };
     bytes[10] = match object.header.endian {
         TargetEndian::Little => 1,
