@@ -2599,6 +2599,13 @@ fn lower_stmts_to_canonical_executable(
                 callee,
                 args.len()
             )),
+            Stmt::PtrLoad { .. } | Stmt::PtrStore { .. } => {
+                errors.push(format!(
+                    "canonical-exec: function '{}' contains raw pointer deref — \
+                     raw pointer deref requires unsafe block support; not available in canonical-exec path",
+                    function_name
+                ));
+            }
             Stmt::VarDecl { .. }
             | Stmt::Assign { .. }
             | Stmt::CompoundAssign { .. }
@@ -2609,9 +2616,7 @@ fn lower_stmts_to_canonical_executable(
             | Stmt::Break
             | Stmt::Continue
             | Stmt::Print(_)
-            | Stmt::ExprStmt(_)
-            | Stmt::PtrLoad { .. }
-            | Stmt::PtrStore { .. } => {
+            | Stmt::ExprStmt(_) => {
                 errors.push(format!(
                     "surface syntax statement not yet lowered (Task 7-12): {:?}",
                     stmt
