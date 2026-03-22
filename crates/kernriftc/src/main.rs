@@ -148,7 +148,6 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
 
     if args.dry_run {
         let src = match fs::read_to_string(path)
-            .map(|s| s.replace("\r\n", "\n"))
             .map_err(|e| format!("failed to read '{}': {e}", args.input_path))
         {
             Ok(s) => s,
@@ -160,9 +159,7 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
         let result = match kernriftc::canonical_fix_source_text_with_surface(&src, args.surface) {
             Ok(r) => r,
             Err(errs) => {
-                for e in errs {
-                    eprintln!("{e}");
-                }
+                print_errors(&errs);
                 return ExitCode::from(EXIT_INVALID_INPUT);
             }
         };
@@ -187,9 +184,7 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
         let result = match kernriftc::canonical_fix_file_with_surface(path, args.surface) {
             Ok(r) => r,
             Err(errs) => {
-                for e in errs {
-                    eprintln!("{e}");
-                }
+                print_errors(&errs);
                 return ExitCode::from(EXIT_INVALID_INPUT);
             }
         };
