@@ -2249,11 +2249,67 @@ pub fn lower_current_krir_to_executable_krir(
                             continue;
                         }
                     };
-                    exec_ops.push(ExecutableOp::RawPtrStore {
-                        ty: *ty,
-                        addr_slot_idx: addr_idx,
-                        value: value.clone(),
-                    });
+                    let resolved_value = match value {
+                        MmioValueExpr::FloatLiteral { value: fv } => Err(format!(
+                            "float literal '{}' not supported in raw_ptr_store",
+                            fv
+                        )),
+                        MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
+                            *ty,
+                            value,
+                            executable_slot_name.as_deref(),
+                            None,
+                        ),
+                        MmioValueExpr::Ident { name } => {
+                            if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                exec_ops.push(ExecutableOp::ParamLoad {
+                                    param_idx,
+                                    ty: param_ty,
+                                });
+                                Ok(ExecutableMmioWriteValue::SavedValue)
+                            } else if matches!(
+                                last_value.as_ref().map(|value| value.source),
+                                Some(ExecutableCapturedValueSource::SavedSlot)
+                            ) {
+                                resolve_executable_saved_slot_write_value(
+                                    *ty,
+                                    name,
+                                    executable_slot_name.as_deref(),
+                                    last_value
+                                        .as_ref()
+                                        .map(|value| (value.slot.as_str(), value.ty)),
+                                )
+                            } else {
+                                resolve_executable_mmio_write_value(
+                                    *ty,
+                                    value,
+                                    executable_slot_name.as_deref(),
+                                    last_value.as_ref().and_then(|value| match value.source {
+                                        ExecutableCapturedValueSource::DeferredRead { .. } => {
+                                            Some((value.slot.as_str(), value.ty))
+                                        }
+                                        ExecutableCapturedValueSource::SavedSlot => None,
+                                    }),
+                                )
+                            }
+                        }
+                    };
+                    match resolved_value {
+                        Ok(_) => {
+                            exec_ops.push(ExecutableOp::RawPtrStore {
+                                ty: *ty,
+                                addr_slot_idx: addr_idx,
+                                value: value.clone(),
+                            });
+                        }
+                        Err(reason) => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' raw_ptr_store: {}",
+                                function.name, reason
+                            ));
+                            continue;
+                        }
+                    }
                 }
                 KrirOp::FloatArith { .. } => {
                     errors.push(format!(
