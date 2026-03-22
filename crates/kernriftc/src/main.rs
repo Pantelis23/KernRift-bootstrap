@@ -175,7 +175,7 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
             );
             for rw in &result.rewrites {
                 println!(
-                    "  fn {}: {} \u{2192} {}  [{}]",
+                    "  fn {}: @{} \u{2192} {}  [{}]",
                     rw.function_name,
                     rw.surface_form,
                     rw.canonical_replacement,
@@ -199,7 +199,7 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
             println!("Migrating {}:", args.input_path);
             for rw in &result.rewrites {
                 println!(
-                    "  fn {}: {} \u{2192} {}  [{}]",
+                    "  fn {}: @{} \u{2192} {}  [{}]",
                     rw.function_name,
                     rw.surface_form,
                     rw.canonical_replacement,
