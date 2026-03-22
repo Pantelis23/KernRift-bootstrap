@@ -3350,11 +3350,25 @@ impl<'a> Parser<'a> {
         while !self.eof() {
             self.skip_ws_comments();
             let rest = &self.src[self.pos..];
-            if rest.starts_with("fn")
-                || rest.starts_with("extern")
-                || rest.starts_with("mmio_reg")
-                || rest.starts_with("mmio")
-                || rest.starts_with('@')
+            // '@' is always a valid item boundary (single char, no word boundary needed).
+            if rest.starts_with('@') {
+                break;
+            }
+            // For keyword prefixes, require a proper word boundary (not followed by
+            // '_' or alphanumeric). Without this check, e.g. "fnnonsense" would match
+            // starts_with("fn") and loop forever since consume_keyword("fn") also
+            // requires a word boundary and would reject it.
+            let at_word_boundary = |kw: &str| -> bool {
+                if !rest.starts_with(kw) {
+                    return false;
+                }
+                let after = rest[kw.len()..].chars().next();
+                !matches!(after, Some(c) if c == '_' || c.is_ascii_alphanumeric())
+            };
+            if at_word_boundary("mmio_reg")
+                || at_word_boundary("mmio")
+                || at_word_boundary("extern")
+                || at_word_boundary("fn")
             {
                 break;
             }

@@ -5083,7 +5083,7 @@ mod tests {
             .expect("proposal");
             assert_eq!(
                 actual.trim_end(),
-                expected.trim_end(),
+                expected.replace("\r\n", "\n").trim_end(),
                 "proposal file drifted"
             );
         }
