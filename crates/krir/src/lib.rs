@@ -6432,6 +6432,27 @@ pub struct X86_64ElfRelocation {
     pub addend: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64MachORelocatableObject {
+    pub text_bytes: Vec<u8>,
+    pub function_symbols: Vec<X86_64MachOFunctionSymbol>,
+    pub undefined_function_symbols: Vec<String>,
+    pub relocations: Vec<X86_64MachORelocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64MachOFunctionSymbol {
+    pub name: String,
+    pub offset: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64MachORelocation {
+    pub offset: u32,
+    pub target_symbol: String,
+}
+
 pub fn validate_compiler_owned_object_for_x86_64_elf_export(
     object: &CompilerOwnedObject,
     target: &BackendTargetContract,
@@ -6592,6 +6613,267 @@ pub fn lower_executable_krir_to_x86_64_object(
     validate_x86_64_object_linear_subset(module, target)?;
     let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
     export_compiler_owned_object_to_x86_64_elf(&object, target)
+}
+
+pub fn validate_compiler_owned_object_for_x86_64_macho_export(
+    object: &CompilerOwnedObject,
+    target: &BackendTargetContract,
+) -> Result<(), String> {
+    target.validate()?;
+    if target.target_id != BackendTargetId::X86_64MachO {
+        return Err("x86_64 Mach-O export requires x86_64-macho target contract".to_string());
+    }
+    object.validate()?;
+    if object.header.target_id != target.target_id {
+        return Err(
+            "x86_64 Mach-O export: object target_id must match target contract".to_string(),
+        );
+    }
+    if object.code.name != target.sections.text {
+        return Err(
+            "x86_64 Mach-O export: object code section must match target text section".to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub fn export_compiler_owned_object_to_x86_64_macho(
+    object: &CompilerOwnedObject,
+    target: &BackendTargetContract,
+) -> Result<X86_64MachORelocatableObject, String> {
+    validate_compiler_owned_object_for_x86_64_macho_export(object, target)?;
+
+    let symbol_offsets = object
+        .symbols
+        .iter()
+        .filter(|s| s.definition == CompilerOwnedObjectSymbolDefinition::DefinedText)
+        .map(|s| (s.name.as_str(), s.offset))
+        .collect::<BTreeMap<_, _>>();
+    let symbol_defs = object
+        .symbols
+        .iter()
+        .map(|s| (s.name.as_str(), s.definition))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut text_bytes = object.code.bytes.clone();
+    let mut relocations = Vec::new();
+
+    for fixup in &object.fixups {
+        let Some(target_def) = symbol_defs.get(fixup.target_symbol.as_str()) else {
+            return Err(format!(
+                "x86_64 Mach-O export: missing target symbol '{}' for fixup",
+                fixup.target_symbol
+            ));
+        };
+        match (fixup.kind, target_def) {
+            (
+                CompilerOwnedFixupKind::X86_64CallRel32,
+                CompilerOwnedObjectSymbolDefinition::DefinedText,
+            ) => {
+                let target_offset = *symbol_offsets.get(fixup.target_symbol.as_str()).unwrap();
+                let next_ip = fixup.patch_offset + u64::from(fixup.width_bytes);
+                let displacement = (target_offset as i64) - (next_ip as i64);
+                let rel32 = i32::try_from(displacement).map_err(|_| {
+                    format!(
+                        "x86_64 Mach-O export: call displacement to '{}' does not fit rel32",
+                        fixup.target_symbol
+                    )
+                })?;
+                let patch = usize::try_from(fixup.patch_offset).expect("patch offset fits usize");
+                text_bytes[patch..patch + 4].copy_from_slice(&rel32.to_le_bytes());
+            }
+            (
+                CompilerOwnedFixupKind::X86_64CallRel32,
+                CompilerOwnedObjectSymbolDefinition::UndefinedExternal,
+            ) => {
+                relocations.push(X86_64MachORelocation {
+                    offset: u32::try_from(fixup.patch_offset).expect("patch offset fits u32"),
+                    target_symbol: fixup.target_symbol.clone(),
+                });
+            }
+        }
+    }
+
+    let function_symbols = object
+        .symbols
+        .iter()
+        .filter(|s| s.definition == CompilerOwnedObjectSymbolDefinition::DefinedText)
+        .map(|s| X86_64MachOFunctionSymbol {
+            name: s.name.clone(),
+            offset: s.offset,
+            size: s.size,
+        })
+        .collect::<Vec<_>>();
+    let undefined_function_symbols = object
+        .symbols
+        .iter()
+        .filter(|s| s.definition == CompilerOwnedObjectSymbolDefinition::UndefinedExternal)
+        .map(|s| s.name.clone())
+        .collect::<Vec<_>>();
+
+    Ok(X86_64MachORelocatableObject {
+        text_bytes,
+        function_symbols,
+        undefined_function_symbols,
+        relocations,
+    })
+}
+
+pub fn lower_executable_krir_to_x86_64_macho_object(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<X86_64MachORelocatableObject, String> {
+    validate_x86_64_object_linear_subset(module, target)?;
+    let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
+    export_compiler_owned_object_to_x86_64_macho(&object, target)
+}
+
+pub fn emit_x86_64_macho_object_bytes(object: &X86_64MachORelocatableObject) -> Vec<u8> {
+    // Build string table: leading null + "_name\0" for every symbol
+    let mut strtab = vec![0u8];
+    let mut name_offsets: BTreeMap<String, u32> = BTreeMap::new();
+    for sym in &object.function_symbols {
+        let offset = strtab.len() as u32;
+        let prefixed = format!("_{}", sym.name);
+        strtab.extend_from_slice(prefixed.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(sym.name.clone(), offset);
+    }
+    for sym in &object.undefined_function_symbols {
+        let offset = strtab.len() as u32;
+        let prefixed = format!("_{}", sym);
+        strtab.extend_from_slice(prefixed.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(sym.clone(), offset);
+    }
+
+    // nlist_64 entries (16 bytes each): n_strx(4), n_type(1), n_sect(1), n_desc(2), n_value(8)
+    let mut symtab: Vec<u8> = Vec::new();
+    for sym in &object.function_symbols {
+        let strx = *name_offsets.get(&sym.name).expect("symbol name in strtab");
+        push_u32_le(&mut symtab, strx);
+        symtab.push(0x0F); // N_SECT | N_EXT
+        symtab.push(1); // section ordinal 1 = __text
+        push_u16_le(&mut symtab, 0);
+        push_u64_le(&mut symtab, sym.offset);
+    }
+    for sym in &object.undefined_function_symbols {
+        let strx = *name_offsets
+            .get(sym.as_str())
+            .expect("undef symbol in strtab");
+        push_u32_le(&mut symtab, strx);
+        symtab.push(0x01); // N_EXT | N_UNDF
+        symtab.push(0); // NO_SECT
+        push_u16_le(&mut symtab, 0);
+        push_u64_le(&mut symtab, 0);
+    }
+    let nsyms = (object.function_symbols.len() + object.undefined_function_symbols.len()) as u32;
+
+    // Symbol index map for relocations (defined first, then undefined)
+    let mut sym_index: BTreeMap<String, u32> = BTreeMap::new();
+    for (i, sym) in object.function_symbols.iter().enumerate() {
+        sym_index.insert(sym.name.clone(), i as u32);
+    }
+    for (i, sym) in object.undefined_function_symbols.iter().enumerate() {
+        sym_index.insert(sym.clone(), (object.function_symbols.len() + i) as u32);
+    }
+
+    // Relocation entries (8 bytes each): r_address(u32) + r_info(u32)
+    let mut reloc_bytes: Vec<u8> = Vec::new();
+    for reloc in &object.relocations {
+        push_u32_le(&mut reloc_bytes, reloc.offset);
+        let idx = *sym_index
+            .get(&reloc.target_symbol)
+            .expect("reloc target in sym_index");
+        // X86_64_RELOC_BRANCH: type=2, extern=1, pcrel=1, length=2 → lower byte = 0xD2
+        let r_info = (idx << 8) | 0xD2;
+        push_u32_le(&mut reloc_bytes, r_info);
+    }
+    let nreloc = object.relocations.len() as u32;
+
+    // File layout:
+    // [0]   mach_header_64 (32)
+    // [32]  LC_SEGMENT_64 + section_64 (72+80 = 152, cmdsize=152)
+    // [184] LC_SYMTAB (24)
+    // [208] text (padded to 4)
+    // [208+P] relocations (8 each, or nothing)
+    // [208+P+R] nlist_64 symbol table
+    // [...] string table
+    let text_offset: u32 = 208;
+    let text_len = object.text_bytes.len() as u32;
+    let text_padded = (text_len + 3) & !3u32;
+    let reloc_offset: u32 = if nreloc == 0 {
+        0
+    } else {
+        text_offset + text_padded
+    };
+    let sym_offset: u32 = text_offset + text_padded + reloc_bytes.len() as u32;
+    let str_offset: u32 = sym_offset + symtab.len() as u32;
+    let sizeofcmds: u32 = 152 + 24; // LC_SEGMENT_64+section + LC_SYMTAB
+
+    let mut out: Vec<u8> = Vec::new();
+
+    // mach_header_64 (32 bytes)
+    push_u32_le(&mut out, 0xFEED_FACF); // MH_MAGIC_64
+    push_u32_le(&mut out, 0x0100_0007); // CPU_TYPE_X86_64
+    push_u32_le(&mut out, 0x0000_0003); // CPU_SUBTYPE_X86_64_ALL
+    push_u32_le(&mut out, 0x0000_0001); // MH_OBJECT
+    push_u32_le(&mut out, 2); // ncmds
+    push_u32_le(&mut out, sizeofcmds);
+    push_u32_le(&mut out, 0x0000_2000); // MH_SUBSECTIONS_VIA_SYMBOLS
+    push_u32_le(&mut out, 0); // reserved
+
+    // LC_SEGMENT_64 (cmd=0x19, cmdsize=152)
+    push_u32_le(&mut out, 0x0000_0019); // LC_SEGMENT_64
+    push_u32_le(&mut out, 152); // cmdsize = 72 + 80
+    out.extend_from_slice(b"__TEXT\0\0\0\0\0\0\0\0\0\0"); // segname (16)
+    push_u64_le(&mut out, 0); // vmaddr
+    push_u64_le(&mut out, text_len as u64); // vmsize
+    push_u64_le(&mut out, text_offset as u64); // fileoff
+    push_u64_le(&mut out, text_len as u64); // filesize
+    push_u32_le(&mut out, 7); // maxprot  (rwx)
+    push_u32_le(&mut out, 5); // initprot (rx)
+    push_u32_le(&mut out, 1); // nsects
+    push_u32_le(&mut out, 0); // flags
+
+    // section_64 for __text (80 bytes)
+    out.extend_from_slice(b"__text\0\0\0\0\0\0\0\0\0\0"); // sectname (16)
+    out.extend_from_slice(b"__TEXT\0\0\0\0\0\0\0\0\0\0"); // segname  (16)
+    push_u64_le(&mut out, 0); // addr
+    push_u64_le(&mut out, text_len as u64); // size
+    push_u32_le(&mut out, text_offset); // offset in file
+    push_u32_le(&mut out, 4); // align (log2 → 2^4 = 16)
+    push_u32_le(&mut out, reloc_offset); // reloff (0 if no relocs)
+    push_u32_le(&mut out, nreloc); // nreloc
+    push_u32_le(&mut out, 0x8000_0400); // flags (pure_instructions | some_instructions)
+    push_u32_le(&mut out, 0); // reserved1
+    push_u32_le(&mut out, 0); // reserved2
+    push_u32_le(&mut out, 0); // reserved3
+
+    // LC_SYMTAB (24 bytes)
+    push_u32_le(&mut out, 0x0000_0002); // LC_SYMTAB
+    push_u32_le(&mut out, 24); // cmdsize
+    push_u32_le(&mut out, sym_offset);
+    push_u32_le(&mut out, nsyms);
+    push_u32_le(&mut out, str_offset);
+    push_u32_le(&mut out, strtab.len() as u32);
+
+    // Text bytes (padded to 4-byte align)
+    out.extend_from_slice(&object.text_bytes);
+    while out.len() < (text_offset + text_padded) as usize {
+        out.push(0);
+    }
+
+    // Relocation entries
+    out.extend_from_slice(&reloc_bytes);
+
+    // Symbol table (nlist_64)
+    out.extend_from_slice(&symtab);
+
+    // String table
+    out.extend_from_slice(&strtab);
+
+    out
 }
 
 fn push_u16_into(dst: &mut [u8], value: u16) {
@@ -6972,10 +7254,12 @@ mod tests {
         ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
         ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
         ExecutableValue, ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention,
-        MmioScalarType, TargetEndian, X86_64IntegerRegister, emit_compiler_owned_object_bytes,
-        emit_x86_64_asm_text, emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
-        export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_compiler_owned_object,
-        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
+        MmioScalarType, TargetEndian, X86_64IntegerRegister, X86_64MachOFunctionSymbol,
+        X86_64MachORelocatableObject, emit_compiler_owned_object_bytes, emit_x86_64_asm_text,
+        emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
+        export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
+        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
+        lower_executable_krir_to_x86_64_object,
         validate_compiler_owned_object_for_x86_64_asm_export,
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
@@ -10358,5 +10642,25 @@ mod tests {
         assert_eq!(buf, &[0x48, 0x83, 0xEC, 0x7F], "127 fits in imm8");
         assert_eq!(rsp_adj_encoded_len(127), 4);
         assert_eq!(rsp_adj_encoded_len(128), 7);
+    }
+
+    #[test]
+    fn macho_object_bytes_start_with_magic() {
+        let object = X86_64MachORelocatableObject {
+            text_bytes: vec![0xC3], // single `ret`
+            function_symbols: vec![X86_64MachOFunctionSymbol {
+                name: "entry".to_string(),
+                offset: 0,
+                size: 1,
+            }],
+            undefined_function_symbols: vec![],
+            relocations: vec![],
+        };
+        let bytes = emit_x86_64_macho_object_bytes(&object);
+        assert_eq!(
+            &bytes[0..4],
+            &[0xCF, 0xFA, 0xED, 0xFE],
+            "must start with MH_MAGIC_64"
+        );
     }
 }
