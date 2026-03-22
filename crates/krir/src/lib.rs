@@ -86,6 +86,9 @@ pub struct FunctionAttrs {
     /// Scheduler hook kind; `Some` means this function is a sched_in or sched_out callback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook: Option<SchedHook>,
+    /// C ABI boundary declaration — this function is a stable C-callable export.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_export: bool,
 }
 
 /// Per-cpu variable declaration: `percpu NAME: T;`

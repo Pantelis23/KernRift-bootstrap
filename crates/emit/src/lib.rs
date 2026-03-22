@@ -39,6 +39,7 @@ struct CapsSymbol {
 struct CapsManifest {
     module_caps: Vec<String>,
     symbols: Vec<CapsSymbol>,
+    exported_symbols: Vec<String>,
 }
 
 pub fn emit_caps_manifest_json(module: &KrirModule) -> Result<String, serde_json::Error> {
@@ -61,9 +62,18 @@ pub fn emit_caps_manifest_json(module: &KrirModule) -> Result<String, serde_json
         .collect::<Vec<_>>();
     symbols.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let mut exported_symbols: Vec<String> = module
+        .functions
+        .iter()
+        .filter(|f| f.attrs.is_export)
+        .map(|f| f.name.clone())
+        .collect();
+    exported_symbols.sort();
+
     let manifest = CapsManifest {
         module_caps,
         symbols,
+        exported_symbols,
     };
     serde_json::to_string_pretty(&manifest)
 }
@@ -1307,7 +1317,11 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             caps_keys,
-            BTreeSet::from(["module_caps".to_string(), "symbols".to_string()])
+            BTreeSet::from([
+                "exported_symbols".to_string(),
+                "module_caps".to_string(),
+                "symbols".to_string(),
+            ])
         );
 
         let facts_keys = value["facts"]

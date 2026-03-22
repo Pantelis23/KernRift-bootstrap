@@ -8,8 +8,8 @@
     "unsupported contracts schema_version 'kernrift_contracts_v999', expected 'kernrift_contracts_v1' or 'kernrift_contracts_v2'"
   ],
   "hash": {
-    "computed_sha256": "ceb286bc4567d16222f22fe7a46345ab560d8ad9d7e39295b768c529d77b1a5e",
-    "expected_sha256": "ceb286bc4567d16222f22fe7a46345ab560d8ad9d7e39295b768c529d77b1a5e",
+    "computed_sha256": "e8d9ed98dc01cd8714640ebd3f78005c01066c10b89e320ab9de164a55ee7159",
+    "expected_sha256": "e8d9ed98dc01cd8714640ebd3f78005c01066c10b89e320ab9de164a55ee7159",
     "matched": true
   },
   "inputs": {

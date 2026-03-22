@@ -1625,6 +1625,18 @@ fn lower_function(
         queue.append(&mut pending_fns);
     }
 
+    // Validate @export functions: all parameter types must be plain scalars (C ABI compatible).
+    if main_attrs.is_export {
+        for (param_name, param_ty) in &main_params {
+            if !matches!(param_ty, KrirParamTy::Scalar { .. }) {
+                all_errors.push(format!(
+                    "exported function '{}' uses non-C-compatible type on parameter '{}'; only scalar types are allowed on @export functions",
+                    item.name, param_name
+                ));
+            }
+        }
+    }
+
     if !all_errors.is_empty() {
         return Err(all_errors);
     }
@@ -2246,6 +2258,7 @@ fn normalize_function_facts(
             "critical" => attrs.critical = true,
             "leaf" => attrs.leaf = true,
             "hotpath" => attrs.hotpath = true,
+            "export" => attrs.is_export = true,
             "lock_budget" => match parse_lock_budget(attr) {
                 Ok(v) => attrs.lock_budget = Some(v),
                 Err(msg) => errors.push(format_attr_diagnostic(

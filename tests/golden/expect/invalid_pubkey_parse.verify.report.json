@@ -8,8 +8,8 @@
     "invalid hex in 'pubkey.hex': expected 64 hex chars, got 2"
   ],
   "hash": {
-    "computed_sha256": "bd1576a709ac91dcd684430c7481e303f3cf6c3d516d7a89fe1ab68f6b71e769",
-    "expected_sha256": "bd1576a709ac91dcd684430c7481e303f3cf6c3d516d7a89fe1ab68f6b71e769",
+    "computed_sha256": "6eb9fda06b3100264e27ccbfbe50c4dd401b6df4f28799acad1ff00e5d49b6ae",
+    "expected_sha256": "6eb9fda06b3100264e27ccbfbe50c4dd401b6df4f28799acad1ff00e5d49b6ae",
     "matched": true
   },
   "inputs": {

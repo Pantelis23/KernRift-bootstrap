@@ -20,7 +20,8 @@
       "additionalProperties": false,
       "required": [
         "module_caps",
-        "symbols"
+        "symbols",
+        "exported_symbols"
       ],
       "properties": {
         "module_caps": {
@@ -35,6 +36,13 @@
           "items": {
             "$ref": "#/$defs/capability_symbol"
           }
+        },
+        "exported_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
         }
       }
     },

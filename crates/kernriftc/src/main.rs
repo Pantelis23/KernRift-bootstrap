@@ -1421,7 +1421,11 @@ fn selftest_json_schemas() -> Result<(), String> {
     let caps_text = emit_caps_manifest_json(&basic_module).map_err(|e| e.to_string())?;
     let caps_json: Value = serde_json::from_str(&caps_text).map_err(|e| e.to_string())?;
     if object_keys(&caps_json)?
-        != BTreeSet::from(["module_caps".to_string(), "symbols".to_string()])
+        != BTreeSet::from([
+            "exported_symbols".to_string(),
+            "module_caps".to_string(),
+            "symbols".to_string(),
+        ])
     {
         return Err("selftest caps manifest keys mismatch".to_string());
     }

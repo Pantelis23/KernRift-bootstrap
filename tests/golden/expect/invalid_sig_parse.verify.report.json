@@ -8,8 +8,8 @@
     "invalid base64 signature 'contracts.sig': Invalid symbol 37, offset 0."
   ],
   "hash": {
-    "computed_sha256": "eb40fc536c5082eede06048ad6bebc3397748e064d046fbf5a7e50250edb3cbb",
-    "expected_sha256": "eb40fc536c5082eede06048ad6bebc3397748e064d046fbf5a7e50250edb3cbb",
+    "computed_sha256": "8e7b48492b3681000fa55c754190427c73552d6e1246f2148cb3945843f29047",
+    "expected_sha256": "8e7b48492b3681000fa55c754190427c73552d6e1246f2148cb3945843f29047",
     "matched": true
   },
   "inputs": {

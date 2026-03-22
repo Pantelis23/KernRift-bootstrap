@@ -101,7 +101,11 @@ fn caps_manifest_contains_symbols() {
     let value: Value = serde_json::from_str(&json).expect("caps json");
     assert_eq!(
         object_keys(&value),
-        BTreeSet::from(["module_caps".to_string(), "symbols".to_string()]),
+        BTreeSet::from([
+            "exported_symbols".to_string(),
+            "module_caps".to_string(),
+            "symbols".to_string(),
+        ]),
         "caps manifest top-level schema drifted"
     );
     assert!(
@@ -1117,4 +1121,17 @@ fn entry() {
 "#;
     let result = kernriftc::compile_source(src);
     assert!(result.is_err(), "asm! outside unsafe must be rejected");
+}
+
+#[test]
+fn export_annotation_compiles() {
+    let src = r#"
+@export
+@ctx(thread, boot)
+fn init_driver(uint32 flags) -> uint32 {
+    return flags
+}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "@export fn should compile: {:?}", result);
 }
