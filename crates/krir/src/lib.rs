@@ -182,6 +182,24 @@ impl ArithOp {
     }
 }
 
+/// Named no-argument x86-64 kernel instructions emitted by `asm!(NAME)`.
+/// Only valid inside an unsafe block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelIntrinsic {
+    Cli,
+    Sti,
+    Hlt,
+    Nop,
+    Mfence,
+    Sfence,
+    Lfence,
+    Wbinvd,
+    Pause,
+    Int3,
+    Cpuid,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum KrirOp {
@@ -351,6 +369,8 @@ pub enum KrirOp {
         dst: String,
         src: String,
     },
+    /// Emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
+    InlineAsm(KernelIntrinsic),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -724,6 +744,8 @@ pub enum ExecutableOp {
         addr_slot_idx: u8,
         value: MmioValueExpr,
     },
+    /// Emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
+    InlineAsm(KernelIntrinsic),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -979,7 +1001,8 @@ impl ExecutableKrirModule {
                         | ExecutableOp::BranchIfNonZeroLoopBreak { .. }
                         | ExecutableOp::CompareIntoSlot { .. }
                         | ExecutableOp::RawPtrLoad { .. }
-                        | ExecutableOp::RawPtrStore { .. } => {}
+                        | ExecutableOp::RawPtrStore { .. }
+                        | ExecutableOp::InlineAsm(_) => {}
                     }
                 }
             }
@@ -2317,6 +2340,9 @@ pub fn lower_current_krir_to_executable_krir(
                         function.name
                     ));
                 }
+                KrirOp::InlineAsm(intr) => {
+                    exec_ops.push(ExecutableOp::InlineAsm(intr.clone()));
+                }
             }
         }
 
@@ -3409,6 +3435,8 @@ pub enum X86_64AsmInstruction {
         ty: MmioScalarType,
         addr_slot_idx: u8,
     },
+    /// Emit a named kernel intrinsic instruction bytes directly.
+    InlineAsm(KernelIntrinsic),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -4097,6 +4125,9 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             );
                         }
                     },
+                    ExecutableOp::InlineAsm(intr) => {
+                        instrs.push(X86_64AsmInstruction::InlineAsm(intr.clone()));
+                    }
                 }
             }
 
@@ -4792,6 +4823,24 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
                 }
+                X86_64AsmInstruction::InlineAsm(intr) => {
+                    let mnemonic = match intr {
+                        KernelIntrinsic::Cli    => "cli",
+                        KernelIntrinsic::Sti    => "sti",
+                        KernelIntrinsic::Hlt    => "hlt",
+                        KernelIntrinsic::Nop    => "nop",
+                        KernelIntrinsic::Mfence => "mfence",
+                        KernelIntrinsic::Sfence => "sfence",
+                        KernelIntrinsic::Lfence => "lfence",
+                        KernelIntrinsic::Wbinvd => "wbinvd",
+                        KernelIntrinsic::Pause  => "pause",
+                        KernelIntrinsic::Int3   => "int3",
+                        KernelIntrinsic::Cpuid  => "cpuid",
+                    };
+                    out.push_str("    ");
+                    out.push_str(mnemonic);
+                    out.push('\n');
+                }
             }
         }
     }
@@ -5060,6 +5109,19 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             };
             stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx) + value_bytes
         }
+        ExecutableOp::InlineAsm(intr) => match intr {
+            KernelIntrinsic::Cli
+            | KernelIntrinsic::Sti
+            | KernelIntrinsic::Hlt
+            | KernelIntrinsic::Nop
+            | KernelIntrinsic::Int3 => 1,
+            KernelIntrinsic::Wbinvd
+            | KernelIntrinsic::Pause
+            | KernelIntrinsic::Cpuid => 2,
+            KernelIntrinsic::Mfence
+            | KernelIntrinsic::Sfence
+            | KernelIntrinsic::Lfence => 3,
+        },
     }
 }
 
@@ -6560,6 +6622,23 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         ));
                     }
                 },
+                ExecutableOp::InlineAsm(intr) => {
+                    let bytes: &[u8] = match intr {
+                        KernelIntrinsic::Cli    => &[0xFA],
+                        KernelIntrinsic::Sti    => &[0xFB],
+                        KernelIntrinsic::Hlt    => &[0xF4],
+                        KernelIntrinsic::Nop    => &[0x90],
+                        KernelIntrinsic::Mfence => &[0x0F, 0xAE, 0xF0],
+                        KernelIntrinsic::Sfence => &[0x0F, 0xAE, 0xF8],
+                        KernelIntrinsic::Lfence => &[0x0F, 0xAE, 0xE8],
+                        KernelIntrinsic::Wbinvd => &[0x0F, 0x09],
+                        KernelIntrinsic::Pause  => &[0xF3, 0x90],
+                        KernelIntrinsic::Int3   => &[0xCC],
+                        KernelIntrinsic::Cpuid  => &[0x0F, 0xA2],
+                    };
+                    code_bytes.extend_from_slice(bytes);
+                    local_offset += executable_op_encoded_len(op);
+                }
                 ExecutableOp::LoopBegin
                 | ExecutableOp::LoopEnd
                 | ExecutableOp::LoopBreak

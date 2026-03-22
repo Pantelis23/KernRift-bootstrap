@@ -1092,3 +1092,29 @@ fn entry() {
     let result = kernriftc::compile_source(src);
     assert!(result.is_err(), "ptr deref outside unsafe must be rejected");
 }
+
+#[test]
+fn asm_cli_in_unsafe_compiles() {
+    let src = r#"
+@ctx(irq)
+fn irq_handler() {
+    unsafe {
+        asm!(cli)
+    }
+}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "asm!(cli) in unsafe should compile: {:?}", result);
+}
+
+#[test]
+fn asm_outside_unsafe_is_error() {
+    let src = r#"
+@ctx(thread)
+fn entry() {
+    asm!(sti)
+}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_err(), "asm! outside unsafe must be rejected");
+}

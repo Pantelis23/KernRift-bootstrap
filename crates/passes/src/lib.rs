@@ -1248,7 +1248,7 @@ pub fn unsafe_ptr_check(module: &KrirModule) -> Vec<CheckError> {
                 KrirOp::UnsafeExit => {
                     depth = depth.saturating_sub(1);
                 }
-                KrirOp::RawPtrLoad { .. } | KrirOp::RawPtrStore { .. } => {
+                KrirOp::RawPtrLoad { .. } | KrirOp::RawPtrStore { .. } | KrirOp::InlineAsm(_) => {
                     if depth == 0 {
                         errors.push(CheckError {
                             pass: "unsafe_ptr_check",

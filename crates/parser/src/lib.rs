@@ -462,6 +462,44 @@ pub enum Stmt {
     Print(String),
     /// `fn_name(args...)` as a statement (call whose return value is discarded)
     ExprStmt(Expr),
+    /// `asm!(NAME)` — emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
+    InlineAsm(KernelIntrinsic),
+}
+
+/// Named no-argument x86-64 kernel instructions that can be emitted with `asm!(NAME)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelIntrinsic {
+    Cli,
+    Sti,
+    Hlt,
+    Nop,
+    Mfence,
+    Sfence,
+    Lfence,
+    Wbinvd,
+    Pause,
+    Int3,
+    Cpuid,
+}
+
+impl KernelIntrinsic {
+    /// Parse a name (case-insensitive) into a `KernelIntrinsic`.
+    pub fn from_str(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "cli" => Some(Self::Cli),
+            "sti" => Some(Self::Sti),
+            "hlt" => Some(Self::Hlt),
+            "nop" => Some(Self::Nop),
+            "mfence" => Some(Self::Mfence),
+            "sfence" => Some(Self::Sfence),
+            "lfence" => Some(Self::Lfence),
+            "wbinvd" => Some(Self::Wbinvd),
+            "pause" => Some(Self::Pause),
+            "int3" => Some(Self::Int3),
+            "cpuid" => Some(Self::Cpuid),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1767,6 +1805,31 @@ impl TokParser {
             // Ident — assignment, compound-assign, field-assign, or call
             // Also handles `raw_write` and `raw_read` which are tokenized as Ident
             TokenKind::Ident(name) => {
+                // Check for asm!(NAME) — kernel intrinsic instruction.
+                if name == "asm" {
+                    if matches!(self.peek_at(1).kind, TokenKind::Bang) {
+                        self.advance(); // consume `asm`
+                        self.advance(); // consume `!`
+                        self.expect_kind(&TokenKind::LParen)?;
+                        let intr_name = match self.advance().kind.clone() {
+                            TokenKind::Ident(n) => n,
+                            other => {
+                                return Err(format!(
+                                    "expected intrinsic name after asm!(, got {:?}",
+                                    other
+                                ))
+                            }
+                        };
+                        self.expect_kind(&TokenKind::RParen)?;
+                        match KernelIntrinsic::from_str(&intr_name) {
+                            Some(intr) => return Ok(Stmt::InlineAsm(intr)),
+                            None => return Err(format!(
+                                "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",
+                                intr_name
+                            )),
+                        }
+                    }
+                }
                 // Check for raw_write<T>(addr, val) / raw_read<T>(addr, cap)
                 if name == "raw_write" || name == "raw_read" {
                     // handled below after advance
@@ -3286,6 +3349,27 @@ impl<'a> Parser<'a> {
 fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
     if stmt.is_empty() {
         return Ok(None);
+    }
+
+    // asm!(NAME) — kernel intrinsic instruction.
+    {
+        let trimmed = stmt.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("asm!") {
+            // Find the parenthesised argument.
+            let rest = trimmed[4..].trim_start();
+            if rest.starts_with('(') && rest.ends_with(')') {
+                let intr_name = rest[1..rest.len() - 1].trim();
+                return match KernelIntrinsic::from_str(intr_name) {
+                    Some(intr) => Ok(Some(Stmt::InlineAsm(intr))),
+                    None => Err(format!(
+                        "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",
+                        intr_name
+                    )),
+                };
+            }
+            return Err(format!("malformed asm! invocation: expected asm!(NAME), got '{}'", trimmed));
+        }
     }
 
     if stmt.trim_start().to_ascii_lowercase().starts_with("mmio ") {

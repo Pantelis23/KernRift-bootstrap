@@ -4,7 +4,8 @@ use krir::{
     ArithOp as KrirArithOp, CallEdge, CmpOp as KrirCmpOp, Ctx, Eff, ExecutableBlock,
     ExecutableExternDecl, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
     ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
-    ExecutableValueType, FArithOp as KrirFArithOp, Function, FunctionAttrs, KrirModule, KrirOp,
+    ExecutableValueType, FArithOp as KrirFArithOp, Function, FunctionAttrs,
+    KernelIntrinsic as KrirKernelIntrinsic, KrirModule, KrirOp,
     KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
     MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
@@ -12,7 +13,8 @@ use krir::{
 };
 use parser::{
     ArithOp as ParserArithOp, AssignTarget as ParserAssignTarget, BinOpKind as ParserBinOpKind,
-    Expr as ParserExpr, FnAst, MmioAddrExpr as ParserMmioAddrExpr,
+    Expr as ParserExpr, FnAst, KernelIntrinsic as ParserKernelIntrinsic,
+    MmioAddrExpr as ParserMmioAddrExpr,
     MmioBaseDecl as ParserMmioBaseDecl, MmioRegAccess as ParserMmioRegAccess,
     MmioRegisterDecl as ParserMmioRegisterDecl, MmioScalarType as ParserMmioScalarType,
     MmioValueExpr as ParserMmioValueExpr, ModuleAst, ParamTy as ParserParamTy, RawAttr, Stmt,
@@ -2606,6 +2608,13 @@ fn lower_stmts_to_canonical_executable(
                     function_name
                 ));
             }
+            Stmt::InlineAsm(_) => {
+                errors.push(format!(
+                    "canonical-exec: function '{}' contains asm!() — \
+                     kernel intrinsics require unsafe block support; not available in canonical-exec path",
+                    function_name
+                ));
+            }
             Stmt::VarDecl { .. }
             | Stmt::Assign { .. }
             | Stmt::CompoundAssign { .. }
@@ -3358,6 +3367,25 @@ fn lower_stmt(
         Stmt::Return(None) => {
             // void return — function falls off its end
         }
+        Stmt::InlineAsm(intr) => {
+            ops.push(KrirOp::InlineAsm(lower_kernel_intrinsic(intr)));
+        }
+    }
+}
+
+fn lower_kernel_intrinsic(intr: &ParserKernelIntrinsic) -> KrirKernelIntrinsic {
+    match intr {
+        ParserKernelIntrinsic::Cli    => KrirKernelIntrinsic::Cli,
+        ParserKernelIntrinsic::Sti    => KrirKernelIntrinsic::Sti,
+        ParserKernelIntrinsic::Hlt    => KrirKernelIntrinsic::Hlt,
+        ParserKernelIntrinsic::Nop    => KrirKernelIntrinsic::Nop,
+        ParserKernelIntrinsic::Mfence => KrirKernelIntrinsic::Mfence,
+        ParserKernelIntrinsic::Sfence => KrirKernelIntrinsic::Sfence,
+        ParserKernelIntrinsic::Lfence => KrirKernelIntrinsic::Lfence,
+        ParserKernelIntrinsic::Wbinvd => KrirKernelIntrinsic::Wbinvd,
+        ParserKernelIntrinsic::Pause  => KrirKernelIntrinsic::Pause,
+        ParserKernelIntrinsic::Int3   => KrirKernelIntrinsic::Int3,
+        ParserKernelIntrinsic::Cpuid  => KrirKernelIntrinsic::Cpuid,
     }
 }
 
