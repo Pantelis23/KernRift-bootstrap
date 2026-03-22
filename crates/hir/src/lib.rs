@@ -2844,6 +2844,7 @@ fn lower_stmt(
             ops.push(KrirOp::CriticalExit);
         }
         Stmt::Unsafe(inner) => {
+            ops.push(KrirOp::UnsafeEnter);
             for stmt in inner {
                 lower_stmt(
                     stmt,
@@ -2858,6 +2859,7 @@ fn lower_stmt(
                     pending_fns,
                 );
             }
+            ops.push(KrirOp::UnsafeExit);
         }
         Stmt::YieldPoint => {
             ops.push(KrirOp::YieldPoint);

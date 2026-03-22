@@ -221,6 +221,8 @@ pub enum KrirOp {
     },
     CriticalEnter,
     CriticalExit,
+    UnsafeEnter,
+    UnsafeExit,
     YieldPoint,
     AllocPoint,
     BlockPoint,
@@ -1538,6 +1540,8 @@ pub fn lower_current_krir_to_executable_krir(
                     function.name
                 )),
                 KrirOp::CriticalExit => {}
+                KrirOp::UnsafeEnter => {}
+                KrirOp::UnsafeExit => {}
                 KrirOp::YieldPoint => errors.push(format!(
                     "canonical-exec: function '{}' contains unsupported yieldpoint()",
                     function.name
@@ -2181,6 +2185,8 @@ pub fn lower_current_krir_to_executable_krir(
                         exec_ops.push(ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx: idx });
                     }
                 }
+                KrirOp::UnsafeEnter => {}
+                KrirOp::UnsafeExit => {}
                 KrirOp::FloatArith { .. } => {
                     errors.push(format!(
                         "float arithmetic requires SSE2 backend (Task 14): function '{}'",
@@ -10956,5 +10962,24 @@ mod tests {
             &[0xCF, 0xFA, 0xED, 0xFE],
             "must start with MH_MAGIC_64"
         );
+    }
+
+    #[test]
+    fn krir_unsafe_markers_round_trip() {
+        use super::{Ctx, Eff, Function, FunctionAttrs, KrirOp};
+        let f = Function {
+            name: "test".to_string(),
+            is_extern: false,
+            params: vec![],
+            ctx_ok: vec![Ctx::Thread],
+            eff_used: vec![],
+            caps_req: vec![],
+            attrs: FunctionAttrs::default(),
+            ops: vec![
+                KrirOp::UnsafeEnter,
+                KrirOp::UnsafeExit,
+            ],
+        };
+        assert_eq!(f.ops.len(), 2);
     }
 }

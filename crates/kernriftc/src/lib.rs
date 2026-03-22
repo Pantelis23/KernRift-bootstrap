@@ -1231,6 +1231,8 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::BranchIfMaskNonZero { .. } => "branch_if_mask_non_zero",
         KrirOp::CriticalEnter => "critical_enter",
         KrirOp::CriticalExit => "critical_exit",
+        KrirOp::UnsafeEnter => "unsafe_enter",
+        KrirOp::UnsafeExit => "unsafe_exit",
         KrirOp::YieldPoint => "yield_point",
         KrirOp::AllocPoint => "alloc_point",
         KrirOp::BlockPoint => "block_point",
