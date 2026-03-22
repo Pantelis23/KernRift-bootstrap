@@ -26,13 +26,14 @@ impl<'a> CanonicalInput<'a> {
     pub(crate) fn read_to_string(self) -> Result<String, Vec<String>> {
         match self {
             Self::File(path) => fs::read_to_string(path)
+                .map(|s| s.replace("\r\n", "\n"))
                 .map_err(|err| vec![format!("failed to read '{}': {}", path, err)]),
             Self::Stdin => {
                 let mut src = String::new();
                 io::stdin()
                     .read_to_string(&mut src)
                     .map_err(|err| vec![format!("failed to read '<stdin>': {}", err)])?;
-                Ok(src)
+                Ok(src.replace("\r\n", "\n"))
             }
         }
     }

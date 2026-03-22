@@ -1,11 +1,28 @@
 use super::*;
 
+/// On Windows, `canonicalize()` returns an extended UNC path like `\\?\C:\...` and
+/// backslashes are not JSON-safe when used directly in format strings. Normalize all
+/// repo/temp paths to forward-slash form so that fixture paths embedded in expected
+/// JSON strings match the program's output.
+#[cfg(windows)]
+fn normalize_to_forward_slashes(path: PathBuf) -> PathBuf {
+    let s = path.display().to_string();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    PathBuf::from(s.replace('\\', "/"))
+}
+#[cfg(not(windows))]
+fn normalize_to_forward_slashes(path: PathBuf) -> PathBuf {
+    path
+}
+
 pub(super) fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .canonicalize()
-        .expect("repo root")
+    normalize_to_forward_slashes(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .canonicalize()
+            .expect("repo root"),
+    )
 }
 
 // Contributor lock for future JSON-capable commands: reuse this helper from
@@ -43,7 +60,9 @@ pub(super) fn unique_temp_output_path(label: &str, ext: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    std::env::temp_dir().join(format!("kernrift-{}-{}.{}", label, ts, ext))
+    normalize_to_forward_slashes(
+        std::env::temp_dir().join(format!("kernrift-{}-{}.{}", label, ts, ext)),
+    )
 }
 
 pub(super) fn copy_fixture_to_temp(label: &str, fixture: &Path) -> PathBuf {
@@ -67,7 +86,9 @@ pub(super) fn must_pass_fixture(name: &str) -> PathBuf {
 }
 
 pub(super) fn fixture_text(path: &Path) -> String {
-    fs::read_to_string(path).expect("read fixture")
+    fs::read_to_string(path)
+        .expect("read fixture")
+        .replace("\r\n", "\n")
 }
 
 pub(super) fn stdout_string(assert: &Assert) -> String {
