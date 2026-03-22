@@ -6243,7 +6243,6 @@ pub fn lower_executable_krir_to_compiler_owned_object(
 
     let mut function_offsets = BTreeMap::new();
     let mut function_sizes = BTreeMap::new();
-    let mut padding_before: BTreeMap<String, u64> = BTreeMap::new();
     let mut cursor = 0u64;
     for function in &canonical.functions {
         let pad = if function.facts.attrs.hotpath && cursor % 16 != 0 {
@@ -6251,7 +6250,6 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         } else {
             0
         };
-        padding_before.insert(function.name.clone(), pad);
         cursor += pad;
         let block = &function.blocks[0];
         let n_params = function.signature.params.len() as u64;
@@ -6276,18 +6274,20 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut symbols = Vec::with_capacity(canonical.functions.len());
     let mut fixups = Vec::new();
     let mut unresolved_targets = BTreeSet::new();
+    let mut emit_cursor: u64 = 0;
     for function in &canonical.functions {
-        let pad = *padding_before.get(&function.name).unwrap_or(&0);
-        for _ in 0..pad {
-            code_bytes.push(0x90); // NOP
-        }
-        let block = &function.blocks[0];
         let function_offset = *function_offsets
             .get(&function.name)
             .expect("function offset must exist");
         let function_size = *function_sizes
             .get(&function.name)
             .expect("function size must exist");
+        let pad = function_offset - emit_cursor;
+        for _ in 0..pad {
+            code_bytes.push(0x90); // NOP alignment padding for @hotpath
+        }
+        emit_cursor = function_offset;
+        let block = &function.blocks[0];
         let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
         let n_stack_cells = executable_function_n_stack_cells(function);
         let n_params = function.signature.params.len();
@@ -6743,6 +6743,8 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 });
             }
         }
+        // size covers instruction bytes only; NOP alignment bytes preceding this
+        // symbol are intentional padding and are not attributed to any symbol.
         symbols.push(CompilerOwnedObjectSymbol {
             name: function.name.clone(),
             kind: CompilerOwnedObjectSymbolKind::Function,
@@ -6750,6 +6752,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             offset: function_offset,
             size: function_size,
         });
+        emit_cursor += function_size;
     }
 
     for unresolved in unresolved_targets {

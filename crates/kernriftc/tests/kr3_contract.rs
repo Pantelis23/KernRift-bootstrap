@@ -1672,4 +1672,19 @@ fn hotpath_function_is_16_byte_aligned_in_object() {
         "@hotpath function must start at a 16-byte aligned offset, got offset {}",
         hot_symbol.offset
     );
+
+    // Verify the NOP padding bytes immediately before hot_fn are all 0x90.
+    // The range starts after the last preceding symbol ends (aaa_non_hot offset + size).
+    let non_hot_symbol = obj
+        .symbols
+        .iter()
+        .find(|s| s.name == "aaa_non_hot")
+        .expect("aaa_non_hot symbol must exist");
+    let nop_start = (non_hot_symbol.offset + non_hot_symbol.size) as usize;
+    let nop_range = nop_start..hot_symbol.offset as usize;
+    assert!(
+        obj.code.bytes[nop_range.clone()].iter().all(|&b| b == 0x90),
+        "bytes before hot_fn should be NOP (0x90), got: {:?}",
+        &obj.code.bytes[nop_range]
+    );
 }
