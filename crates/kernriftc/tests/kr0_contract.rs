@@ -1080,7 +1080,6 @@ fn entry() {
 }
 
 #[test]
-#[ignore = "requires unsafe_ptr_check pass (Task 4)"]
 fn ptr_deref_outside_unsafe_is_error() {
     let src = r#"
 @ctx(thread)

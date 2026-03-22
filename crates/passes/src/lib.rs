@@ -85,6 +85,7 @@ pub fn analyze_module(module: &KrirModule) -> (AnalysisReport, Vec<CheckError>) 
     errs.extend(cap_check(module));
     errs.extend(critical_region_balance_check(module));
     errs.extend(sched_hook_check(module));
+    errs.extend(unsafe_ptr_check(module));
 
     let fn_map = fn_map(module);
     let (summaries, summary_errs) = build_interproc_summaries(module, &fn_map);
@@ -1235,6 +1236,36 @@ fn is_effect_allowed(ctx: Ctx, eff: Eff) -> bool {
         Ctx::Irq => ALLOWED_IRQ.contains(&eff),
         Ctx::Nmi => ALLOWED_NMI.contains(&eff),
     }
+}
+
+pub fn unsafe_ptr_check(module: &KrirModule) -> Vec<CheckError> {
+    let mut errors = Vec::new();
+    for function in &module.functions {
+        let mut depth: usize = 0;
+        for op in &function.ops {
+            match op {
+                KrirOp::UnsafeEnter => depth += 1,
+                KrirOp::UnsafeExit => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                }
+                KrirOp::RawPtrLoad { .. } | KrirOp::RawPtrStore { .. } => {
+                    if depth == 0 {
+                        errors.push(CheckError {
+                            pass: "unsafe_ptr_check",
+                            message: format!(
+                                "function '{}': raw pointer access outside unsafe block",
+                                function.name
+                            ),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    errors
 }
 
 #[cfg(test)]

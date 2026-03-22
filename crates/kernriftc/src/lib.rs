@@ -84,7 +84,9 @@ impl BackendArtifactKind {
 }
 
 pub fn compile_source(src: &str) -> Result<KrirModule, Vec<String>> {
-    compile_source_with_surface(src, SurfaceProfile::Stable)
+    let module = compile_source_with_surface(src, SurfaceProfile::Stable)?;
+    check_module(&module)?;
+    Ok(module)
 }
 
 pub fn compile_source_with_surface(
