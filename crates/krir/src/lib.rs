@@ -8143,11 +8143,12 @@ mod tests {
     use std::{
         collections::BTreeSet,
         fs,
-        os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
         process::Command,
         sync::atomic::{AtomicU64, Ordering},
     };
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn hex_encode(bytes: &[u8]) -> String {
         const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -8340,11 +8341,14 @@ mod tests {
     }
 
     fn run_executable_smoke(path: &Path) -> Option<std::process::Output> {
-        let mut permissions = fs::metadata(path)
-            .expect("read linked artifact metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).expect("mark linked artifact executable");
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(path)
+                .expect("read linked artifact metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("mark linked artifact executable");
+        }
 
         match Command::new(path).output() {
             Ok(output) => Some(output),
