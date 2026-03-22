@@ -174,19 +174,49 @@ fn main() -> ExitCode {
                     return ExitCode::from(EXIT_INVALID_INPUT);
                 }
             };
-            let emit_arg = &args[3];
-            if !emit_arg.starts_with("--emit=") {
-                eprintln!("invalid emit mode: --surface must be followed by --emit=<target>");
-                print_usage();
-                return ExitCode::from(EXIT_INVALID_INPUT);
-            }
-            match parse_backend_emit_args(&emit_arg["--emit=".len()..], &args[4..], surface) {
-                Ok(parsed) => run_backend_emit(&parsed),
-                Err(err) => {
-                    eprintln!("{}", err);
-                    print_usage();
-                    ExitCode::from(EXIT_INVALID_INPUT)
+            let next_arg = &args[3];
+            if next_arg.starts_with("--emit=") {
+                match parse_backend_emit_args(&next_arg["--emit=".len()..], &args[4..], surface) {
+                    Ok(parsed) => run_backend_emit(&parsed),
+                    Err(err) => {
+                        eprintln!("{}", err);
+                        print_usage();
+                        ExitCode::from(EXIT_INVALID_INPUT)
+                    }
                 }
+            } else if args.len() == 4 && next_arg.ends_with(".kr") {
+                let stem = std::path::Path::new(next_arg.as_str())
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("output");
+                let output = format!("{}.krbo", stem);
+                let synthetic: Vec<String> =
+                    vec!["-o".to_string(), output.clone(), next_arg.clone()];
+                match parse_backend_emit_args("krboexe", &synthetic, surface) {
+                    Ok(parsed) => {
+                        let result = run_backend_emit(&parsed);
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(meta) = std::fs::metadata(&output) {
+                                let mut perms = meta.permissions();
+                                perms.set_mode(perms.mode() | 0o111);
+                                let _ = std::fs::set_permissions(&output, perms);
+                            }
+                        }
+                        result
+                    }
+                    Err(err) => {
+                        eprintln!("{}", err);
+                        ExitCode::from(EXIT_INVALID_INPUT)
+                    }
+                }
+            } else {
+                eprintln!(
+                    "invalid emit mode: --surface must be followed by --emit=<target> or <file.kr>"
+                );
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
             }
         }
         "check" => match parse_check_args(&args[2..]) {

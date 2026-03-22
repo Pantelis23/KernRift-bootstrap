@@ -7,8 +7,8 @@ use emit::{
     emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    BackendArtifactKind, analyze, check_file, check_module, compile_file,
-    emit_backend_artifact_file,
+    BackendArtifactKind, SurfaceProfile, analyze, check_file, check_module, compile_file,
+    compile_source_with_surface, emit_backend_artifact_file,
 };
 use krir::{
     BackendTargetContract, lower_current_krir_to_executable_krir,
@@ -1194,4 +1194,42 @@ fn lang_directive_overrides_default_stable_profile() {
     let src = "#lang experimental\n@ctx(thread)\nfn entry() {\n}\n";
     let result = kernriftc::compile_source(src);
     assert!(result.is_ok(), "#lang experimental must not break stable code: {:?}", result);
+}
+
+#[test]
+fn surface_flag_threads_to_compile_path() {
+    // @irq_handler is an Experimental surface feature (surface_form = "irq_handler").
+    // Under SurfaceProfile::Stable it should be rejected; under Experimental it should compile.
+    let src_stable_only = "@ctx(thread)\nfn entry() {\n}\n";
+    let src_experimental = "@irq_handler\nfn isr() {\n}\n";
+
+    // compile_source_with_surface must be publicly callable with both profiles.
+    let ok_stable = compile_source_with_surface(src_stable_only, SurfaceProfile::Stable);
+    assert!(
+        ok_stable.is_ok(),
+        "stable source must compile under Stable profile: {:?}",
+        ok_stable
+    );
+
+    let ok_exp = compile_source_with_surface(src_stable_only, SurfaceProfile::Experimental);
+    assert!(
+        ok_exp.is_ok(),
+        "stable source must compile under Experimental profile too: {:?}",
+        ok_exp
+    );
+
+    // Experimental feature rejected under Stable profile.
+    let err_stable = compile_source_with_surface(src_experimental, SurfaceProfile::Stable);
+    assert!(
+        err_stable.is_err(),
+        "experimental feature @irq_handler must be rejected under Stable profile"
+    );
+
+    // Experimental feature accepted under Experimental profile.
+    let ok_experimental = compile_source_with_surface(src_experimental, SurfaceProfile::Experimental);
+    assert!(
+        ok_experimental.is_ok(),
+        "experimental feature @irq_handler must compile under Experimental profile: {:?}",
+        ok_experimental
+    );
 }
