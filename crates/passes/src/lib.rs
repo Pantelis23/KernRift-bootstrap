@@ -1047,9 +1047,11 @@ fn sched_hook_check(module: &KrirModule) -> Vec<CheckError> {
 
 /// Peephole optimizer for executable KRIR.
 ///
-/// Currently applies two passes:
+/// Currently applies three passes:
 /// - **Trivial branch fold**: a `BranchIf*` op whose `then_callee == else_callee` is
 ///   replaced by `Call { callee: then_callee }`, eliminating a redundant test.
+/// - **Dead function elimination**: removes user-defined functions not reachable from
+///   any `@export` or `@ctx(boot)` root, and prunes their call edges.
 /// - **Dead extern strip**: removes extern declarations that are never called.
 pub fn optimize_executable_krir(module: &mut ExecutableKrirModule) {
     fold_trivial_branches(module);
@@ -1065,8 +1067,9 @@ fn strip_unreachable_functions(module: &mut ExecutableKrirModule) {
         let is_root = function.facts.attrs.is_export
             || function.facts.ctx_ok.contains(&Ctx::Boot);
         if is_root {
-            if reachable.insert(function.name.clone()) {
-                queue.push_back(function.name.clone());
+            let name = function.name.clone();
+            if reachable.insert(name.clone()) {
+                queue.push_back(name);
             }
         }
     }

@@ -1737,6 +1737,11 @@ fn root() { helper(); }
     let fn_names: Vec<&str> = exec.functions.iter().map(|f| f.name.as_str()).collect();
     assert!(fn_names.contains(&"root"), "root must survive: {fn_names:?}");
     assert!(fn_names.contains(&"helper"), "helper reachable from root must survive: {fn_names:?}");
+    // Verify the call edge was retained, making the test diagnostic clearer on failure
+    assert!(
+        exec.call_edges.iter().any(|e| e.caller == "root" && e.callee == "helper"),
+        "call edge root->helper must be retained after DCE: {:?}", exec.call_edges
+    );
 }
 
 #[test]
