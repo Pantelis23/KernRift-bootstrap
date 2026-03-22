@@ -621,6 +621,9 @@ pub struct ModuleAst {
     /// Optional per-file profile declaration: `#lang stable` or `#lang experimental`.
     /// `None` means no directive present; the caller's default profile applies.
     pub lang_profile: Option<String>,
+    /// Optional numeric version declaration: `#lang 1.0`.
+    /// `None` means no version directive present.
+    pub lang_version: Option<(u32, u32)>,
 }
 
 pub fn parse_module(src: &str) -> Result<ModuleAst, Vec<String>> {
@@ -1394,6 +1397,14 @@ impl TokParser {
                 TokenKind::Ident(ref kw) if kw == "lang" => {
                     self.advance(); // consume `lang`
                     match self.peek().kind.clone() {
+                        // Handle numeric version like `#lang 1.0` (lexed as a float literal)
+                        TokenKind::FloatLit(v) => {
+                            self.advance(); // consume the float token
+                            let major = v.floor() as u32;
+                            let minor = ((v - v.floor()) * 10.0).round() as u32;
+                            module.lang_version = Some((major, minor));
+                        }
+                        // Handle profile words like `#lang stable`
                         TokenKind::Ident(profile_word) => {
                             self.advance(); // consume the profile word
                             module.lang_profile = Some(profile_word);
@@ -1401,7 +1412,7 @@ impl TokParser {
                         _ => {
                             errors.push(format_source_diagnostic(
                                 &hash_src,
-                                "#lang directive requires a profile name ('stable' or 'experimental')",
+                                "#lang directive requires a profile name ('stable' or 'experimental') or version ('1.0')",
                                 None,
                             ));
                         }

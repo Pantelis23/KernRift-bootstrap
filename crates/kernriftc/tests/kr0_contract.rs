@@ -1233,3 +1233,48 @@ fn surface_flag_threads_to_compile_path() {
         ok_experimental
     );
 }
+
+#[test]
+fn lang_version_1_0_compiles() {
+    let src = r#"
+#lang 1.0
+@ctx(thread)
+fn entry() {}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "#lang 1.0 should compile on a 1.0 compiler: {:?}", result);
+}
+
+#[test]
+fn lang_version_future_is_rejected() {
+    let src = r#"
+#lang 1.1
+@ctx(thread)
+fn entry() {}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(
+        result.is_err(),
+        "#lang 1.1 should be rejected by a 1.0 compiler"
+    );
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("1.1") && e.contains("1.0")),
+        "error should mention both required (1.1) and supported (1.0) versions: {errs:?}"
+    );
+}
+
+#[test]
+fn lang_version_and_profile_both_accepted() {
+    let src_profile = r#"#lang stable
+@ctx(thread)
+fn entry() {}
+"#;
+    assert!(kernriftc::compile_source(src_profile).is_ok(), "#lang stable should compile");
+
+    let src_version = r#"#lang 1.0
+@ctx(thread)
+fn entry() {}
+"#;
+    assert!(kernriftc::compile_source(src_version).is_ok(), "#lang 1.0 should compile");
+}
