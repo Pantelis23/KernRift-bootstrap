@@ -218,3 +218,112 @@ fn kr2_mmio_only_module_compiles_to_x86_64_elf_object() {
         "must emit non-empty text section"
     );
 }
+
+// ── lock_edge_cycle_check unit tests ─────────────────────────────────────────
+
+use passes::{LockEdge, lock_edge_cycle_check};
+
+#[test]
+fn lock_edge_cycle_check_detects_two_module_inversion() {
+    let edges = vec![
+        LockEdge { from: "AcquireLock".to_string(), to: "BcquireLock".to_string() },
+        LockEdge { from: "BcquireLock".to_string(), to: "AcquireLock".to_string() },
+    ];
+    let errs = lock_edge_cycle_check(&edges);
+    assert!(!errs.is_empty(), "should detect cross-module lock cycle: {edges:?}");
+    assert!(
+        errs.iter().any(|e| e.message.contains("AcquireLock") || e.message.contains("BcquireLock")),
+        "cycle error should name the locks: {errs:?}"
+    );
+}
+
+#[test]
+fn lock_edge_cycle_check_passes_for_valid_ordering() {
+    let edges = vec![
+        LockEdge { from: "A".to_string(), to: "B".to_string() },
+        LockEdge { from: "B".to_string(), to: "C".to_string() },
+    ];
+    let errs = lock_edge_cycle_check(&edges);
+    assert!(errs.is_empty(), "linear ordering A→B→C should not be a cycle: {errs:?}");
+}
+
+// ── kernriftc link CLI integration tests ─────────────────────────────────────
+
+fn kernriftc_bin() -> std::path::PathBuf {
+    let mut p = std::env::current_exe().unwrap();
+    p.pop();
+    if p.ends_with("deps") {
+        p.pop();
+    }
+    p.push("kernriftc");
+    p
+}
+
+#[test]
+fn link_detects_cross_module_lock_inversion() {
+    let tmp1 = std::env::temp_dir().join("link_test_inversion_a.kr");
+    let tmp2 = std::env::temp_dir().join("link_test_inversion_b.kr");
+
+    std::fs::write(&tmp1, r#"
+spinlock Lock1;
+spinlock Lock2;
+@ctx(thread)
+fn a() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
+"#).unwrap();
+
+    std::fs::write(&tmp2, r#"
+spinlock Lock1;
+spinlock Lock2;
+@ctx(thread)
+fn b() { acquire(Lock2); acquire(Lock1); release(Lock1); release(Lock2); }
+"#).unwrap();
+
+    let out = std::process::Command::new(kernriftc_bin())
+        .arg("link")
+        .arg(tmp1.to_str().unwrap())
+        .arg(tmp2.to_str().unwrap())
+        .output()
+        .expect("link command must run");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "link with cross-module inversion should fail; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("cycle") || stderr.contains("Lock1") || stderr.contains("Lock2"),
+        "error should mention the cycle or lock names: {stderr}"
+    );
+}
+
+#[test]
+fn link_passes_for_consistent_ordering() {
+    let tmp1 = std::env::temp_dir().join("link_ok_ordering_a.kr");
+    let tmp2 = std::env::temp_dir().join("link_ok_ordering_b.kr");
+
+    std::fs::write(&tmp1, r#"
+spinlock Lock1;
+spinlock Lock2;
+@ctx(thread)
+fn a() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
+"#).unwrap();
+    std::fs::write(&tmp2, r#"
+spinlock Lock1;
+spinlock Lock2;
+@ctx(thread)
+fn b() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
+"#).unwrap();
+
+    let out = std::process::Command::new(kernriftc_bin())
+        .arg("link")
+        .arg(tmp1.to_str().unwrap())
+        .arg(tmp2.to_str().unwrap())
+        .output()
+        .expect("link command must run");
+
+    assert!(
+        out.status.success(),
+        "link with consistent ordering should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

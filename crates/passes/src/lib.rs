@@ -1024,6 +1024,64 @@ fn lock_graph_dfs(
     in_stack.remove(node);
 }
 
+/// Check for cycles in a raw set of lock edges (e.g. merged from multiple compiled modules).
+/// Returns a [`CheckError`] for each cycle detected.
+pub fn lock_edge_cycle_check(edges: &[LockEdge]) -> Vec<CheckError> {
+    let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for edge in edges {
+        adj.entry(edge.from.clone()).or_default().insert(edge.to.clone());
+        adj.entry(edge.to.clone()).or_default();
+    }
+
+    let nodes: Vec<String> = adj.keys().cloned().collect();
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    let mut in_stack: BTreeSet<String> = BTreeSet::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut errs = Vec::new();
+
+    for node in &nodes {
+        if !visited.contains(node) {
+            lock_edge_dfs(node, &adj, &mut visited, &mut stack, &mut in_stack, &mut errs);
+        }
+    }
+    errs
+}
+
+fn lock_edge_dfs(
+    node: &str,
+    adj: &BTreeMap<String, BTreeSet<String>>,
+    visited: &mut BTreeSet<String>,
+    stack: &mut Vec<String>,
+    in_stack: &mut BTreeSet<String>,
+    errs: &mut Vec<CheckError>,
+) {
+    visited.insert(node.to_string());
+    in_stack.insert(node.to_string());
+    stack.push(node.to_string());
+
+    if let Some(neighbors) = adj.get(node) {
+        for neighbor in neighbors {
+            if !visited.contains(neighbor) {
+                lock_edge_dfs(neighbor, adj, visited, stack, in_stack, errs);
+            } else if in_stack.contains(neighbor) {
+                let cycle_start = stack.iter().position(|n| n == neighbor).unwrap_or(0);
+                let cycle: Vec<&str> = stack[cycle_start..].iter().map(|s| s.as_str()).collect();
+                errs.push(CheckError {
+                    pass: "link-lock-cycle",
+                    message: format!(
+                        "link-time lock order cycle: {} -> {}",
+                        cycle.join(" -> "),
+                        neighbor
+                    ),
+                });
+            }
+        }
+    }
+
+    stack.pop();
+    in_stack.remove(node);
+}
+
 /// Verify that `@hook(sched_in|sched_out)` functions are also `@noyield`.
 /// Scheduler callbacks must never reschedule.
 fn sched_hook_check(module: &KrirModule) -> Vec<CheckError> {

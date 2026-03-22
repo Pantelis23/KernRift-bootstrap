@@ -14,6 +14,7 @@ use kernriftc::{
     canonical_fix_preview_source_with_surface, canonical_fix_source_text_with_surface, check_file,
     compile_file, frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
+use passes::{LockEdge, analyze_module, lock_edge_cycle_check};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -96,6 +97,73 @@ struct MigratePreviewArgs {
     stdin: bool,
     format: MigratePreviewFormat,
     input_path: Option<String>,
+}
+
+#[derive(Debug)]
+struct LinkArgs {
+    files: Vec<String>,
+}
+
+fn parse_link_args(args: &[String]) -> Result<LinkArgs, String> {
+    if args.is_empty() {
+        return Err("invalid link: requires at least one .kr file".to_string());
+    }
+    let mut files = Vec::new();
+    for arg in args {
+        if arg.starts_with("--") {
+            return Err(format!("invalid link: unexpected flag '{arg}'"));
+        }
+        files.push(arg.clone());
+    }
+    Ok(LinkArgs { files })
+}
+
+fn run_link(args: &LinkArgs) -> ExitCode {
+    let mut all_module_errors: Vec<String> = Vec::new();
+    let mut merged_edges: Vec<LockEdge> = Vec::new();
+
+    for file_path in &args.files {
+        let path = Path::new(file_path);
+        match compile_file(path) {
+            Err(errs) => {
+                for e in errs {
+                    all_module_errors.push(format!("{file_path}: {e}"));
+                }
+            }
+            Ok(module) => {
+                let (report, errs) = analyze_module(&module);
+                for e in errs {
+                    all_module_errors.push(format!("{file_path}: {}", e.message));
+                }
+                merged_edges.extend(report.lock_edges);
+            }
+        }
+    }
+
+    if !all_module_errors.is_empty() {
+        for e in &all_module_errors {
+            eprintln!("{e}");
+        }
+        return ExitCode::from(EXIT_INVALID_INPUT);
+    }
+
+    merged_edges.sort();
+    merged_edges.dedup();
+
+    let cycle_errs = lock_edge_cycle_check(&merged_edges);
+    if cycle_errs.is_empty() {
+        println!(
+            "link-lock-check: OK ({} file(s), {} lock edge(s), no cycles)",
+            args.files.len(),
+            merged_edges.len()
+        );
+        ExitCode::SUCCESS
+    } else {
+        for e in &cycle_errs {
+            eprintln!("{}", e.message);
+        }
+        ExitCode::from(EXIT_POLICY_VIOLATION)
+    }
 }
 
 #[derive(Debug)]
@@ -412,6 +480,13 @@ fn main() -> ExitCode {
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "link" => match parse_link_args(&args[2..]) {
+            Ok(parsed) => run_link(&parsed),
+            Err(e) => {
+                eprintln!("{e}");
                 ExitCode::from(EXIT_INVALID_INPUT)
             }
         },
@@ -1901,6 +1976,7 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run");
     eprintln!("  kernriftc proposals --promote <feature-id> --diff");
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
+    eprintln!("  kernriftc link <file1.kr> [file2.kr ...]");
     eprintln!("  kernriftc migrate <file.kr>");
     eprintln!("  kernriftc migrate <file.kr> --dry-run");
     eprintln!("  kernriftc migrate <file.kr> --surface experimental");
