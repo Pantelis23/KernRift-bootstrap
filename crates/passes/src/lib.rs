@@ -1240,15 +1240,13 @@ fn is_effect_allowed(ctx: Ctx, eff: Eff) -> bool {
 
 pub fn unsafe_ptr_check(module: &KrirModule) -> Vec<CheckError> {
     let mut errors = Vec::new();
-    for function in &module.functions {
+    for function in module.functions.iter().filter(|f| !f.is_extern) {
         let mut depth: usize = 0;
         for op in &function.ops {
             match op {
                 KrirOp::UnsafeEnter => depth += 1,
                 KrirOp::UnsafeExit => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
+                    depth = depth.saturating_sub(1);
                 }
                 KrirOp::RawPtrLoad { .. } | KrirOp::RawPtrStore { .. } => {
                     if depth == 0 {
