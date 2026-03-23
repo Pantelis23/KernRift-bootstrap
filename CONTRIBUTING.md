@@ -9,10 +9,10 @@
 ## Build
 
 ```sh
-cargo build --release -p kernriftc
+cargo build --release -p kernrift -p kernriftc
 ```
 
-The `kernriftc` binary lands at `target/release/kernriftc`.
+Binaries land at `target/release/kernrift` and `target/release/kernriftc`.
 
 ## Test
 
@@ -29,7 +29,7 @@ All PRs must pass the gate before merge.
 
 ## Crate Map
 
-The compiler is a 6-crate pipeline. Each crate has a `README.md` with full details.
+The workspace contains 7 crates: a 6-crate compiler pipeline and a standalone runner.
 
 | Crate | Role | Key Types |
 |-------|------|-----------|
@@ -38,7 +38,8 @@ The compiler is a 6-crate pipeline. Each crate has a `README.md` with full detai
 | [`krir`](crates/krir/) | Canonical semantic IR | `KrirModule`, `KrirFn`, `MmioScalarType`, `KrirOp` |
 | [`passes`](crates/passes/) | Context / effect / capability / lock analysis | `analyze`, `AnalysisReport` |
 | [`emit`](crates/emit/) | JSON and artifact emission | `emit_krir_json`, `emit_contracts_json` |
-| [`kernriftc`](crates/kernriftc/) | CLI binary, orchestrates the pipeline | `main`, `compile_file`, `check_file` |
+| [`kernriftc`](crates/kernriftc/) | Compiler CLI — orchestrates the pipeline | `main`, `compile_file`, `check_file` |
+| [`kernrift`](crates/kernrift/) | Runner CLI — executes `.krbo` files | `run_krbo_file` |
 
 ## Adding Tests
 

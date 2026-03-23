@@ -114,7 +114,7 @@ Antivirus software (including Bitdefender) blocks PowerShell scripts that downlo
 2. **Open a new terminal** (PowerShell or Command Prompt) and run:
 
 ```powershell
-cargo install --git https://github.com/Pantelis23/KernRift --bin kernriftc --bin kernrift --locked
+cargo install --git https://github.com/Pantelis23/KernRift kernrift kernriftc --locked
 ```
 
 That's it. Both `kernriftc` and `kernrift` are now on your PATH.
@@ -126,10 +126,11 @@ If you already have Rust 1.93.1+ via rustup:
 ```sh
 git clone https://github.com/Pantelis23/KernRift
 cd KernRift
+cargo install --path crates/kernrift
 cargo install --path crates/kernriftc
 ```
 
-This builds and installs both `kernriftc` and `kernrift` to `~/.cargo/bin/` (Linux/macOS) or `%USERPROFILE%\.cargo\bin\` (Windows).
+This builds and installs `kernrift` and `kernriftc` to `~/.cargo/bin/` (Linux/macOS) or `%USERPROFILE%\.cargo\bin\` (Windows).
 
 ### Prebuilt binary — Linux / macOS
 
