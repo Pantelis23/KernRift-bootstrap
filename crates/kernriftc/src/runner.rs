@@ -32,12 +32,20 @@ fn map_uart_buffer() -> Result<*mut u8, String> {
     let flags = MAP_PRIVATE | MAP_FIXED | MAP_ANON;
 
     let ptr = unsafe {
-        mmap(0x10000000usize as *mut _, 0x1000,
-             PROT_READ | PROT_WRITE, flags, -1, 0)
+        mmap(
+            0x10000000usize as *mut _,
+            0x1000,
+            PROT_READ | PROT_WRITE,
+            flags,
+            -1,
+            0,
+        )
     };
     if ptr == MAP_FAILED {
-        return Err(format!("failed to map UART buffer at 0x10000000: {}",
-                           std::io::Error::last_os_error()));
+        return Err(format!(
+            "failed to map UART buffer at 0x10000000: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, 0x1000) };
     Ok(ptr as *mut u8)
@@ -52,12 +60,20 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
     let flags = MAP_PRIVATE | MAP_ANON;
 
     let ptr = unsafe {
-        mmap(std::ptr::null_mut(), code.len(),
-             PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0)
+        mmap(
+            std::ptr::null_mut(),
+            code.len(),
+            PROT_READ | PROT_WRITE | PROT_EXEC,
+            flags,
+            -1,
+            0,
+        )
     };
     if ptr == MAP_FAILED {
-        return Err(format!("failed to map executable memory: {}",
-                           std::io::Error::last_os_error()));
+        return Err(format!(
+            "failed to map executable memory: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ptr as *mut u8, code.len()) };
     Ok(ptr as *mut u8)
@@ -66,7 +82,11 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
 #[cfg(unix)]
 fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
     let buf = unsafe { std::slice::from_raw_parts(uart_ptr, buf_size) };
-    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf_size).min(buf_size);
+    let len = buf
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(buf_size)
+        .min(buf_size);
     if len > 0 {
         unsafe { libc::write(1, buf.as_ptr() as *const _, len) };
     }
@@ -76,8 +96,12 @@ fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
 fn map_uart_buffer() -> Result<*mut u8, String> {
     use windows_sys::Win32::System::Memory::*;
     let ptr = unsafe {
-        VirtualAlloc(0x10000000usize as *mut _, 0x1000,
-                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+        VirtualAlloc(
+            0x10000000usize as *mut _,
+            0x1000,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE,
+        )
     };
     if ptr.is_null() {
         return Err("failed to map UART buffer at 0x10000000".to_string());
@@ -90,8 +114,12 @@ fn map_uart_buffer() -> Result<*mut u8, String> {
 fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
     use windows_sys::Win32::System::Memory::*;
     let ptr = unsafe {
-        VirtualAlloc(std::ptr::null_mut(), code.len(),
-                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
+        VirtualAlloc(
+            std::ptr::null_mut(),
+            code.len(),
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
     };
     if ptr.is_null() {
         return Err("failed to map executable memory".to_string());
@@ -105,11 +133,23 @@ fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
     use windows_sys::Win32::Storage::FileSystem::WriteFile;
     use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
     let buf = unsafe { std::slice::from_raw_parts(uart_ptr, buf_size) };
-    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf_size).min(buf_size) as u32;
+    let len = buf
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(buf_size)
+        .min(buf_size) as u32;
     if len > 0 {
         let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
         let mut written = 0u32;
-        unsafe { WriteFile(handle, buf.as_ptr(), len, &mut written, std::ptr::null_mut()) };
+        unsafe {
+            WriteFile(
+                handle,
+                buf.as_ptr(),
+                len,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
     }
 }
 

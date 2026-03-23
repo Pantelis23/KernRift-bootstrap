@@ -226,13 +226,23 @@ use passes::{LockEdge, lock_edge_cycle_check};
 #[test]
 fn lock_edge_cycle_check_detects_two_module_inversion() {
     let edges = vec![
-        LockEdge { from: "AcquireLock".to_string(), to: "BcquireLock".to_string() },
-        LockEdge { from: "BcquireLock".to_string(), to: "AcquireLock".to_string() },
+        LockEdge {
+            from: "AcquireLock".to_string(),
+            to: "BcquireLock".to_string(),
+        },
+        LockEdge {
+            from: "BcquireLock".to_string(),
+            to: "AcquireLock".to_string(),
+        },
     ];
     let errs = lock_edge_cycle_check(&edges);
-    assert!(!errs.is_empty(), "should detect cross-module lock cycle: {edges:?}");
     assert!(
-        errs.iter().any(|e| e.message.contains("AcquireLock") || e.message.contains("BcquireLock")),
+        !errs.is_empty(),
+        "should detect cross-module lock cycle: {edges:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("AcquireLock") || e.message.contains("BcquireLock")),
         "cycle error should name the locks: {errs:?}"
     );
 }
@@ -240,11 +250,20 @@ fn lock_edge_cycle_check_detects_two_module_inversion() {
 #[test]
 fn lock_edge_cycle_check_passes_for_valid_ordering() {
     let edges = vec![
-        LockEdge { from: "A".to_string(), to: "B".to_string() },
-        LockEdge { from: "B".to_string(), to: "C".to_string() },
+        LockEdge {
+            from: "A".to_string(),
+            to: "B".to_string(),
+        },
+        LockEdge {
+            from: "B".to_string(),
+            to: "C".to_string(),
+        },
     ];
     let errs = lock_edge_cycle_check(&edges);
-    assert!(errs.is_empty(), "linear ordering A→B→C should not be a cycle: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "linear ordering A→B→C should not be a cycle: {errs:?}"
+    );
 }
 
 // ── kernriftc link CLI integration tests ─────────────────────────────────────
@@ -266,21 +285,29 @@ fn link_detects_cross_module_lock_inversion() {
     let tmp2 = std::env::temp_dir().join(format!("link_inversion_{pid}_b.kr"));
 
     // File A: only acquires Lock1 → Lock2 (no inversion in this file alone)
-    std::fs::write(&tmp1, r#"
+    std::fs::write(
+        &tmp1,
+        r#"
 spinlock Lock1;
 spinlock Lock2;
 @ctx(thread)
 fn a() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // File B: only acquires Lock2 → Lock1 (no inversion in this file alone)
     // Together with A the merged graph has Lock1→Lock2 and Lock2→Lock1 → cycle
-    std::fs::write(&tmp2, r#"
+    std::fs::write(
+        &tmp2,
+        r#"
 spinlock Lock2;
 spinlock Lock1;
 @ctx(thread)
 fn b() { acquire(Lock2); acquire(Lock1); release(Lock1); release(Lock2); }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let out = std::process::Command::new(kernriftc_bin())
         .arg("link")
@@ -306,18 +333,26 @@ fn link_passes_for_consistent_ordering() {
     let tmp1 = std::env::temp_dir().join(format!("link_ok_{pid}_a.kr"));
     let tmp2 = std::env::temp_dir().join(format!("link_ok_{pid}_b.kr"));
 
-    std::fs::write(&tmp1, r#"
+    std::fs::write(
+        &tmp1,
+        r#"
 spinlock Lock1;
 spinlock Lock2;
 @ctx(thread)
 fn a() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
-"#).unwrap();
-    std::fs::write(&tmp2, r#"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &tmp2,
+        r#"
 spinlock Lock1;
 spinlock Lock2;
 @ctx(thread)
 fn b() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let out = std::process::Command::new(kernriftc_bin())
         .arg("link")

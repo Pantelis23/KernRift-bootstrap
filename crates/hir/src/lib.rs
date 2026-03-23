@@ -5,8 +5,8 @@ use krir::{
     ExecutableExternDecl, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
     ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
     ExecutableValueType, FArithOp as KrirFArithOp, Function, FunctionAttrs,
-    KernelIntrinsic as KrirKernelIntrinsic, KrirModule, KrirOp,
-    KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
+    KernelIntrinsic as KrirKernelIntrinsic, KrirModule, KrirOp, KrirParamTy,
+    MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
     MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
     PercpuDecl as KrirPercpuDecl, SchedHook,
@@ -14,11 +14,11 @@ use krir::{
 use parser::{
     ArithOp as ParserArithOp, AssignTarget as ParserAssignTarget, BinOpKind as ParserBinOpKind,
     Expr as ParserExpr, FnAst, KernelIntrinsic as ParserKernelIntrinsic,
-    MmioAddrExpr as ParserMmioAddrExpr,
-    MmioBaseDecl as ParserMmioBaseDecl, MmioRegAccess as ParserMmioRegAccess,
-    MmioRegisterDecl as ParserMmioRegisterDecl, MmioScalarType as ParserMmioScalarType,
-    MmioValueExpr as ParserMmioValueExpr, ModuleAst, ParamTy as ParserParamTy, RawAttr, Stmt,
-    format_source_diagnostic, int_literal_numeric_value, split_csv_allow_trailing_comma,
+    MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
+    MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
+    MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
+    ParamTy as ParserParamTy, RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
+    split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -1307,8 +1307,7 @@ pub fn lower_to_krir_with_surface(
         if ver > CURRENT_LANG_VERSION {
             return Err(vec![format!(
                 "#lang {}.{}: source requires language version {}.{}, but this compiler supports {}.{}",
-                ver.0, ver.1, ver.0, ver.1,
-                CURRENT_LANG_VERSION.0, CURRENT_LANG_VERSION.1
+                ver.0, ver.1, ver.0, ver.1, CURRENT_LANG_VERSION.0, CURRENT_LANG_VERSION.1
             )]);
         }
     }
@@ -3378,23 +3377,29 @@ fn lower_stmt(
             });
             ops.push(KrirOp::LoopEnd);
         }
-        Stmt::PtrLoad { ty, addr_var, out_var } => {
+        Stmt::PtrLoad {
+            ty,
+            addr_var,
+            out_var,
+        } => {
             ops.push(KrirOp::RawPtrLoad {
                 ty: lower_mmio_scalar_type(*ty),
                 addr_slot: addr_var.clone(),
                 out_slot: out_var.clone(),
             });
         }
-        Stmt::PtrStore { ty, addr_var, value } => {
-            match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
-                Ok(src) => ops.push(KrirOp::RawPtrStore {
-                    ty: lower_mmio_scalar_type(*ty),
-                    addr_slot: addr_var.clone(),
-                    value: KrirMmioValueExpr::Ident { name: src },
-                }),
-                Err(e) => errors.push(e),
-            }
-        }
+        Stmt::PtrStore {
+            ty,
+            addr_var,
+            value,
+        } => match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+            Ok(src) => ops.push(KrirOp::RawPtrStore {
+                ty: lower_mmio_scalar_type(*ty),
+                addr_slot: addr_var.clone(),
+                value: KrirMmioValueExpr::Ident { name: src },
+            }),
+            Err(e) => errors.push(e),
+        },
         Stmt::Break => ops.push(KrirOp::LoopBreak),
         Stmt::Continue => ops.push(KrirOp::LoopContinue),
         Stmt::Return(Some(expr)) => {
@@ -3414,17 +3419,17 @@ fn lower_stmt(
 
 fn lower_kernel_intrinsic(intr: &ParserKernelIntrinsic) -> KrirKernelIntrinsic {
     match intr {
-        ParserKernelIntrinsic::Cli    => KrirKernelIntrinsic::Cli,
-        ParserKernelIntrinsic::Sti    => KrirKernelIntrinsic::Sti,
-        ParserKernelIntrinsic::Hlt    => KrirKernelIntrinsic::Hlt,
-        ParserKernelIntrinsic::Nop    => KrirKernelIntrinsic::Nop,
+        ParserKernelIntrinsic::Cli => KrirKernelIntrinsic::Cli,
+        ParserKernelIntrinsic::Sti => KrirKernelIntrinsic::Sti,
+        ParserKernelIntrinsic::Hlt => KrirKernelIntrinsic::Hlt,
+        ParserKernelIntrinsic::Nop => KrirKernelIntrinsic::Nop,
         ParserKernelIntrinsic::Mfence => KrirKernelIntrinsic::Mfence,
         ParserKernelIntrinsic::Sfence => KrirKernelIntrinsic::Sfence,
         ParserKernelIntrinsic::Lfence => KrirKernelIntrinsic::Lfence,
         ParserKernelIntrinsic::Wbinvd => KrirKernelIntrinsic::Wbinvd,
-        ParserKernelIntrinsic::Pause  => KrirKernelIntrinsic::Pause,
-        ParserKernelIntrinsic::Int3   => KrirKernelIntrinsic::Int3,
-        ParserKernelIntrinsic::Cpuid  => KrirKernelIntrinsic::Cpuid,
+        ParserKernelIntrinsic::Pause => KrirKernelIntrinsic::Pause,
+        ParserKernelIntrinsic::Int3 => KrirKernelIntrinsic::Int3,
+        ParserKernelIntrinsic::Cpuid => KrirKernelIntrinsic::Cpuid,
     }
 }
 

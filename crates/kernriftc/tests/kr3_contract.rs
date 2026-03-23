@@ -1592,10 +1592,9 @@ fn simple_loop() {
 #[test]
 fn hotpath_function_is_16_byte_aligned_in_object() {
     use krir::{
-        BackendTargetContract, ExecutableBlock, ExecutableFacts,
-        ExecutableFunction, ExecutableKrirModule, ExecutableTerminator, ExecutableValue,
-        ExecutableValueType, FunctionAttrs,
-        lower_executable_krir_to_compiler_owned_object,
+        BackendTargetContract, ExecutableBlock, ExecutableFacts, ExecutableFunction,
+        ExecutableKrirModule, ExecutableTerminator, ExecutableValue, ExecutableValueType,
+        FunctionAttrs, lower_executable_krir_to_compiler_owned_object,
     };
 
     // Name chosen so it sorts before "hot_fn" alphabetically (canonicalize sorts by name).
@@ -1735,12 +1734,21 @@ fn root() { helper(); }
     optimize_executable_krir(&mut exec);
 
     let fn_names: Vec<&str> = exec.functions.iter().map(|f| f.name.as_str()).collect();
-    assert!(fn_names.contains(&"root"), "root must survive: {fn_names:?}");
-    assert!(fn_names.contains(&"helper"), "helper reachable from root must survive: {fn_names:?}");
+    assert!(
+        fn_names.contains(&"root"),
+        "root must survive: {fn_names:?}"
+    );
+    assert!(
+        fn_names.contains(&"helper"),
+        "helper reachable from root must survive: {fn_names:?}"
+    );
     // Verify the call edge was retained, making the test diagnostic clearer on failure
     assert!(
-        exec.call_edges.iter().any(|e| e.caller == "root" && e.callee == "helper"),
-        "call edge root->helper must be retained after DCE: {:?}", exec.call_edges
+        exec.call_edges
+            .iter()
+            .any(|e| e.caller == "root" && e.callee == "helper"),
+        "call edge root->helper must be retained after DCE: {:?}",
+        exec.call_edges
     );
 }
 

@@ -1080,7 +1080,11 @@ fn entry() {
 }
 "#;
     let result = kernriftc::compile_source(src);
-    assert!(result.is_ok(), "ptr deref in unsafe should compile: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "ptr deref in unsafe should compile: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1108,7 +1112,11 @@ fn irq_handler() {
 }
 "#;
     let result = kernriftc::compile_source(src);
-    assert!(result.is_ok(), "asm!(cli) in unsafe should compile: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "asm!(cli) in unsafe should compile: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1162,7 +1170,11 @@ fn entry() {
 
     fs::remove_file(&tmp_path).ok();
 
-    assert_eq!(&bytes[0..4], b"KRBO", "compiled output must start with KRBO magic");
+    assert_eq!(
+        &bytes[0..4],
+        b"KRBO",
+        "compiled output must start with KRBO magic"
+    );
     assert_eq!(bytes[4], 1, "version must be 1");
     assert_eq!(bytes[5], 0x01, "arch must be x86-64 (0x01)");
 }
@@ -1178,7 +1190,11 @@ fn lang_directive_stable_is_parsed() {
 fn lang_directive_experimental_is_parsed() {
     let src = "#lang experimental\n@ctx(thread)\nfn entry() {\n}\n";
     let result = kernriftc::compile_source(src);
-    assert!(result.is_ok(), "#lang experimental should compile: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "#lang experimental should compile: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1193,7 +1209,11 @@ fn lang_directive_overrides_default_stable_profile() {
     // #lang experimental must not break stable code
     let src = "#lang experimental\n@ctx(thread)\nfn entry() {\n}\n";
     let result = kernriftc::compile_source(src);
-    assert!(result.is_ok(), "#lang experimental must not break stable code: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "#lang experimental must not break stable code: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1226,7 +1246,8 @@ fn surface_flag_threads_to_compile_path() {
     );
 
     // Experimental feature accepted under Experimental profile.
-    let ok_experimental = compile_source_with_surface(src_experimental, SurfaceProfile::Experimental);
+    let ok_experimental =
+        compile_source_with_surface(src_experimental, SurfaceProfile::Experimental);
     assert!(
         ok_experimental.is_ok(),
         "experimental feature @irq_handler must compile under Experimental profile: {:?}",
@@ -1242,7 +1263,11 @@ fn lang_version_1_0_compiles() {
 fn entry() {}
 "#;
     let result = kernriftc::compile_source(src);
-    assert!(result.is_ok(), "#lang 1.0 should compile on a 1.0 compiler: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "#lang 1.0 should compile on a 1.0 compiler: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1270,11 +1295,17 @@ fn lang_version_and_profile_both_accepted() {
 @ctx(thread)
 fn entry() {}
 "#;
-    assert!(kernriftc::compile_source(src_profile).is_ok(), "#lang stable should compile");
+    assert!(
+        kernriftc::compile_source(src_profile).is_ok(),
+        "#lang stable should compile"
+    );
 
     let src_version = r#"#lang 1.0
 @ctx(thread)
 fn entry() {}
 "#;
-    assert!(kernriftc::compile_source(src_version).is_ok(), "#lang 1.0 should compile");
+    assert!(
+        kernriftc::compile_source(src_version).is_ok(),
+        "#lang 1.0 should compile"
+    );
 }

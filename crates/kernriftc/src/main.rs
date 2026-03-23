@@ -186,8 +186,7 @@ fn parse_migrate_args(args: &[String]) -> Result<MigrateArgs, String> {
                 let v = args
                     .get(i)
                     .ok_or("invalid migrate: --surface requires a value")?;
-                surface = SurfaceProfile::parse(v)
-                    .map_err(|e| format!("invalid migrate: {e}"))?;
+                surface = SurfaceProfile::parse(v).map_err(|e| format!("invalid migrate: {e}"))?;
             }
             "--dry-run" => dry_run = true,
             arg if arg.starts_with("--") => {
@@ -234,17 +233,11 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
         if result.rewrites.is_empty() {
             println!("No migration needed for {} (dry-run).", args.input_path);
         } else {
-            println!(
-                "Would migrate {} (dry-run, not written):",
-                args.input_path
-            );
+            println!("Would migrate {} (dry-run, not written):", args.input_path);
             for rw in &result.rewrites {
                 println!(
                     "  fn {}: @{} \u{2192} {}  [{}]",
-                    rw.function_name,
-                    rw.surface_form,
-                    rw.canonical_replacement,
-                    rw.rewrite_intent
+                    rw.function_name, rw.surface_form, rw.canonical_replacement, rw.rewrite_intent
                 );
             }
         }
@@ -263,10 +256,7 @@ fn run_migrate(args: &MigrateArgs) -> ExitCode {
             for rw in &result.rewrites {
                 println!(
                     "  fn {}: @{} \u{2192} {}  [{}]",
-                    rw.function_name,
-                    rw.surface_form,
-                    rw.canonical_replacement,
-                    rw.rewrite_intent
+                    rw.function_name, rw.surface_form, rw.canonical_replacement, rw.rewrite_intent
                 );
             }
             println!("Wrote {} rewrite(s).", result.rewrites.len());
@@ -999,14 +989,38 @@ fn run_features(args: &FeaturesArgs) -> ExitCode {
         for (i, feature) in features.iter().enumerate() {
             let surface_profile_gate = feature.status.as_str();
             out.push_str("  {\n");
-            out.push_str(&format!("    \"id\": {},\n", serde_json::to_string(feature.id).unwrap()));
-            out.push_str(&format!("    \"status\": {},\n", serde_json::to_string(feature.status.as_str()).unwrap()));
-            out.push_str(&format!("    \"surface_form\": {},\n", serde_json::to_string(&format!("@{}", feature.surface_form)).unwrap()));
-            out.push_str(&format!("    \"lowering_target\": {},\n", serde_json::to_string(feature.lowering_target).unwrap()));
-            out.push_str(&format!("    \"surface_profile_gate\": {},\n", serde_json::to_string(surface_profile_gate).unwrap()));
-            out.push_str(&format!("    \"migration_safe\": {},\n", feature.migration_safe));
-            out.push_str(&format!("    \"canonical_replacement\": {},\n", serde_json::to_string(feature.canonical_replacement).unwrap()));
-            out.push_str(&format!("    \"proposal_id\": {}\n", serde_json::to_string(feature.proposal_id).unwrap()));
+            out.push_str(&format!(
+                "    \"id\": {},\n",
+                serde_json::to_string(feature.id).unwrap()
+            ));
+            out.push_str(&format!(
+                "    \"status\": {},\n",
+                serde_json::to_string(feature.status.as_str()).unwrap()
+            ));
+            out.push_str(&format!(
+                "    \"surface_form\": {},\n",
+                serde_json::to_string(&format!("@{}", feature.surface_form)).unwrap()
+            ));
+            out.push_str(&format!(
+                "    \"lowering_target\": {},\n",
+                serde_json::to_string(feature.lowering_target).unwrap()
+            ));
+            out.push_str(&format!(
+                "    \"surface_profile_gate\": {},\n",
+                serde_json::to_string(surface_profile_gate).unwrap()
+            ));
+            out.push_str(&format!(
+                "    \"migration_safe\": {},\n",
+                feature.migration_safe
+            ));
+            out.push_str(&format!(
+                "    \"canonical_replacement\": {},\n",
+                serde_json::to_string(feature.canonical_replacement).unwrap()
+            ));
+            out.push_str(&format!(
+                "    \"proposal_id\": {}\n",
+                serde_json::to_string(feature.proposal_id).unwrap()
+            ));
             if i + 1 < features.len() {
                 out.push_str("  },\n");
             } else {

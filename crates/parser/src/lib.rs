@@ -1865,16 +1865,18 @@ impl TokParser {
                                 return Err(format!(
                                     "expected intrinsic name after asm!(, got {:?}",
                                     other
-                                ))
+                                ));
                             }
                         };
                         self.expect_kind(&TokenKind::RParen)?;
                         match KernelIntrinsic::from_str(&intr_name) {
                             Some(intr) => return Ok(Stmt::InlineAsm(intr)),
-                            None => return Err(format!(
-                                "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",
-                                intr_name
-                            )),
+                            None => {
+                                return Err(format!(
+                                    "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",
+                                    intr_name
+                                ));
+                            }
                         }
                     }
                 }
@@ -2045,24 +2047,38 @@ impl TokParser {
                 // expect `as`
                 match self.advance().kind.clone() {
                     TokenKind::Ident(kw) if kw == "as" => {}
-                    other => return Err(format!("expected 'as' in ptr deref cast, got {:?}", other)),
+                    other => {
+                        return Err(format!("expected 'as' in ptr deref cast, got {:?}", other));
+                    }
                 }
                 let ty = match self.advance().kind.clone() {
                     TokenKind::TypeKw(t) => t,
-                    other => return Err(format!("expected type in ptr deref cast, got {:?}", other)),
+                    other => {
+                        return Err(format!("expected type in ptr deref cast, got {:?}", other));
+                    }
                 };
                 self.expect_kind(&TokenKind::RParen)?;
                 // discriminate on -> vs =
                 if self.eat(&TokenKind::Arrow) {
                     let out_var = match self.advance().kind.clone() {
                         TokenKind::Ident(n) => n,
-                        other => return Err(format!("expected output slot after ->, got {:?}", other)),
+                        other => {
+                            return Err(format!("expected output slot after ->, got {:?}", other));
+                        }
                     };
-                    Ok(Stmt::PtrLoad { ty, addr_var, out_var })
+                    Ok(Stmt::PtrLoad {
+                        ty,
+                        addr_var,
+                        out_var,
+                    })
                 } else {
                     self.expect_kind(&TokenKind::Eq)?;
                     let value = self.parse_expr(0)?;
-                    Ok(Stmt::PtrStore { ty, addr_var, value: Box::new(value) })
+                    Ok(Stmt::PtrStore {
+                        ty,
+                        addr_var,
+                        value: Box::new(value),
+                    })
                 }
             }
             other => Err(format!(
@@ -3430,7 +3446,10 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
                     )),
                 };
             }
-            return Err(format!("malformed asm! invocation: expected asm!(NAME), got '{}'", trimmed));
+            return Err(format!(
+                "malformed asm! invocation: expected asm!(NAME), got '{}'",
+                trimmed
+            ));
         }
     }
 

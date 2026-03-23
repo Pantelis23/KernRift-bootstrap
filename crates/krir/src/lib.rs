@@ -2237,7 +2237,11 @@ pub fn lower_current_krir_to_executable_krir(
                         exec_ops.push(ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx: idx });
                     }
                 }
-                KrirOp::RawPtrLoad { ty, addr_slot, out_slot } => {
+                KrirOp::RawPtrLoad {
+                    ty,
+                    addr_slot,
+                    out_slot,
+                } => {
                     let addr_idx = match cell_slot_map.get(addr_slot.as_str()) {
                         Some(&(idx, _)) => idx,
                         None => {
@@ -2264,7 +2268,11 @@ pub fn lower_current_krir_to_executable_krir(
                         out_slot_idx: out_idx,
                     });
                 }
-                KrirOp::RawPtrStore { ty, addr_slot, value } => {
+                KrirOp::RawPtrStore {
+                    ty,
+                    addr_slot,
+                    value,
+                } => {
                     let addr_idx = match cell_slot_map.get(addr_slot.as_str()) {
                         Some(&(idx, _)) => idx,
                         None => {
@@ -4174,7 +4182,11 @@ pub fn lower_executable_krir_to_x86_64_asm(
 fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> bool {
     function.blocks.iter().any(|block| {
         block.ops.iter().any(|op| {
-            if let ExecutableOp::RawPtrStore { value: MmioValueExpr::Ident { .. }, .. } = op {
+            if let ExecutableOp::RawPtrStore {
+                value: MmioValueExpr::Ident { .. },
+                ..
+            } = op
+            {
                 return true;
             }
             matches!(
@@ -4828,17 +4840,17 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 }
                 X86_64AsmInstruction::InlineAsm(intr) => {
                     let mnemonic = match intr {
-                        KernelIntrinsic::Cli    => "cli",
-                        KernelIntrinsic::Sti    => "sti",
-                        KernelIntrinsic::Hlt    => "hlt",
-                        KernelIntrinsic::Nop    => "nop",
+                        KernelIntrinsic::Cli => "cli",
+                        KernelIntrinsic::Sti => "sti",
+                        KernelIntrinsic::Hlt => "hlt",
+                        KernelIntrinsic::Nop => "nop",
                         KernelIntrinsic::Mfence => "mfence",
                         KernelIntrinsic::Sfence => "sfence",
                         KernelIntrinsic::Lfence => "lfence",
                         KernelIntrinsic::Wbinvd => "wbinvd",
-                        KernelIntrinsic::Pause  => "pause",
-                        KernelIntrinsic::Int3   => "int3",
-                        KernelIntrinsic::Cpuid  => "cpuid",
+                        KernelIntrinsic::Pause => "pause",
+                        KernelIntrinsic::Int3 => "int3",
+                        KernelIntrinsic::Cpuid => "cpuid",
                     };
                     out.push_str("    ");
                     out.push_str(mnemonic);
@@ -5118,12 +5130,8 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             | KernelIntrinsic::Hlt
             | KernelIntrinsic::Nop
             | KernelIntrinsic::Int3 => 1,
-            KernelIntrinsic::Wbinvd
-            | KernelIntrinsic::Pause
-            | KernelIntrinsic::Cpuid => 2,
-            KernelIntrinsic::Mfence
-            | KernelIntrinsic::Sfence
-            | KernelIntrinsic::Lfence => 3,
+            KernelIntrinsic::Wbinvd | KernelIntrinsic::Pause | KernelIntrinsic::Cpuid => 2,
+            KernelIntrinsic::Mfence | KernelIntrinsic::Sfence | KernelIntrinsic::Lfence => 3,
         },
     }
 }
@@ -6590,12 +6598,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     addr_slot_idx,
                     out_slot_idx,
                 } => {
-                    encode_raw_ptr_load_bytes(
-                        &mut code_bytes,
-                        *ty,
-                        *addr_slot_idx,
-                        *out_slot_idx,
-                    );
+                    encode_raw_ptr_load_bytes(&mut code_bytes, *ty, *addr_slot_idx, *out_slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::RawPtrStore {
@@ -6639,17 +6642,17 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 },
                 ExecutableOp::InlineAsm(intr) => {
                     let bytes: &[u8] = match intr {
-                        KernelIntrinsic::Cli    => &[0xFA],
-                        KernelIntrinsic::Sti    => &[0xFB],
-                        KernelIntrinsic::Hlt    => &[0xF4],
-                        KernelIntrinsic::Nop    => &[0x90],
+                        KernelIntrinsic::Cli => &[0xFA],
+                        KernelIntrinsic::Sti => &[0xFB],
+                        KernelIntrinsic::Hlt => &[0xF4],
+                        KernelIntrinsic::Nop => &[0x90],
                         KernelIntrinsic::Mfence => &[0x0F, 0xAE, 0xF0],
                         KernelIntrinsic::Sfence => &[0x0F, 0xAE, 0xF8],
                         KernelIntrinsic::Lfence => &[0x0F, 0xAE, 0xE8],
                         KernelIntrinsic::Wbinvd => &[0x0F, 0x09],
-                        KernelIntrinsic::Pause  => &[0xF3, 0x90],
-                        KernelIntrinsic::Int3   => &[0xCC],
-                        KernelIntrinsic::Cpuid  => &[0x0F, 0xA2],
+                        KernelIntrinsic::Pause => &[0xF3, 0x90],
+                        KernelIntrinsic::Int3 => &[0xCC],
+                        KernelIntrinsic::Cpuid => &[0x0F, 0xA2],
                     };
                     code_bytes.extend_from_slice(bytes);
                     local_offset += executable_op_encoded_len(op);
@@ -8124,14 +8127,19 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
         ));
     }
     let entry_offset = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    let code_length  = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    let code_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
     if code_length == 0 {
         return Err("malformed .krbo: empty code section".to_string());
     }
     if entry_offset >= code_length {
         return Err("malformed .krbo: entry_offset out of range".to_string());
     }
-    Ok(KrboHeader { version, arch, entry_offset, code_length })
+    Ok(KrboHeader {
+        version,
+        arch,
+        entry_offset,
+        code_length,
+    })
 }
 
 #[cfg(test)]
@@ -8155,6 +8163,8 @@ mod tests {
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
     use serde_json::json;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::{
         collections::BTreeSet,
         fs,
@@ -8162,8 +8172,6 @@ mod tests {
         process::Command,
         sync::atomic::{AtomicU64, Ordering},
     };
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
     fn hex_encode(bytes: &[u8]) -> String {
         const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -11591,13 +11599,16 @@ mod tests {
             eff_used: vec![],
             caps_req: vec![],
             attrs: FunctionAttrs::default(),
-            ops: vec![
-                KrirOp::UnsafeEnter,
-                KrirOp::UnsafeExit,
-            ],
+            ops: vec![KrirOp::UnsafeEnter, KrirOp::UnsafeExit],
         };
-        assert!(matches!(f.ops[0], KrirOp::UnsafeEnter), "first op must be UnsafeEnter");
-        assert!(matches!(f.ops[1], KrirOp::UnsafeExit), "second op must be UnsafeExit");
+        assert!(
+            matches!(f.ops[0], KrirOp::UnsafeEnter),
+            "first op must be UnsafeEnter"
+        );
+        assert!(
+            matches!(f.ops[1], KrirOp::UnsafeExit),
+            "second op must be UnsafeExit"
+        );
     }
 
     #[test]
@@ -11611,10 +11622,18 @@ mod tests {
         let op2 = KrirOp::RawPtrStore {
             ty: MmioScalarType::U32,
             addr_slot: "p".to_string(),
-            value: MmioValueExpr::IntLiteral { value: "42".to_string() },
+            value: MmioValueExpr::IntLiteral {
+                value: "42".to_string(),
+            },
         };
-        match op { KrirOp::RawPtrLoad { .. } => {} _ => panic!("wrong variant") }
-        match op2 { KrirOp::RawPtrStore { .. } => {} _ => panic!("wrong variant") }
+        match op {
+            KrirOp::RawPtrLoad { .. } => {}
+            _ => panic!("wrong variant"),
+        }
+        match op2 {
+            KrirOp::RawPtrStore { .. } => {}
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]
@@ -11627,7 +11646,7 @@ mod tests {
         assert_eq!(header_bytes[6], 0, "reserved[0] wrong");
         assert_eq!(header_bytes[7], 0, "reserved[1] wrong");
         let entry_off = u32::from_le_bytes(header_bytes[8..12].try_into().unwrap());
-        let code_len  = u32::from_le_bytes(header_bytes[12..16].try_into().unwrap());
+        let code_len = u32::from_le_bytes(header_bytes[12..16].try_into().unwrap());
         assert_eq!(entry_off, 0);
         assert_eq!(code_len, 4);
         assert_eq!(&header_bytes[16..], &code_bytes[..]);
@@ -11640,7 +11659,8 @@ mod tests {
     fn krbo_parse_rejects_bad_magic() {
         let mut bad = vec![0u8; 20];
         bad[0..4].copy_from_slice(b"NOPE");
-        bad[4] = 1; bad[5] = 0x01;
+        bad[4] = 1;
+        bad[5] = 0x01;
         bad[12..16].copy_from_slice(&4u32.to_le_bytes());
         assert!(super::parse_krbo_header(&bad).is_err());
     }
@@ -11649,7 +11669,8 @@ mod tests {
     fn krbo_parse_rejects_bad_version() {
         let mut bytes = vec![0u8; 20];
         bytes[0..4].copy_from_slice(b"KRBO");
-        bytes[4] = 99; bytes[5] = 0x01;
+        bytes[4] = 99;
+        bytes[5] = 0x01;
         bytes[12..16].copy_from_slice(&4u32.to_le_bytes());
         assert!(super::parse_krbo_header(&bytes).is_err());
     }
@@ -11658,7 +11679,8 @@ mod tests {
     fn krbo_parse_rejects_empty_code() {
         let mut bytes = vec![0u8; 16];
         bytes[0..4].copy_from_slice(b"KRBO");
-        bytes[4] = 1; bytes[5] = 0x01;
+        bytes[4] = 1;
+        bytes[5] = 0x01;
         // code_length stays 0
         assert!(super::parse_krbo_header(&bytes).is_err());
     }
@@ -11667,9 +11689,10 @@ mod tests {
     fn krbo_parse_rejects_entry_out_of_range() {
         let mut bytes = vec![0u8; 20];
         bytes[0..4].copy_from_slice(b"KRBO");
-        bytes[4] = 1; bytes[5] = 0x01;
+        bytes[4] = 1;
+        bytes[5] = 0x01;
         bytes[8..12].copy_from_slice(&100u32.to_le_bytes()); // entry_offset=100
-        bytes[12..16].copy_from_slice(&4u32.to_le_bytes());   // code_length=4 → out of range
+        bytes[12..16].copy_from_slice(&4u32.to_le_bytes()); // code_length=4 → out of range
         assert!(super::parse_krbo_header(&bytes).is_err());
     }
 }

@@ -1030,7 +1030,9 @@ fn lock_graph_dfs(
 pub fn lock_edge_cycle_check(edges: &[LockEdge]) -> Vec<CheckError> {
     let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for edge in edges {
-        adj.entry(edge.from.clone()).or_default().insert(edge.to.clone());
+        adj.entry(edge.from.clone())
+            .or_default()
+            .insert(edge.to.clone());
         adj.entry(edge.to.clone()).or_default();
     }
 
@@ -1042,7 +1044,14 @@ pub fn lock_edge_cycle_check(edges: &[LockEdge]) -> Vec<CheckError> {
 
     for node in &nodes {
         if !visited.contains(node) {
-            lock_edge_dfs(node, &adj, &mut visited, &mut stack, &mut in_stack, &mut errs);
+            lock_edge_dfs(
+                node,
+                &adj,
+                &mut visited,
+                &mut stack,
+                &mut in_stack,
+                &mut errs,
+            );
         }
     }
     errs
@@ -1123,8 +1132,7 @@ fn strip_unreachable_functions(module: &mut ExecutableKrirModule) {
     let mut queue: VecDeque<String> = VecDeque::new();
 
     for function in &module.functions {
-        let is_root = function.facts.attrs.is_export
-            || function.facts.ctx_ok.contains(&Ctx::Boot);
+        let is_root = function.facts.attrs.is_export || function.facts.ctx_ok.contains(&Ctx::Boot);
         if is_root {
             let name = function.name.clone();
             if reachable.insert(name.clone()) {
@@ -1141,7 +1149,9 @@ fn strip_unreachable_functions(module: &mut ExecutableKrirModule) {
     // Build call adjacency from call_edges
     let mut adj: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for edge in &module.call_edges {
-        adj.entry(edge.caller.as_str()).or_default().push(edge.callee.as_str());
+        adj.entry(edge.caller.as_str())
+            .or_default()
+            .push(edge.callee.as_str());
     }
 
     // BFS over reachable set
