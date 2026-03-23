@@ -1,5 +1,6 @@
 mod args;
 mod diff;
+mod fix;
 mod run;
 
 pub(crate) use args::parse_living_compiler_args;
