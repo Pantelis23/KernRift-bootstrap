@@ -5405,6 +5405,115 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
     out
 }
 
+/// Returns (mnemonic, load_reg) for an AArch64 MMIO load.
+fn aarch64_load_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
+    match ty {
+        MmioScalarType::U8  => ("ldrb", "w0"),
+        MmioScalarType::U16 => ("ldrh", "w0"),
+        MmioScalarType::U32 => ("ldr",  "w0"),
+        MmioScalarType::U64 => ("ldr",  "x0"),
+        MmioScalarType::F32 => ("ldr",  "w0"),
+        MmioScalarType::F64 => ("ldr",  "x0"),
+    }
+}
+
+/// Returns (mnemonic, store_reg) for an AArch64 MMIO store.
+fn aarch64_store_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
+    match ty {
+        MmioScalarType::U8  => ("strb", "w2"),
+        MmioScalarType::U16 => ("strh", "w2"),
+        MmioScalarType::U32 => ("str",  "w2"),
+        MmioScalarType::U64 => ("str",  "x2"),
+        MmioScalarType::F32 => ("str",  "w2"),
+        MmioScalarType::F64 => ("str",  "x2"),
+    }
+}
+
+pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("    .section {}\n", module.section));
+    for func in &module.functions {
+        out.push_str(&format!("    .global {}\n", func.symbol));
+        out.push_str(&format!("{}:\n", func.symbol));
+
+        // Prologue: stack_cells*8 rounded up to 16-byte alignment, plus 16 for x29/x30.
+        let stack_bytes = (func.n_stack_cells as usize * 8 + 15) & !15;
+        let frame_bytes = stack_bytes + 16;
+        out.push_str(&format!("    stp x29, x30, [sp, #-{}]!\n", frame_bytes));
+        out.push_str("    mov x29, sp\n");
+
+        for instr in &func.instructions {
+            match instr {
+                AArch64AsmInstruction::Call { symbol } => {
+                    out.push_str(&format!("    bl {}\n", symbol));
+                }
+                AArch64AsmInstruction::CallWithArgs { symbol, .. } => {
+                    out.push_str(&format!("    bl {}\n", symbol));
+                }
+                AArch64AsmInstruction::TailCall { symbol, .. } => {
+                    out.push_str(&format!("    ldp x29, x30, [sp], #{}\n", frame_bytes));
+                    out.push_str(&format!("    b {}\n", symbol));
+                }
+                AArch64AsmInstruction::BranchIfZero { then_symbol, else_symbol, .. } => {
+                    out.push_str(&format!("    cbz x0, {}\n", then_symbol));
+                    out.push_str(&format!("    b {}\n", else_symbol));
+                }
+                AArch64AsmInstruction::BranchIfEqImm { compare_value, then_symbol, else_symbol, .. } => {
+                    out.push_str(&format!("    cmp x0, #{}\n", compare_value));
+                    out.push_str(&format!("    b.eq {}\n", then_symbol));
+                    out.push_str(&format!("    b {}\n", else_symbol));
+                }
+                AArch64AsmInstruction::BranchIfMaskNonZeroImm { mask_value, then_symbol, else_symbol, .. } => {
+                    out.push_str(&format!("    tst x0, #{}\n", mask_value));
+                    out.push_str(&format!("    b.ne {}\n", then_symbol));
+                    out.push_str(&format!("    b {}\n", else_symbol));
+                }
+                AArch64AsmInstruction::Label(name) => {
+                    out.push_str(&format!("{}:\n", name));
+                }
+                AArch64AsmInstruction::JmpLabel(label) => {
+                    out.push_str(&format!("    b {}\n", label));
+                }
+                AArch64AsmInstruction::JmpIfZeroLabel(label) => {
+                    out.push_str(&format!("    cbz x0, {}\n", label));
+                }
+                AArch64AsmInstruction::JmpIfNonZeroLabel(label) => {
+                    out.push_str(&format!("    cbnz x0, {}\n", label));
+                }
+                AArch64AsmInstruction::Ret => {
+                    out.push_str(&format!("    ldp x29, x30, [sp], #{}\n", frame_bytes));
+                    out.push_str("    ret\n");
+                }
+                AArch64AsmInstruction::CallCapture { symbol, .. } => {
+                    out.push_str(&format!("    bl {}\n", symbol));
+                }
+                AArch64AsmInstruction::MmioRead { addr, ty, .. } => {
+                    let (mnem, reg) = aarch64_load_parts(*ty);
+                    out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
+                    out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
+                }
+                AArch64AsmInstruction::MmioWriteImm { addr, value, ty } => {
+                    let (mnem, reg) = aarch64_store_parts(*ty);
+                    out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
+                    out.push_str(&format!("    mov {}, #{}\n", reg, value));
+                    out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
+                }
+                AArch64AsmInstruction::MmioWriteValue { addr, ty } => {
+                    let (mnem, reg) = aarch64_store_parts(*ty);
+                    out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
+                    out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
+                }
+                _ => {
+                    // Remaining variants: emit a comment placeholder.
+                    out.push_str("    // TODO: unimplemented instruction\n");
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn decode_x86_64_mmio_instruction(
     bytes: &[u8],
     cursor: usize,
@@ -8690,7 +8799,8 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AArch64IntegerRegister, AArch64AsmModule, BackendTargetContract, BackendTargetId, CallEdge,
+        AArch64IntegerRegister, AArch64AsmFunction, AArch64AsmInstruction, AArch64AsmModule,
+        BackendTargetContract, BackendTargetId, CallEdge,
         CompilerOwnedCodeSection, CompilerOwnedFixupKind, CompilerOwnedObject,
         CompilerOwnedObjectFixup, CompilerOwnedObjectHeader, CompilerOwnedObjectKind,
         CompilerOwnedObjectSymbol, CompilerOwnedObjectSymbolDefinition,
@@ -8700,8 +8810,8 @@ mod tests {
         FunctionAttrs, FutureScalarReturnConvention, IntegerRegister, MmioScalarType,
         TargetEndian, X86_64CoffFunctionSymbol, X86_64CoffRelocatableObject,
         X86_64IntegerRegister, X86_64MachOFunctionSymbol, X86_64MachORelocatableObject,
-        emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_coff_bytes,
-        emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
+        emit_aarch64_asm_text, emit_compiler_owned_object_bytes, emit_x86_64_asm_text,
+        emit_x86_64_coff_bytes, emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
         export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
         lower_executable_krir_to_aarch64_asm, lower_executable_krir_to_compiler_owned_object,
         lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
@@ -12273,6 +12383,62 @@ mod tests {
     fn future_return_x0_registers() {
         let regs = FutureScalarReturnConvention::IntegerX0.registers();
         assert_eq!(regs, vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)]);
+    }
+
+    #[test]
+    fn aarch64_asm_text_smoke() {
+        let module = AArch64AsmModule {
+            section: ".text",
+            functions: vec![AArch64AsmFunction {
+                symbol: "entry".to_string(),
+                uses_saved_value_slot: false,
+                n_stack_cells: 0,
+                n_params: 0,
+                instructions: vec![
+                    AArch64AsmInstruction::Call { symbol: "print".to_string() },
+                    AArch64AsmInstruction::Ret,
+                ],
+            }],
+        };
+        let text = emit_aarch64_asm_text(&module);
+        assert!(text.contains("entry:"), "missing label in:\n{}", text);
+        assert!(text.contains("bl print"), "missing bl in:\n{}", text);
+        assert!(text.contains("ret"), "missing ret in:\n{}", text);
+    }
+
+    #[test]
+    fn aarch64_asm_text_mmio_widths() {
+        let module = AArch64AsmModule {
+            section: ".text",
+            functions: vec![AArch64AsmFunction {
+                symbol: "mmio_test".to_string(),
+                uses_saved_value_slot: false,
+                n_stack_cells: 0,
+                n_params: 0,
+                instructions: vec![
+                    AArch64AsmInstruction::MmioRead {
+                        ty: MmioScalarType::U8,
+                        addr: 0x4000_0000,
+                        capture_value: false,
+                    },
+                    AArch64AsmInstruction::MmioRead {
+                        ty: MmioScalarType::U32,
+                        addr: 0x4000_0004,
+                        capture_value: false,
+                    },
+                    AArch64AsmInstruction::MmioRead {
+                        ty: MmioScalarType::U64,
+                        addr: 0x4000_0008,
+                        capture_value: false,
+                    },
+                    AArch64AsmInstruction::Ret,
+                ],
+            }],
+        };
+        let text = emit_aarch64_asm_text(&module);
+        assert!(text.contains("ldrb w0,"), "missing ldrb/w0 in:\n{}", text);
+        assert!(text.contains("ldr w0,"), "missing ldr/w0 in:\n{}", text);
+        assert!(text.contains("ldr x0,"), "missing ldr/x0 in:\n{}", text);
     }
 
     #[test]
