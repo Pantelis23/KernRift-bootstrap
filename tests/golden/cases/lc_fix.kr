@@ -1,0 +1,6 @@
+fn helper() {
+}
+
+fn loop_back() {
+    helper();
+}
