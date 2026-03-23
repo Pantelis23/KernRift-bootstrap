@@ -1104,7 +1104,10 @@ pub fn lower_to_canonical_executable_with_surface(
 
     for item in &ast.items {
         if !names.insert(item.name.clone()) {
-            errors.push(format!("duplicate symbol '{}'", item.name));
+            errors.push(format!(
+                "duplicate symbol '{}' at {}:{}",
+                item.name, item.source.line, item.source.column
+            ));
         }
         if item.is_extern {
             extern_names.insert(item.name.clone());
@@ -1340,7 +1343,10 @@ pub fn lower_to_krir_with_surface(
 
     for item in &ast.items {
         if !names.insert(item.name.clone()) {
-            errors.push(format!("duplicate symbol '{}'", item.name));
+            errors.push(format!(
+                "duplicate symbol '{}' at {}:{}",
+                item.name, item.source.line, item.source.column
+            ));
         }
     }
 

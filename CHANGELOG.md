@@ -2,6 +2,28 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## [Unreleased]
+
+### Added
+- `kernrift` split into its own crate so `cargo install` tracks both binaries independently.
+- `elfexe` emit target: `kernriftc --emit=elfexe` links an ELF ET_EXEC binary using `ld.lld`/`ld`.
+- Dead function elimination pass: strips functions unreachable from `@export`/`@ctx(boot)`.
+- Link-time lock graph merge: `kernriftc link` detects cross-module lock-order cycles.
+
+### Improved
+- **Syntax error messages** — all TokParser diagnostics now show human-readable token names
+  instead of Rust debug format (e.g. `got '{'` instead of `got LBrace`).
+  Specific improvements:
+  - Missing return type after `->`: suggests valid types and `-> u64` example.
+  - `if` without a condition: points at the `{` and suggests a boolean expression.
+  - `let` keyword: directs to typed declaration syntax (`u64 x = ...`).
+  - Undeclared variable assignment: names the variable and suggests declaration syntax.
+  - Duplicate symbol: includes source location in the error.
+  - Missing comma between call arguments: flags the unexpected token.
+  - `mmio`/`mmio_reg` inside a function body: reports module-scope restriction.
+  - `expect_kind` and all inner parser helpers use readable token names.
+- `token_kind_to_str` is now exhaustive — every `TokenKind` variant maps to a display string.
+
 ## v0.2.10 - 2026-02-27
 
 ### Changed

@@ -2475,12 +2475,17 @@ fn resolve_executable_stack_cell_slot(
     cell_slot_map: &BTreeMap<String, (u8, MmioScalarType)>,
 ) -> Result<u8, String> {
     let Some(&(slot_idx, cell_ty)) = cell_slot_map.get(cell) else {
-        return Err(format!(
-            "stack cell '{}' requires a prior stack_cell<{}>({}) declaration in the same function",
-            cell,
-            ty.as_str(),
-            cell
-        ));
+        return Err(if cell == "let" {
+            "KernRift has no `let` keyword; declare variables with their type, e.g. `u64 x = ...`"
+                .to_string()
+        } else {
+            format!(
+                "assignment to undeclared variable '{}'; declare it first with `{} {} = ...`",
+                cell,
+                ty.as_str(),
+                cell
+            )
+        });
     };
     if cell_ty != ty {
         return Err(format!(

@@ -640,10 +640,20 @@ pub fn parse_module(src: &str) -> Result<ModuleAst, Vec<String>> {
             // TokParser failed — try old character-level parser as fallback
             match Parser::new(src).parse_module() {
                 ok @ Ok(_) => ok,
-                // Both failed: prefer old parser errors for old-syntax files (better
-                // diagnostics), but only if old parser produced any errors.
-                Err(old_errs) if !old_errs.is_empty() => Err(old_errs),
-                Err(_) => Err(new_errs),
+                // Both failed: prefer TokParser errors for new-syntax files (they are
+                // more contextual). Fall back to old-parser errors when TokParser hit
+                // a construct it doesn't understand — signalled by "at top level"
+                // (unknown module item, e.g. `mmio`) or "old-syntax intrinsic"
+                // (typed intrinsic call like `mmio_write<u32>`).
+                Err(_)
+                    if !new_errs.is_empty()
+                        && !new_errs.iter().any(|e| {
+                            e.contains("at top level") || e.contains("old-syntax intrinsic")
+                        }) =>
+                {
+                    Err(new_errs)
+                }
+                Err(old_errs) => Err(old_errs),
             }
         }
     }
@@ -1264,8 +1274,11 @@ impl TokParser {
             Ok(t)
         } else {
             Err(format!(
-                "expected {:?} but found {:?} at {}:{}",
-                kind, t.kind, t.source.line, t.source.column
+                "expected '{}' but found '{}' at {}:{}",
+                token_kind_to_str(kind),
+                token_kind_to_str(&t.kind),
+                t.source.line,
+                t.source.column
             ))
         }
     }
@@ -1286,6 +1299,7 @@ impl TokParser {
     /// Pratt expression parser. `min_bp` is the minimum binding power (0 = parse all).
     pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, String> {
         // --- prefix ---
+        let expr_src = self.peek().source.clone();
         let mut lhs = match self.advance().kind.clone() {
             TokenKind::IntLit(n) => Expr::IntLiteral(n),
             TokenKind::FloatLit(f) => Expr::FloatLiteral(f),
@@ -1328,7 +1342,10 @@ impl TokParser {
                     let field = match self.advance().kind.clone() {
                         TokenKind::Ident(f) => f,
                         other => {
-                            return Err(format!("expected field name after '.', got {:?}", other));
+                            return Err(format!(
+                                "expected field name after '.', got '{}'",
+                                token_kind_to_str(&other)
+                            ));
                         }
                     };
                     if field == "len" {
@@ -1343,8 +1360,19 @@ impl TokParser {
                     let mut args = Vec::new();
                     while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
                         args.push(self.parse_expr(0)?);
-                        if !self.eat(&TokenKind::Comma) {
+                        if self.at(&TokenKind::RParen) || self.at(&TokenKind::Eof) {
                             break;
+                        }
+                        if !self.eat(&TokenKind::Comma) {
+                            let tok = self.peek();
+                            return Err(format_source_diagnostic(
+                                &tok.source.clone(),
+                                &format!(
+                                    "expected ',' or ')' after argument, got '{}'",
+                                    token_kind_to_str(&tok.kind.clone())
+                                ),
+                                Some("add a ',' between arguments"),
+                            ));
                         }
                     }
                     self.expect_kind(&TokenKind::RParen)?;
@@ -1353,7 +1381,13 @@ impl TokParser {
                     Expr::Ident(name)
                 }
             }
-            other => return Err(format!("expected expression, got {:?}", other)),
+            other => {
+                return Err(format_source_diagnostic(
+                    &expr_src,
+                    &format!("expected expression, got '{}'", token_kind_to_str(&other)),
+                    None,
+                ));
+            }
         };
 
         // --- infix ---
@@ -1543,8 +1577,8 @@ impl TokParser {
                 }
                 other => {
                     errors.push(format!(
-                        "unexpected token {:?} at top level ({}:{})",
-                        other,
+                        "unexpected '{}' at top level ({}:{})",
+                        token_kind_to_str(&other),
                         self.peek().source.line,
                         self.peek().source.column
                     ));
@@ -1566,7 +1600,12 @@ impl TokParser {
         self.expect_kind(&TokenKind::AtSign)?;
         let name = match self.advance().kind.clone() {
             TokenKind::Ident(n) => n,
-            other => return Err(format!("expected attribute name, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected attribute name, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         let args = if self.eat(&TokenKind::LParen) {
             let mut depth = 1i32;
@@ -1607,7 +1646,12 @@ impl TokParser {
         let source = self.peek().source.clone();
         let name = match self.advance().kind.clone() {
             TokenKind::Ident(n) => n,
-            other => return Err(format!("expected function name, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected function name, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.expect_kind(&TokenKind::LParen)?;
         let params = self.parse_param_list_tok()?;
@@ -1615,10 +1659,27 @@ impl TokParser {
 
         // Optional `-> type`
         let return_ty = if self.eat(&TokenKind::Arrow) {
-            Some(match self.advance().kind.clone() {
-                TokenKind::TypeKw(ty) => ty,
-                other => return Err(format!("expected return type, got {:?}", other)),
-            })
+            let ty_src = self.peek().source.clone();
+            match self.advance().kind.clone() {
+                TokenKind::TypeKw(ty) => Some(ty),
+                TokenKind::LBrace => {
+                    return Err(format_source_diagnostic(
+                        &ty_src,
+                        "expected return type after '->'; valid types: u8, u16, u32, u64, bool",
+                        Some("add a return type here, e.g. `-> u64`"),
+                    ));
+                }
+                other => {
+                    return Err(format_source_diagnostic(
+                        &ty_src,
+                        &format!(
+                            "expected return type after '->', got '{}'; valid types: u8, u16, u32, u64, bool",
+                            token_kind_to_str(&other)
+                        ),
+                        None,
+                    ));
+                }
+            }
         } else {
             None
         };
@@ -1656,14 +1717,24 @@ impl TokParser {
             let is_slice = self.eat(&TokenKind::LBracket);
             let ty = match self.advance().kind.clone() {
                 TokenKind::TypeKw(t) => t,
-                other => return Err(format!("expected parameter type, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected parameter type, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             if is_slice {
                 self.expect_kind(&TokenKind::RBracket)?;
             }
             let name = match self.advance().kind.clone() {
                 TokenKind::Ident(n) => n,
-                other => return Err(format!("expected parameter name, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected parameter name, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             let param_ty = if is_slice {
                 ParamTy::Slice(ty)
@@ -1709,8 +1780,8 @@ impl TokParser {
                     TokenKind::Ident(n) => n,
                     other => {
                         return Err(format!(
-                            "expected variable name after type, got {:?}",
-                            other
+                            "expected variable name after type, got '{}'",
+                            token_kind_to_str(&other)
                         ));
                     }
                 };
@@ -1724,6 +1795,13 @@ impl TokParser {
             // if expr { body } else { body }
             TokenKind::If => {
                 self.advance();
+                if self.at(&TokenKind::LBrace) {
+                    return Err(format_source_diagnostic(
+                        &note,
+                        "expected condition after 'if', found '{'",
+                        Some("add a boolean expression before the '{', e.g. `if x > 0 {`"),
+                    ));
+                }
                 let cond = self.parse_expr(0)?;
                 self.expect_kind(&TokenKind::LBrace)?;
                 let then_body = self.parse_block_tok()?;
@@ -1752,7 +1830,12 @@ impl TokParser {
                 self.advance();
                 let var = match self.advance().kind.clone() {
                     TokenKind::Ident(n) => n,
-                    other => return Err(format!("expected loop variable, got {:?}", other)),
+                    other => {
+                        return Err(format!(
+                            "expected loop variable, got '{}'",
+                            token_kind_to_str(&other)
+                        ));
+                    }
                 };
                 self.expect_kind(&TokenKind::In)?;
                 let start = self.parse_expr(0)?;
@@ -1801,8 +1884,8 @@ impl TokParser {
                     TokenKind::StrLit(s) => s,
                     other => {
                         return Err(format!(
-                            "print() requires a string literal, got {:?}",
-                            other
+                            "print() requires a string literal, got '{}'",
+                            token_kind_to_str(&other)
                         ));
                     }
                 };
@@ -1815,7 +1898,12 @@ impl TokParser {
                 self.expect_kind(&TokenKind::LParen)?;
                 let name = match self.advance().kind.clone() {
                     TokenKind::Ident(n) => n,
-                    other => return Err(format!("expected lock name, got {:?}", other)),
+                    other => {
+                        return Err(format!(
+                            "expected lock name, got '{}'",
+                            token_kind_to_str(&other)
+                        ));
+                    }
                 };
                 self.expect_kind(&TokenKind::RParen)?;
                 Ok(Stmt::Acquire(name))
@@ -1825,7 +1913,12 @@ impl TokParser {
                 self.expect_kind(&TokenKind::LParen)?;
                 let name = match self.advance().kind.clone() {
                     TokenKind::Ident(n) => n,
-                    other => return Err(format!("expected lock name, got {:?}", other)),
+                    other => {
+                        return Err(format!(
+                            "expected lock name, got '{}'",
+                            token_kind_to_str(&other)
+                        ));
+                    }
                 };
                 self.expect_kind(&TokenKind::RParen)?;
                 Ok(Stmt::Release(name))
@@ -1851,6 +1944,14 @@ impl TokParser {
             // Ident — assignment, compound-assign, field-assign, or call
             // Also handles `raw_write` and `raw_read` which are tokenized as Ident
             TokenKind::Ident(name) => {
+                // Catch common mistake: `let` is not a keyword in KernRift.
+                if name == "let" {
+                    return Err(format_source_diagnostic(
+                        &note,
+                        "KernRift has no `let` keyword; declare variables with their type, e.g. `u64 x = ...`",
+                        None,
+                    ));
+                }
                 // Check for asm!(NAME) — kernel intrinsic instruction.
                 if name == "asm" && matches!(self.peek_at(1).kind, TokenKind::Bang) {
                     self.advance(); // consume `asm`
@@ -1860,8 +1961,8 @@ impl TokParser {
                         TokenKind::Ident(n) => n,
                         other => {
                             return Err(format!(
-                                "expected intrinsic name after asm!(, got {:?}",
-                                other
+                                "expected intrinsic name after asm!(, got '{}'",
+                                token_kind_to_str(&other)
                             ));
                         }
                     };
@@ -1902,7 +2003,12 @@ impl TokParser {
                     let capture = if self.eat(&TokenKind::Comma) {
                         Some(match self.advance().kind.clone() {
                             TokenKind::Ident(n) => n,
-                            other => return Err(format!("expected capture slot, got {:?}", other)),
+                            other => {
+                                return Err(format!(
+                                    "expected capture slot, got '{}'",
+                                    token_kind_to_str(&other)
+                                ));
+                            }
                         })
                     } else {
                         None
@@ -1942,8 +2048,8 @@ impl TokParser {
                             TokenKind::Ident(f) => f,
                             other => {
                                 return Err(format!(
-                                    "expected field name after '.', got {:?}",
-                                    other
+                                    "expected field name after '.', got '{}'",
+                                    token_kind_to_str(&other)
                                 ));
                             }
                         };
@@ -1963,8 +2069,19 @@ impl TokParser {
                         let mut args = Vec::new();
                         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
                             args.push(self.parse_expr(0)?);
-                            if !self.eat(&TokenKind::Comma) {
+                            if self.at(&TokenKind::RParen) || self.at(&TokenKind::Eof) {
                                 break;
+                            }
+                            if !self.eat(&TokenKind::Comma) {
+                                let tok = self.peek();
+                                return Err(format_source_diagnostic(
+                                    &tok.source.clone(),
+                                    &format!(
+                                        "expected ',' or ')' after argument, got '{}'",
+                                        token_kind_to_str(&tok.kind.clone())
+                                    ),
+                                    Some("add a ',' between arguments"),
+                                ));
                             }
                         }
                         self.expect_kind(&TokenKind::RParen)?;
@@ -2025,9 +2142,52 @@ impl TokParser {
                             Ok(Stmt::ExprStmt(Expr::Call { callee: name, args }))
                         }
                     }
-                    other => Err(format!(
-                        "unexpected token {:?} after identifier '{}' ({}:{})",
-                        other, name, note.line, note.column
+                    // `mmio UART0 = 0x1000;` — old-syntax device declaration used
+                    // inside a function body. Return the signal so the old parser runs and
+                    // produces "mmio declarations are only allowed at module scope".
+                    TokenKind::Ident(_) if matches!(name.as_str(), "mmio" | "mmio_reg") => {
+                        Err(format!("old-syntax intrinsic '{}' — use old parser", name))
+                    }
+                    // old-syntax intrinsic with a type parameter: `mmio_write<u32>(...)`.
+                    // Returning "old-syntax intrinsic" ensures the old parser is preferred.
+                    TokenKind::Lt
+                        if matches!(
+                            name.as_str(),
+                            "mmio_read"
+                                | "mmio_write"
+                                | "raw_mmio_read"
+                                | "raw_mmio_write"
+                                | "stack_cell"
+                                | "cell_store"
+                                | "cell_load"
+                                | "cell_add"
+                                | "cell_sub"
+                                | "cell_and"
+                                | "cell_or"
+                                | "cell_xor"
+                                | "cell_shl"
+                                | "cell_shr"
+                                | "slot_add"
+                                | "slot_sub"
+                                | "slot_and"
+                                | "slot_or"
+                                | "slot_xor"
+                                | "slot_shl"
+                                | "slot_shr"
+                                | "percpu_read"
+                                | "percpu_write"
+                        ) =>
+                    {
+                        Err(format!("old-syntax intrinsic '{}' — use old parser", name))
+                    }
+                    other => Err(format_source_diagnostic(
+                        &note,
+                        &format!(
+                            "unexpected '{}' after '{}'; expected '=', '(', or '.'",
+                            token_kind_to_str(&other),
+                            name
+                        ),
+                        None,
                     )),
                 }
             }
@@ -2038,19 +2198,30 @@ impl TokParser {
                 self.expect_kind(&TokenKind::LParen)?;
                 let addr_var = match self.advance().kind.clone() {
                     TokenKind::Ident(n) => n,
-                    other => return Err(format!("expected identifier after *(, got {:?}", other)),
+                    other => {
+                        return Err(format!(
+                            "expected identifier after *(, got '{}'",
+                            token_kind_to_str(&other)
+                        ));
+                    }
                 };
                 // expect `as`
                 match self.advance().kind.clone() {
                     TokenKind::Ident(kw) if kw == "as" => {}
                     other => {
-                        return Err(format!("expected 'as' in ptr deref cast, got {:?}", other));
+                        return Err(format!(
+                            "expected 'as' in ptr deref cast, got '{}'",
+                            token_kind_to_str(&other)
+                        ));
                     }
                 }
                 let ty = match self.advance().kind.clone() {
                     TokenKind::TypeKw(t) => t,
                     other => {
-                        return Err(format!("expected type in ptr deref cast, got {:?}", other));
+                        return Err(format!(
+                            "expected type in ptr deref cast, got '{}'",
+                            token_kind_to_str(&other)
+                        ));
                     }
                 };
                 self.expect_kind(&TokenKind::RParen)?;
@@ -2059,7 +2230,10 @@ impl TokParser {
                     let out_var = match self.advance().kind.clone() {
                         TokenKind::Ident(n) => n,
                         other => {
-                            return Err(format!("expected output slot after ->, got {:?}", other));
+                            return Err(format!(
+                                "expected output slot after ->, got '{}'",
+                                token_kind_to_str(&other)
+                            ));
                         }
                     };
                     Ok(Stmt::PtrLoad {
@@ -2077,9 +2251,13 @@ impl TokParser {
                     })
                 }
             }
-            other => Err(format!(
-                "unexpected token {:?} at start of statement ({}:{})",
-                other, note.line, note.column
+            other => Err(format_source_diagnostic(
+                &note,
+                &format!(
+                    "unexpected '{}'; expected a statement",
+                    token_kind_to_str(&other)
+                ),
+                None,
             )),
         }
     }
@@ -2089,7 +2267,12 @@ impl TokParser {
         self.expect_kind(&TokenKind::Lt)?;
         let ty = match self.advance().kind.clone() {
             TokenKind::TypeKw(t) => t,
-            other => return Err(format!("expected type in <>, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected type in <>, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.expect_kind(&TokenKind::Gt)?;
         Ok(ty)
@@ -2110,13 +2293,19 @@ impl TokParser {
                             base,
                             offset: format!("0x{:X}", offset),
                         }),
-                        other => Err(format!("expected integer offset, got {:?}", other)),
+                        other => Err(format!(
+                            "expected integer offset, got '{}'",
+                            token_kind_to_str(&other)
+                        )),
                     }
                 } else {
                     Ok(MmioAddrExpr::Ident(base))
                 }
             }
-            other => Err(format!("expected MMIO address expression, got {:?}", other)),
+            other => Err(format!(
+                "expected MMIO address expression, got '{}'",
+                token_kind_to_str(&other)
+            )),
         }
     }
 
@@ -2125,7 +2314,10 @@ impl TokParser {
         match self.advance().kind.clone() {
             TokenKind::IntLit(n) => Ok(MmioValueExpr::IntLiteral(format!("0x{:X}", n))),
             TokenKind::Ident(n) => Ok(MmioValueExpr::Ident(n)),
-            other => Err(format!("expected value expression, got {:?}", other)),
+            other => Err(format!(
+                "expected value expression, got '{}'",
+                token_kind_to_str(&other)
+            )),
         }
     }
 
@@ -2134,13 +2326,23 @@ impl TokParser {
         let source = self.peek().source.clone();
         let name = match self.advance().kind.clone() {
             TokenKind::Ident(n) => n,
-            other => return Err(format!("expected device name, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected device name, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.expect_kind(&TokenKind::At)?;
         let base_addr = match self.advance().kind.clone() {
             TokenKind::IntLit(n) => format!("0x{:X}", n),
             TokenKind::Ident(s) => s,
-            other => return Err(format!("expected device base address, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected device base address, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.expect_kind(&TokenKind::LBrace)?;
         let mut registers = Vec::new();
@@ -2153,18 +2355,33 @@ impl TokParser {
             }
             let reg_name = match self.advance().kind.clone() {
                 TokenKind::Ident(n) => n,
-                other => return Err(format!("expected register name, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected register name, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             self.expect_kind(&TokenKind::At)?;
             let offset = match self.advance().kind.clone() {
                 TokenKind::IntLit(n) => format!("0x{:X}", n),
                 TokenKind::Ident(s) => s,
-                other => return Err(format!("expected register offset, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected register offset, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             self.expect_kind(&TokenKind::Colon)?;
             let ty = match self.advance().kind.clone() {
                 TokenKind::TypeKw(t) => t,
-                other => return Err(format!("expected register type, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected register type, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             let access = match self.advance().kind.clone() {
                 TokenKind::Ident(s) => match s.as_str() {
@@ -2173,7 +2390,12 @@ impl TokParser {
                     "wo" => MmioRegAccess::Wo,
                     other => return Err(format!("expected 'rw', 'ro', or 'wo', got '{}'", other)),
                 },
-                other => return Err(format!("expected access mode, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected access mode, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             self.eat(&TokenKind::Semicolon);
             registers.push(DeviceRegDecl {
@@ -2199,20 +2421,35 @@ impl TokParser {
             self.advance();
             let name = match self.advance().kind.clone() {
                 TokenKind::Ident(n) => n,
-                other => return Err(format!("expected constant name, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected constant name, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             (name, t)
         } else {
             let name = match self.advance().kind.clone() {
                 TokenKind::Ident(n) => n,
-                other => return Err(format!("expected constant name, got {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "expected constant name, got '{}'",
+                        token_kind_to_str(&other)
+                    ));
+                }
             };
             (name, MmioScalarType::U64)
         };
         self.expect_kind(&TokenKind::Eq)?;
         let value = match self.advance().kind.clone() {
             TokenKind::IntLit(n) => format!("{}", n),
-            other => return Err(format!("expected constant value, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected constant value, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.eat(&TokenKind::Semicolon);
         Ok(ConstDecl { name, ty, value })
@@ -2222,12 +2459,22 @@ impl TokParser {
     fn parse_percpu_tok(&mut self) -> Result<PercpuDecl, String> {
         let name = match self.advance().kind.clone() {
             TokenKind::Ident(n) => n,
-            other => return Err(format!("expected percpu variable name, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected percpu variable name, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.expect_kind(&TokenKind::Colon)?;
         let ty = match self.advance().kind.clone() {
             TokenKind::TypeKw(t) => t,
-            other => return Err(format!("expected type after ':', got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "expected type after ':', got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
         };
         self.eat(&TokenKind::Semicolon);
         Ok(PercpuDecl { name, ty })
@@ -2316,27 +2563,96 @@ fn compound_assign_op(kind: &TokenKind) -> Option<BinOpKind> {
     })
 }
 
-/// Reconstruct approximate source text for a token kind (used in attribute arg collection).
+/// Reconstruct approximate source text for a token kind (used in diagnostic messages).
 fn token_kind_to_str(kind: &TokenKind) -> String {
     match kind {
+        // Literals & identifier
         TokenKind::Ident(s) => s.clone(),
         TokenKind::IntLit(n) => n.to_string(),
+        TokenKind::FloatLit(f) => f.to_string(),
+        TokenKind::CharLit(c) => format!("'{}'", *c as char),
         TokenKind::StrLit(s) => format!("\"{}\"", s),
+        TokenKind::TypeKw(ty) => ty.as_str().into(),
+        // Keywords
+        TokenKind::Fn => "fn".into(),
+        TokenKind::Extern => "extern".into(),
+        TokenKind::Return => "return".into(),
+        TokenKind::Break => "break".into(),
+        TokenKind::Continue => "continue".into(),
+        TokenKind::If => "if".into(),
+        TokenKind::Else => "else".into(),
+        TokenKind::While => "while".into(),
+        TokenKind::For => "for".into(),
+        TokenKind::In => "in".into(),
+        TokenKind::Const => "const".into(),
+        TokenKind::Struct => "struct".into(),
+        TokenKind::Enum => "enum".into(),
+        TokenKind::Device => "device".into(),
+        TokenKind::At => "at".into(),
+        TokenKind::Lock => "lock".into(),
+        TokenKind::Percpu => "percpu".into(),
+        TokenKind::Acquire => "acquire".into(),
+        TokenKind::Release => "release".into(),
+        TokenKind::Critical => "critical".into(),
+        TokenKind::Unsafe => "unsafe".into(),
+        TokenKind::Yieldpoint => "yieldpoint".into(),
+        TokenKind::Print => "print".into(),
+        TokenKind::RawWrite => "raw_write".into(),
+        TokenKind::RawRead => "raw_read".into(),
+        TokenKind::True => "true".into(),
+        TokenKind::False => "false".into(),
+        TokenKind::StringKw => "string".into(),
+        // Punctuation
+        TokenKind::LBrace => "{".into(),
+        TokenKind::RBrace => "}".into(),
+        TokenKind::LParen => "(".into(),
+        TokenKind::RParen => ")".into(),
+        TokenKind::LBracket => "[".into(),
+        TokenKind::RBracket => "]".into(),
         TokenKind::Comma => ",".into(),
         TokenKind::Colon => ":".into(),
+        TokenKind::Semicolon => ";".into(),
         TokenKind::Dot => ".".into(),
-        TokenKind::Eq => "=".into(),
+        TokenKind::DotDot => "..".into(),
+        TokenKind::DotDotEq => "..=".into(),
+        TokenKind::Arrow => "->".into(),
+        // Operators
         TokenKind::Plus => "+".into(),
         TokenKind::Minus => "-".into(),
         TokenKind::Star => "*".into(),
         TokenKind::Slash => "/".into(),
+        TokenKind::Percent => "%".into(),
         TokenKind::Amp => "&".into(),
         TokenKind::Pipe => "|".into(),
+        TokenKind::Caret => "^".into(),
+        TokenKind::Tilde => "~".into(),
         TokenKind::Bang => "!".into(),
+        TokenKind::Shl => "<<".into(),
+        TokenKind::Shr => ">>".into(),
+        TokenKind::Eq => "=".into(),
+        TokenKind::EqEq => "==".into(),
+        TokenKind::BangEq => "!=".into(),
         TokenKind::Lt => "<".into(),
         TokenKind::Gt => ">".into(),
-        TokenKind::TypeKw(ty) => ty.as_str().into(),
-        other => format!("{:?}", other),
+        TokenKind::LtEq => "<=".into(),
+        TokenKind::GtEq => ">=".into(),
+        TokenKind::AmpAmp => "&&".into(),
+        TokenKind::PipePipe => "||".into(),
+        // Compound assignment
+        TokenKind::PlusEq => "+=".into(),
+        TokenKind::MinusEq => "-=".into(),
+        TokenKind::StarEq => "*=".into(),
+        TokenKind::SlashEq => "/=".into(),
+        TokenKind::PercentEq => "%=".into(),
+        TokenKind::AmpEq => "&=".into(),
+        TokenKind::PipeEq => "|=".into(),
+        TokenKind::CaretEq => "^=".into(),
+        TokenKind::ShlEq => "<<=".into(),
+        TokenKind::ShrEq => ">>=".into(),
+        // Misc
+        TokenKind::AtSign => "@".into(),
+        TokenKind::Hash => "#".into(),
+        TokenKind::Eof => "<end of file>".into(),
     }
 }
 
@@ -4105,6 +4421,14 @@ mod tests {
         format_source_diagnostic(&SourceNote::from_source(src, byte_offset), message, None)
     }
 
+    fn diagnostic_at_with_help(src: &str, byte_offset: usize, message: &str, help: &str) -> String {
+        format_source_diagnostic(
+            &SourceNote::from_source(src, byte_offset),
+            message,
+            Some(help),
+        )
+    }
+
     #[test]
     fn parse_critical_block_statement() {
         let src = r#"
@@ -4640,6 +4964,36 @@ mod tests {
                 src,
                 13,
                 "mmio_reg declarations are only allowed at module scope",
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_return_type_missing_after_arrow() {
+        let src = "fn foo() -> { }";
+        let err = parse_module(src).expect_err("missing return type should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at_with_help(
+                src,
+                12,
+                "expected return type after '->'; valid types: u8, u16, u32, u64, bool",
+                "add a return type here, e.g. `-> u64`",
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_if_without_condition() {
+        let src = "fn foo() { if { } }";
+        let err = parse_module(src).expect_err("if without condition should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at_with_help(
+                src,
+                11,
+                "expected condition after 'if', found '{'",
+                "add a boolean expression before the '{', e.g. `if x > 0 {`",
             )]
         );
     }
