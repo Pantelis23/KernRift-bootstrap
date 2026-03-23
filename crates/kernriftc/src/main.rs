@@ -1951,121 +1951,115 @@ fn print_errors(errs: &[String]) {
 }
 
 fn print_usage() {
-    eprintln!("usage:");
-    eprintln!("  kernriftc <file.kr>                  # compile to <stem>.krbo");
-    eprintln!("  kernriftc --version");
-    eprintln!("  kernriftc check <file.kr>");
-    eprintln!("  kernriftc check --canonical <file.kr>");
-    eprintln!("  kernriftc check --canonical --stdin");
-    eprintln!("  kernriftc check --canonical --format json <file.kr>");
-    eprintln!("  kernriftc check --canonical --stdin --format json");
-    eprintln!("  kernriftc check --surface stable <file.kr>");
-    eprintln!("  kernriftc check --surface experimental <file.kr>");
-    eprintln!("  kernriftc check --profile kernel <file.kr>");
-    eprintln!("  kernriftc check --contracts-schema v2 <file.kr>");
-    eprintln!("  kernriftc check --profile kernel --contracts-schema v2 <file.kr>");
-    eprintln!("  kernriftc check --policy <policy.toml> <file.kr>");
-    eprintln!("  kernriftc check --format json --policy <policy.toml> <file.kr>");
-    eprintln!("  kernriftc check --contracts-out <contracts.json> <file.kr>");
-    eprintln!(
-        "  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> <file.kr>"
+    eprint!(
+        "\
+usage:
+  kernriftc <file.kr>                  compile to <stem>.krbo
+  kernriftc --version
+
+check / analyse:
+  kernriftc check <file.kr>
+  kernriftc check --surface stable <file.kr>
+  kernriftc check --surface experimental <file.kr>
+  kernriftc check --profile kernel <file.kr>
+  kernriftc check --contracts-schema v2 <file.kr>
+  kernriftc check --policy <policy.toml> <file.kr>
+  kernriftc check --format json --policy <policy.toml> <file.kr>
+  kernriftc check --contracts-out <contracts.json> <file.kr>
+  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> <file.kr>
+  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> <file.kr>
+  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> --sign-ed25519 <secret.hex> --sig-out <contracts.sig> <file.kr>
+  kernriftc link <file1.kr> [file2.kr ...]
+
+canonical forms:
+  kernriftc check --canonical <file.kr>
+  kernriftc check --canonical --stdin
+  kernriftc check --canonical --format json <file.kr>
+  kernriftc check --canonical --stdin --format json
+  kernriftc migrate <file.kr>
+  kernriftc migrate <file.kr> --dry-run
+  kernriftc migrate <file.kr> --surface experimental
+  kernriftc migrate-preview <file.kr>
+  kernriftc migrate-preview --surface stable <file.kr>
+  kernriftc migrate-preview --surface experimental <file.kr>
+  kernriftc migrate-preview --canonical-edits --format text <file.kr>
+  kernriftc migrate-preview --canonical-edits --format json <file.kr>
+  kernriftc migrate-preview --canonical-edits --format text --surface stable <file.kr>
+  kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>
+  kernriftc migrate-preview --canonical-edits --format text --surface experimental <file.kr>
+  kernriftc migrate-preview --canonical-edits --format json --surface experimental <file.kr>
+  kernriftc migrate-preview --canonical-edits --stdin
+  kernriftc migrate-preview --canonical-edits --stdin --format json
+  kernriftc fix --canonical --write <file.kr>
+  kernriftc fix --canonical --write --surface experimental <file.kr>
+  kernriftc fix --canonical --write --format json <file.kr>
+  kernriftc fix --canonical --dry-run <file.kr>
+  kernriftc fix --canonical --dry-run --surface experimental <file.kr>
+  kernriftc fix --canonical --dry-run --format json <file.kr>
+  kernriftc fix --canonical --dry-run --stdin
+  kernriftc fix --canonical --dry-run --stdin --format json
+  kernriftc fix --canonical --stdout <file.kr>
+  kernriftc fix --canonical --stdout --surface experimental <file.kr>
+  kernriftc fix --canonical --stdout --stdin
+  kernriftc fix --canonical --diff <file.kr>
+  kernriftc fix --canonical --diff --surface experimental <file.kr>
+  kernriftc fix --canonical --diff --stdin
+
+contracts & verification:
+  kernriftc policy --policy <policy.toml> --contracts <contracts.json>
+  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>
+  kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>
+  kernriftc inspect --contracts <contracts.json>
+  kernriftc inspect-report --report <verify-report.json>
+  kernriftc inspect-report --report <verify-report.json> --format json
+  kernriftc inspect-artifact <artifact-path>
+  kernriftc inspect-artifact <artifact-path> --format json
+  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>
+  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>
+  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>
+  kernriftc verify-artifact-meta <artifact> <meta.json>
+  kernriftc verify-artifact-meta --format json <artifact> <meta.json>
+
+living compiler:
+  kernriftc living-compiler <file.kr>
+  kernriftc living-compiler --surface experimental <file.kr>
+  kernriftc living-compiler --format json <file.kr>
+
+features & proposals:
+  kernriftc features --surface stable
+  kernriftc features --surface experimental
+  kernriftc proposals
+  kernriftc proposals --validate
+  kernriftc proposals --promotion-readiness
+  kernriftc proposals --promote <feature-id>
+  kernriftc proposals --promote <feature-id> --dry-run
+  kernriftc proposals --promote <feature-id> --diff
+  kernriftc proposals --promote <feature-id> --dry-run --diff
+
+emit:
+  kernriftc --emit=krbo -o <output.krbo> <file.kr>
+  kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>
+  kernriftc --emit=elfobj -o <output.o> <file.kr>
+  kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>
+  kernriftc --emit=krboexe -o <output.krbo> <file.kr>
+  kernriftc --emit=asm -o <output.s> <file.kr>
+  kernriftc --emit=staticlib -o <output.a> <file.kr>
+  kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>
+  kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>
+  kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>
+  kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>
+  kernriftc --surface stable --emit=krboexe -o <output.krbo> <file.kr>
+  kernriftc --surface stable --emit=asm -o <output.s> <file.kr>
+  kernriftc --emit krir <file.kr>
+  kernriftc --emit lockgraph <file.kr>
+  kernriftc --emit caps <file.kr>
+  kernriftc --emit contracts <file.kr>
+  kernriftc --emit report --metrics max_lock_depth,no_yield_spans <file.kr>
+  kernriftc --report max_lock_depth,no_yield_spans <file.kr>
+
+misc:
+  kernriftc check --report <metrics> <file.kr>
+  kernriftc --selftest
+"
     );
-    eprintln!(
-        "  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> <file.kr>"
-    );
-    eprintln!(
-        "  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> --sign-ed25519 <secret.hex> --sig-out <contracts.sig> <file.kr>"
-    );
-    eprintln!("  kernriftc policy --policy <policy.toml> --contracts <contracts.json>");
-    eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
-    eprintln!(
-        "  kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
-    );
-    eprintln!("  kernriftc features --surface stable");
-    eprintln!("  kernriftc features --surface experimental");
-    eprintln!("  kernriftc proposals");
-    eprintln!("  kernriftc proposals --validate");
-    eprintln!("  kernriftc proposals --promotion-readiness");
-    eprintln!("  kernriftc proposals --promote <feature-id>");
-    eprintln!("  kernriftc proposals --promote <feature-id> --dry-run");
-    eprintln!("  kernriftc proposals --promote <feature-id> --diff");
-    eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
-    eprintln!("  kernriftc link <file1.kr> [file2.kr ...]");
-    eprintln!("  kernriftc living-compiler <file.kr>");
-    eprintln!("  kernriftc living-compiler --surface experimental <file.kr>");
-    eprintln!("  kernriftc living-compiler --format json <file.kr>");
-    eprintln!("  kernriftc migrate <file.kr>");
-    eprintln!("  kernriftc migrate <file.kr> --dry-run");
-    eprintln!("  kernriftc migrate <file.kr> --surface experimental");
-    eprintln!("  kernriftc migrate-preview <file.kr>");
-    eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
-    eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
-    eprintln!("  kernriftc migrate-preview --canonical-edits --format text <file.kr>");
-    eprintln!("  kernriftc migrate-preview --canonical-edits --format json <file.kr>");
-    eprintln!(
-        "  kernriftc migrate-preview --canonical-edits --format text --surface stable <file.kr>"
-    );
-    eprintln!(
-        "  kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
-    );
-    eprintln!(
-        "  kernriftc migrate-preview --canonical-edits --format text --surface experimental <file.kr>"
-    );
-    eprintln!("  kernriftc migrate-preview --canonical-edits --stdin");
-    eprintln!("  kernriftc migrate-preview --canonical-edits --stdin --format json");
-    eprintln!(
-        "  kernriftc migrate-preview --canonical-edits --format json --surface experimental <file.kr>"
-    );
-    eprintln!("  kernriftc fix --canonical --write <file.kr>");
-    eprintln!("  kernriftc fix --canonical --write --surface experimental <file.kr>");
-    eprintln!("  kernriftc fix --canonical --write --format json <file.kr>");
-    eprintln!("  kernriftc fix --canonical --dry-run <file.kr>");
-    eprintln!("  kernriftc fix --canonical --dry-run --surface experimental <file.kr>");
-    eprintln!("  kernriftc fix --canonical --dry-run --format json <file.kr>");
-    eprintln!("  kernriftc fix --canonical --dry-run --stdin");
-    eprintln!("  kernriftc fix --canonical --dry-run --stdin --format json");
-    eprintln!("  kernriftc fix --canonical --stdout <file.kr>");
-    eprintln!("  kernriftc fix --canonical --stdout --surface experimental <file.kr>");
-    eprintln!("  kernriftc fix --canonical --stdout --stdin");
-    eprintln!("  kernriftc fix --canonical --diff <file.kr>");
-    eprintln!("  kernriftc fix --canonical --diff --surface experimental <file.kr>");
-    eprintln!("  kernriftc fix --canonical --diff --stdin");
-    eprintln!("  kernriftc inspect --contracts <contracts.json>");
-    eprintln!("  kernriftc inspect-report --report <verify-report.json>");
-    eprintln!("  kernriftc inspect-report --report <verify-report.json> --format json");
-    eprintln!("  kernriftc inspect-artifact <artifact-path>");
-    eprintln!("  kernriftc inspect-artifact <artifact-path> --format json");
-    eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");
-    eprintln!(
-        "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>"
-    );
-    eprintln!(
-        "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>"
-    );
-    eprintln!("  kernriftc verify-artifact-meta <artifact> <meta.json>");
-    eprintln!("  kernriftc verify-artifact-meta --format json <artifact> <meta.json>");
-    eprintln!("  kernriftc --selftest");
-    eprintln!(
-        "  kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>"
-    );
-    eprintln!(
-        "  kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>"
-    );
-    eprintln!("  kernriftc --surface stable --emit=krboexe -o <output.krbo> <file.kr>");
-    eprintln!("  kernriftc --surface stable --emit=asm -o <output.s> <file.kr>");
-    eprintln!("  kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>");
-    eprintln!("  kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>");
-    eprintln!("  kernriftc --emit=krboexe -o <output.krbo> <file.kr>");
-    eprintln!("  kernriftc --emit=asm -o <output.s> <file.kr>");
-    eprintln!("  kernriftc --emit=staticlib -o <output.a> <file.kr>");
-    eprintln!("  kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>");
-    eprintln!("  kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>");
-    eprintln!("  kernriftc --emit=krbo -o <output.krbo> <file.kr>");
-    eprintln!("  kernriftc --emit=elfobj -o <output.o> <file.kr>");
-    eprintln!("  kernriftc --emit krir <file.kr>");
-    eprintln!("  kernriftc --emit lockgraph <file.kr>");
-    eprintln!("  kernriftc --emit caps <file.kr>");
-    eprintln!("  kernriftc --emit contracts <file.kr>");
-    eprintln!("  kernriftc --emit report --metrics max_lock_depth,no_yield_spans <file.kr>");
-    eprintln!("  kernriftc --report max_lock_depth,no_yield_spans <file.kr>");
 }
