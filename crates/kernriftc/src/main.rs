@@ -457,7 +457,7 @@ fn main() -> ExitCode {
                 ExitCode::from(EXIT_INVALID_INPUT)
             }
         },
-        "living-compiler" => match parse_living_compiler_args(&args[2..]) {
+        "lc" | "living-compiler" => match parse_living_compiler_args(&args[2..]) {
             Ok(parsed) => run_living_compiler(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
@@ -2021,9 +2021,16 @@ contracts & verification:
   kernriftc verify-artifact-meta --format json <artifact> <meta.json>
 
 living compiler:
-  kernriftc living-compiler <file.kr>
-  kernriftc living-compiler --surface experimental <file.kr>
-  kernriftc living-compiler --format json <file.kr>
+  kernriftc lc <file.kr>
+  kernriftc lc --format json <file.kr>
+  kernriftc lc --surface experimental <file.kr>
+  kernriftc lc --ci <file.kr>
+  kernriftc lc --ci --min-fitness 70 <file.kr>
+  kernriftc lc --diff <file.kr>
+  kernriftc lc --diff <before.kr> <after.kr>
+  kernriftc lc --fix --dry-run <file.kr>
+  kernriftc lc --fix --write <file.kr>
+  kernriftc living-compiler <file.kr>             (alias)
 
 features & proposals:
   kernriftc features --surface stable
