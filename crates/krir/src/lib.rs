@@ -8796,6 +8796,787 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// AArch64 object emission — ELF, Mach-O, COFF
+// ---------------------------------------------------------------------------
+
+/// AArch64 relocation produced during binary encoding of a function.
+struct AArch64PendingReloc {
+    /// Byte offset of the 26-bit immediate field within the text section.
+    patch_offset: u32,
+    /// Target symbol name.
+    target_symbol: String,
+}
+
+/// Intermediate result of encoding one AArch64 function to binary.
+struct AArch64EncodedFunction {
+    symbol: String,
+    /// Byte offset of this function within the text section.
+    offset: u32,
+    /// Number of bytes emitted for this function.
+    size: u32,
+    /// External-call relocations whose targets are undefined at this point.
+    relocs: Vec<AArch64PendingReloc>,
+}
+
+/// Encode the prologue + body + epilogue of one AArch64 asm function into `out`.
+///
+/// Returns the symbol, byte offset, and size suitable for building the symbol
+/// table, plus any external-call relocations.
+fn encode_aarch64_function(
+    func: &AArch64AsmFunction,
+    out: &mut Vec<u8>,
+    defined_symbols: &BTreeSet<&str>,
+) -> Result<AArch64EncodedFunction, String> {
+    let start_offset = out.len() as u32;
+
+    // Frame layout: round stack_cells*8 up to 16, then add 16 for x29/x30.
+    let stack_bytes = (func.n_stack_cells as usize * 8 + 15) & !15usize;
+    let frame_bytes = stack_bytes + 16;
+
+    // Prologue: stp x29, x30, [sp, #-frame_bytes]!
+    // Encoding: pre-index pair, 64-bit registers.
+    // The immediate field is (−frame_bytes / 8) encoded as a 7-bit signed value.
+    // Opcode: STP Xt1, Xt2, [Xn, #imm]! = 1010 1001 1 0iiiii i Xt2 Xn Xt1
+    // For stp x29, x30, [sp, #-16]!:
+    //   imm7 = -16/8 = -2 → 0b1111110 (7-bit two's complement)
+    //   Rt2 = 30, Rn = 31 (sp), Rt1 = 29
+    {
+        let imm = -(frame_bytes as i32) / 8; // must be in [-64, 63]
+        if imm < -64 || imm > 63 {
+            return Err(format!(
+                "aarch64 object: frame size {} exceeds STP immediate range in function '{}'",
+                frame_bytes, func.symbol
+            ));
+        }
+        let imm7 = (imm as u32) & 0x7F;
+        // STP (pre-index, 64-bit): opc=10, V=0, L=0, pre-index bit set
+        // 1010 1001 1 imm7[6:0] Rt2[4:0] Rn[4:0] Rt1[4:0]
+        // bits[31:30]=10, bits[29:27]=101, bit[26]=0(V), bits[25:24]=01(STP pre-index class),
+        // bit[23]=1(pre-index), bit[22]=0(L=store)
+        // Standard encoding: 0xA9800000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29
+        let word: u32 = 0xA980_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29;
+        out.extend_from_slice(&word.to_le_bytes());
+    }
+
+    // mov x29, sp  →  add x29, sp, #0  →  0x910003FD
+    out.extend_from_slice(&0x910003FDu32.to_le_bytes());
+
+    let mut relocs: Vec<AArch64PendingReloc> = Vec::new();
+
+    for instr in &func.instructions {
+        match instr {
+            AArch64AsmInstruction::Call { symbol }
+            | AArch64AsmInstruction::CallWithArgs { symbol, .. }
+            | AArch64AsmInstruction::CallCapture { symbol, .. } => {
+                // BL instruction: 0x94000000 | imm26
+                // For internal calls we can patch the displacement; for
+                // external calls we emit a relocation and leave imm26 = 0.
+                let patch_offset = out.len() as u32;
+                if defined_symbols.contains(symbol.as_str()) {
+                    // Internal: will be patched after all functions are laid out.
+                    // Leave as 0 for now; caller must patch.
+                    out.extend_from_slice(&0x9400_0000u32.to_le_bytes());
+                } else {
+                    out.extend_from_slice(&0x9400_0000u32.to_le_bytes());
+                    relocs.push(AArch64PendingReloc {
+                        patch_offset,
+                        target_symbol: symbol.clone(),
+                    });
+                }
+            }
+            AArch64AsmInstruction::TailCall { symbol, args: _ } => {
+                // Epilogue then B (unconditional branch).
+                let imm = frame_bytes as i32 / 8; // positive for LDP post-index
+                if imm < -64 || imm > 63 {
+                    return Err(format!(
+                        "aarch64 object: frame size {} exceeds LDP immediate range in function '{}'",
+                        frame_bytes, func.symbol
+                    ));
+                }
+                let imm7 = (imm as u32) & 0x7F;
+                // LDP (post-index, 64-bit, L=1): 0xA8C00000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29
+                let ldp_word: u32 = 0xA8C0_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29;
+                out.extend_from_slice(&ldp_word.to_le_bytes());
+                // B <symbol>: 0x14000000 | imm26 (leave 0, reloc or internal patch)
+                let patch_offset = out.len() as u32;
+                out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
+                if !defined_symbols.contains(symbol.as_str()) {
+                    relocs.push(AArch64PendingReloc {
+                        patch_offset,
+                        target_symbol: symbol.clone(),
+                    });
+                }
+            }
+            AArch64AsmInstruction::Ret => {
+                // Epilogue: ldp x29, x30, [sp], #frame_bytes
+                let imm = frame_bytes as i32 / 8;
+                if imm < -64 || imm > 63 {
+                    return Err(format!(
+                        "aarch64 object: frame size {} exceeds LDP immediate range in function '{}'",
+                        frame_bytes, func.symbol
+                    ));
+                }
+                let imm7 = (imm as u32) & 0x7F;
+                let ldp_word: u32 = 0xA8C0_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29;
+                out.extend_from_slice(&ldp_word.to_le_bytes());
+                // ret  →  0xD65F03C0
+                out.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+            }
+            AArch64AsmInstruction::Label(_) => {
+                // Zero bytes emitted; label is a logical marker only.
+            }
+            _ => {
+                return Err(format!(
+                    "aarch64 object emission: unsupported instruction {:?} in function '{}'",
+                    instr, func.symbol
+                ));
+            }
+        }
+    }
+
+    let size = out.len() as u32 - start_offset;
+    Ok(AArch64EncodedFunction {
+        symbol: func.symbol.clone(),
+        offset: start_offset,
+        size,
+        relocs,
+    })
+}
+
+/// Shared inner lowering step for all three AArch64 object formats.
+///
+/// Returns `(text_bytes, symbol_table, relocs)` where:
+/// - `text_bytes` is the raw machine code for all functions,
+/// - `symbol_table` is a list of `(name, offset, size)` for defined functions,
+/// - `relocs` is a list of `(patch_offset_in_text, target_symbol)` for external
+///   BL/B targets that need linker fixup.
+fn lower_executable_krir_to_aarch64_object_inner(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<(Vec<u8>, Vec<(String, u32, u32)>, Vec<(u32, String)>), String> {
+    let asm = lower_executable_krir_to_aarch64_asm(module, target)?;
+
+    // Collect all defined symbol names so encode_aarch64_function can
+    // distinguish internal from external call targets.
+    let defined: BTreeSet<&str> = asm.functions.iter().map(|f| f.symbol.as_str()).collect();
+
+    let mut text_bytes: Vec<u8> = Vec::new();
+    let mut encoded_fns: Vec<AArch64EncodedFunction> = Vec::new();
+
+    for func in &asm.functions {
+        let enc = encode_aarch64_function(func, &mut text_bytes, &defined)?;
+        encoded_fns.push(enc);
+    }
+
+    // Patch internal BL/B targets (defined symbols).
+    // We emitted a BL 0 placeholder; now fix the imm26 displacement.
+    for enc in &encoded_fns {
+        // Internal call relocs were NOT pushed into enc.relocs (only external ones were).
+        // Instead we need to scan instructions again to patch.
+        // Simpler: re-scan the original asm to find calls to defined symbols.
+        // For now internal calls within the object are handled correctly because
+        // we know offset of every defined function.
+        let _ = enc; // nothing to patch here yet — see note below
+    }
+    // Note: the above loop does nothing. Internal call patch: we need the
+    // asm module again. Build a name→offset map and re-scan.
+    let fn_offset: BTreeMap<&str, u32> = encoded_fns
+        .iter()
+        .map(|e| (e.symbol.as_str(), e.offset))
+        .collect();
+
+    // Re-scan each function's instructions to patch internal BL/B immediates.
+    for (func, enc) in asm.functions.iter().zip(encoded_fns.iter()) {
+        let frame_bytes = ((func.n_stack_cells as usize * 8 + 15) & !15usize) + 16;
+        // byte offset within function at which each encoded instruction starts.
+        // Prologue = 2 instructions = 8 bytes.
+        let mut local_byte = 8u32; // after prologue
+        for instr in &func.instructions {
+            match instr {
+                AArch64AsmInstruction::Call { symbol }
+                | AArch64AsmInstruction::CallWithArgs { symbol, .. }
+                | AArch64AsmInstruction::CallCapture { symbol, .. } => {
+                    if let Some(&target_off) = fn_offset.get(symbol.as_str()) {
+                        let patch_abs = enc.offset + local_byte;
+                        let next_pc = (patch_abs + 4) as i64;
+                        let disp = (target_off as i64) - next_pc;
+                        if disp % 4 != 0 {
+                            return Err(format!(
+                                "aarch64 object: BL displacement to '{}' is not 4-byte aligned",
+                                symbol
+                            ));
+                        }
+                        let imm26 = (disp / 4) as i32;
+                        if imm26 < -(1 << 25) || imm26 >= (1 << 25) {
+                            return Err(format!(
+                                "aarch64 object: BL displacement to '{}' exceeds imm26 range",
+                                symbol
+                            ));
+                        }
+                        let word = 0x9400_0000u32 | ((imm26 as u32) & 0x03FF_FFFF);
+                        let idx = patch_abs as usize;
+                        text_bytes[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+                    }
+                    local_byte += 4;
+                }
+                AArch64AsmInstruction::TailCall { symbol, args: _ } => {
+                    // LDP (4 bytes) then B (4 bytes).
+                    let b_abs = enc.offset + local_byte + 4;
+                    if let Some(&target_off) = fn_offset.get(symbol.as_str()) {
+                        let next_pc = (b_abs + 4) as i64;
+                        let disp = (target_off as i64) - next_pc;
+                        if disp % 4 != 0 {
+                            return Err(format!(
+                                "aarch64 object: B displacement to '{}' is not 4-byte aligned",
+                                symbol
+                            ));
+                        }
+                        let imm26 = (disp / 4) as i32;
+                        if imm26 < -(1 << 25) || imm26 >= (1 << 25) {
+                            return Err(format!(
+                                "aarch64 object: B displacement to '{}' exceeds imm26 range",
+                                symbol
+                            ));
+                        }
+                        let word = 0x1400_0000u32 | ((imm26 as u32) & 0x03FF_FFFF);
+                        let idx = b_abs as usize;
+                        text_bytes[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+                    }
+                    local_byte += 8; // LDP + B
+                }
+                AArch64AsmInstruction::Ret => {
+                    local_byte += 8; // LDP + RET
+                }
+                AArch64AsmInstruction::Label(_) => {
+                    // zero bytes
+                }
+                _ => {
+                    local_byte += 4; // single 4-byte instruction (approximate)
+                }
+            }
+        }
+        let _ = frame_bytes;
+    }
+
+    let symbol_table: Vec<(String, u32, u32)> = encoded_fns
+        .iter()
+        .map(|e| (e.symbol.clone(), e.offset, e.size))
+        .collect();
+
+    // Flatten external relocations.
+    let mut all_relocs: Vec<(u32, String)> = Vec::new();
+    for enc in &encoded_fns {
+        for r in &enc.relocs {
+            all_relocs.push((r.patch_offset, r.target_symbol.clone()));
+        }
+    }
+    // Collect external (undefined) symbol names — deduplicated.
+    let ext_symbols: BTreeSet<String> = all_relocs
+        .iter()
+        .map(|(_, s)| s.clone())
+        .collect();
+    let _ = ext_symbols; // returned via all_relocs
+
+    Ok((text_bytes, symbol_table, all_relocs))
+}
+
+// ---------------------------------------------------------------------------
+// Task 4: AArch64 ELF object emission
+// ---------------------------------------------------------------------------
+
+/// Emit an ELF64 relocatable object for the given AArch64 module.
+///
+/// The emitted file:
+/// - starts with the 4-byte ELF magic `\x7fELF`
+/// - `e_machine` at offset 18–19 = `0x00B7` (EM_AARCH64, little-endian)
+/// - one `.text` section containing all function code
+/// - standard ELF64 symbol table and string table
+pub fn emit_aarch64_elf_object_bytes(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    let (text_bytes, symbol_table, relocs) =
+        lower_executable_krir_to_aarch64_object_inner(module, target)?;
+
+    // Collect undefined symbol names in sorted order for the symbol table.
+    let undefined_names: Vec<String> = {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for (_, sym) in &relocs {
+            names.insert(sym.clone());
+        }
+        names.into_iter().collect()
+    };
+
+    // Build .strtab: leading null + each name + null.
+    let mut strtab = vec![0u8];
+    let mut name_offsets: BTreeMap<String, u32> = BTreeMap::new();
+    for (name, _, _) in &symbol_table {
+        let off = strtab.len() as u32;
+        strtab.extend_from_slice(name.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(name.clone(), off);
+    }
+    for name in &undefined_names {
+        let off = strtab.len() as u32;
+        strtab.extend_from_slice(name.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(name.clone(), off);
+    }
+
+    // Build .symtab: null + section sym + defined fns + undefined fns.
+    let mut symtab: Vec<u8> = Vec::new();
+    push_elf64_sym(&mut symtab, 0, 0, 0, 0, 0, 0); // STN_UNDEF
+    push_elf64_sym(&mut symtab, 0, 0x03, 0, 1, 0, 0); // section symbol for .text (shndx=1)
+    let mut sym_indices: BTreeMap<String, u32> = BTreeMap::new();
+    let mut next_idx = 2u32;
+    for (name, offset, size) in &symbol_table {
+        push_elf64_sym(
+            &mut symtab,
+            *name_offsets.get(name).expect("defined name in strtab"),
+            0x12, // STB_GLOBAL | STT_FUNC
+            0,
+            1, // shndx = .text section index
+            *offset as u64,
+            *size as u64,
+        );
+        sym_indices.insert(name.clone(), next_idx);
+        next_idx += 1;
+    }
+    for name in &undefined_names {
+        push_elf64_sym(
+            &mut symtab,
+            *name_offsets.get(name).expect("undef name in strtab"),
+            0x12,
+            0,
+            0, // shndx = SHN_UNDEF
+            0,
+            0,
+        );
+        sym_indices.insert(name.clone(), next_idx);
+        next_idx += 1;
+    }
+
+    // Build .rela.text: one Elf64_Rela per reloc (24 bytes each).
+    // R_AARCH64_CALL26 = 283 (0x11B)
+    let mut rela_text: Vec<u8> = Vec::new();
+    for (patch_offset, target_sym) in &relocs {
+        push_u64_le(&mut rela_text, *patch_offset as u64); // r_offset
+        let sym_idx = *sym_indices.get(target_sym).expect("reloc sym in index");
+        let r_info = ((sym_idx as u64) << 32) | 283u64; // R_AARCH64_CALL26
+        push_u64_le(&mut rela_text, r_info); // r_info
+        push_i64_le(&mut rela_text, 0); // r_addend = 0
+    }
+
+    // Build .shstrtab.
+    let mut shstrtab = vec![0u8];
+    let text_name_sh = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".text\0");
+    let rela_text_name_sh = if rela_text.is_empty() {
+        None
+    } else {
+        let off = shstrtab.len() as u32;
+        shstrtab.extend_from_slice(b".rela.text\0");
+        Some(off)
+    };
+    let symtab_name_sh = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".symtab\0");
+    let strtab_name_sh = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".strtab\0");
+    let shstrtab_name_sh = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".shstrtab\0");
+
+    // Layout: 64-byte ELF header, then sections, then section headers.
+    let mut bytes = vec![0u8; 64];
+    let text_offset = append_with_alignment(&mut bytes, &text_bytes, 16) as u64;
+    let rela_text_offset = if rela_text.is_empty() {
+        None
+    } else {
+        Some(append_with_alignment(&mut bytes, &rela_text, 8) as u64)
+    };
+    let symtab_offset = append_with_alignment(&mut bytes, &symtab, 8) as u64;
+    let strtab_offset = append_with_alignment(&mut bytes, &strtab, 1) as u64;
+    let shstrtab_offset = append_with_alignment(&mut bytes, &shstrtab, 1) as u64;
+    let shoff = append_with_alignment(&mut bytes, &[], 8) as u64;
+
+    // Section headers.
+    let mut shdrs = vec![0u8; 64]; // null section header
+    let mut push_shdr = |name: u32,
+                         sh_type: u32,
+                         flags: u64,
+                         addr: u64,
+                         offset: u64,
+                         size: u64,
+                         link: u32,
+                         info: u32,
+                         addralign: u64,
+                         entsize: u64| {
+        push_u32_le(&mut shdrs, name);
+        push_u32_le(&mut shdrs, sh_type);
+        push_u64_le(&mut shdrs, flags);
+        push_u64_le(&mut shdrs, addr);
+        push_u64_le(&mut shdrs, offset);
+        push_u64_le(&mut shdrs, size);
+        push_u32_le(&mut shdrs, link);
+        push_u32_le(&mut shdrs, info);
+        push_u64_le(&mut shdrs, addralign);
+        push_u64_le(&mut shdrs, entsize);
+    };
+
+    // sh[1]: .text
+    push_shdr(
+        text_name_sh, 1, 0x6, 0,
+        text_offset, text_bytes.len() as u64,
+        0, 0, 16, 0,
+    );
+    let symtab_idx = if rela_text.is_empty() { 2u32 } else { 3u32 };
+    let strtab_idx = symtab_idx + 1;
+    // sh[2] (optional): .rela.text
+    if let (Some(name), Some(offset)) = (rela_text_name_sh, rela_text_offset) {
+        push_shdr(
+            name, 4, 0, 0,
+            offset, rela_text.len() as u64,
+            symtab_idx, 1, // link=.symtab, info=.text index
+            8, 24,
+        );
+    }
+    // sh[symtab_idx]: .symtab
+    let first_global = 2u32; // 0=null, 1=section; globals start at 2
+    push_shdr(
+        symtab_name_sh, 2, 0, 0,
+        symtab_offset, symtab.len() as u64,
+        strtab_idx, first_global,
+        8, 24,
+    );
+    // sh[strtab_idx]: .strtab
+    push_shdr(
+        strtab_name_sh, 3, 0, 0,
+        strtab_offset, strtab.len() as u64,
+        0, 0, 1, 0,
+    );
+    // sh[last]: .shstrtab
+    let shstrtab_idx = strtab_idx + 1;
+    push_shdr(
+        shstrtab_name_sh, 3, 0, 0,
+        shstrtab_offset, shstrtab.len() as u64,
+        0, 0, 1, 0,
+    );
+    bytes.extend_from_slice(&shdrs);
+
+    let e_shnum: u16 = if rela_text.is_empty() { 5 } else { 6 };
+    let e_shstrndx: u16 = shstrtab_idx as u16;
+
+    // Fill ELF header.
+    bytes[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    bytes[4] = 2; // EI_CLASS = ELFCLASS64
+    bytes[5] = 1; // EI_DATA  = ELFDATA2LSB
+    bytes[6] = 1; // EI_VERSION
+    bytes[7] = 0; // EI_OSABI = ELFOSABI_NONE
+    push_u16_into(&mut bytes[16..18], 1); // e_type  = ET_REL
+    push_u16_into(&mut bytes[18..20], 0x00B7); // e_machine = EM_AARCH64
+    push_u32_into(&mut bytes[20..24], 1); // e_version
+    push_u64_into(&mut bytes[24..32], 0); // e_entry
+    push_u64_into(&mut bytes[32..40], 0); // e_phoff
+    push_u64_into(&mut bytes[40..48], shoff); // e_shoff
+    push_u32_into(&mut bytes[48..52], 0); // e_flags
+    push_u16_into(&mut bytes[52..54], 64); // e_ehsize
+    push_u16_into(&mut bytes[54..56], 0); // e_phentsize
+    push_u16_into(&mut bytes[56..58], 0); // e_phnum
+    push_u16_into(&mut bytes[58..60], 64); // e_shentsize
+    push_u16_into(&mut bytes[60..62], e_shnum); // e_shnum
+    push_u16_into(&mut bytes[62..64], e_shstrndx); // e_shstrndx
+
+    Ok(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Task 5: AArch64 Mach-O object emission
+// ---------------------------------------------------------------------------
+
+/// Emit a Mach-O 64-bit relocatable object for the given AArch64 module.
+///
+/// The emitted file:
+/// - starts with Mach-O 64-bit LE magic `0xFEEDFACF` = `[0xCF, 0xFA, 0xED, 0xFE]`
+/// - `cputype` at offset 4 = `0x0100000C` (CPU_TYPE_ARM64)
+/// - `cpusubtype` at offset 8 = `0x00000000` (CPU_SUBTYPE_ARM64_ALL)
+pub fn emit_aarch64_macho_object_bytes(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    let (text_bytes, symbol_table, relocs) =
+        lower_executable_krir_to_aarch64_object_inner(module, target)?;
+
+    let undefined_names: Vec<String> = {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for (_, sym) in &relocs {
+            names.insert(sym.clone());
+        }
+        names.into_iter().collect()
+    };
+
+    // Build string table: leading null + "_name\0" for every symbol.
+    let mut strtab = vec![0u8];
+    let mut name_offsets: BTreeMap<String, u32> = BTreeMap::new();
+    for (name, _, _) in &symbol_table {
+        let off = strtab.len() as u32;
+        let prefixed = format!("_{}", name);
+        strtab.extend_from_slice(prefixed.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(name.clone(), off);
+    }
+    for name in &undefined_names {
+        let off = strtab.len() as u32;
+        let prefixed = format!("_{}", name);
+        strtab.extend_from_slice(prefixed.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(name.clone(), off);
+    }
+
+    // nlist_64 entries (16 bytes each).
+    let mut symtab_bytes: Vec<u8> = Vec::new();
+    let mut sym_index: BTreeMap<String, u32> = BTreeMap::new();
+    let mut idx = 0u32;
+    for (name, offset, _size) in &symbol_table {
+        let strx = *name_offsets.get(name).expect("defined sym in strtab");
+        push_u32_le(&mut symtab_bytes, strx);
+        symtab_bytes.push(0x0F); // N_SECT | N_EXT
+        symtab_bytes.push(1); // section ordinal 1 = __text
+        push_u16_le(&mut symtab_bytes, 0);
+        push_u64_le(&mut symtab_bytes, *offset as u64);
+        sym_index.insert(name.clone(), idx);
+        idx += 1;
+    }
+    for name in &undefined_names {
+        let strx = *name_offsets.get(name).expect("undef sym in strtab");
+        push_u32_le(&mut symtab_bytes, strx);
+        symtab_bytes.push(0x01); // N_EXT | N_UNDF
+        symtab_bytes.push(0); // NO_SECT
+        push_u16_le(&mut symtab_bytes, 0);
+        push_u64_le(&mut symtab_bytes, 0);
+        sym_index.insert(name.clone(), idx);
+        idx += 1;
+    }
+    let nsyms = idx;
+
+    // Relocation entries (8 bytes each).
+    // ARM64_RELOC_BRANCH26 = 2; extern=1, pcrel=1, length=2 → lower byte = 0xD2 (same as x86 branch)
+    let mut reloc_bytes: Vec<u8> = Vec::new();
+    for (patch_offset, target_sym) in &relocs {
+        push_u32_le(&mut reloc_bytes, *patch_offset);
+        let sidx = *sym_index.get(target_sym).expect("reloc sym in index");
+        let r_info = (sidx << 8) | 0xD2;
+        push_u32_le(&mut reloc_bytes, r_info);
+    }
+    let nreloc = relocs.len() as u32;
+
+    // File layout (same structure as x86_64 Mach-O):
+    // [0]    mach_header_64 (32)
+    // [32]   LC_SEGMENT_64 + section_64 (152)
+    // [184]  LC_SYMTAB (24)
+    // [208]  text (padded to 4)
+    // [208+P] relocations
+    // [...]  nlist_64 symbol table
+    // [...]  string table
+    let text_offset: u32 = 208;
+    let text_len = text_bytes.len() as u32;
+    let text_padded = (text_len + 3) & !3u32;
+    let reloc_offset: u32 = if nreloc == 0 {
+        0
+    } else {
+        text_offset + text_padded
+    };
+    let sym_offset: u32 = text_offset + text_padded + reloc_bytes.len() as u32;
+    let str_offset: u32 = sym_offset + symtab_bytes.len() as u32;
+    let sizeofcmds: u32 = 152 + 24;
+
+    let mut out: Vec<u8> = Vec::new();
+
+    // mach_header_64 (32 bytes)
+    push_u32_le(&mut out, 0xFEED_FACF); // MH_MAGIC_64
+    push_u32_le(&mut out, 0x0100_000C); // CPU_TYPE_ARM64
+    push_u32_le(&mut out, 0x0000_0000); // CPU_SUBTYPE_ARM64_ALL
+    push_u32_le(&mut out, 0x0000_0001); // MH_OBJECT
+    push_u32_le(&mut out, 2); // ncmds
+    push_u32_le(&mut out, sizeofcmds);
+    push_u32_le(&mut out, 0x0000_2000); // MH_SUBSECTIONS_VIA_SYMBOLS
+    push_u32_le(&mut out, 0); // reserved
+
+    // LC_SEGMENT_64 (cmdsize=152)
+    push_u32_le(&mut out, 0x0000_0019); // LC_SEGMENT_64
+    push_u32_le(&mut out, 152);
+    out.extend_from_slice(b"__TEXT\0\0\0\0\0\0\0\0\0\0");
+    push_u64_le(&mut out, 0); // vmaddr
+    push_u64_le(&mut out, text_len as u64); // vmsize
+    push_u64_le(&mut out, text_offset as u64); // fileoff
+    push_u64_le(&mut out, text_len as u64); // filesize
+    push_u32_le(&mut out, 7); // maxprot
+    push_u32_le(&mut out, 5); // initprot
+    push_u32_le(&mut out, 1); // nsects
+    push_u32_le(&mut out, 0); // flags
+
+    // section_64 for __text (80 bytes)
+    out.extend_from_slice(b"__text\0\0\0\0\0\0\0\0\0\0");
+    out.extend_from_slice(b"__TEXT\0\0\0\0\0\0\0\0\0\0");
+    push_u64_le(&mut out, 0); // addr
+    push_u64_le(&mut out, text_len as u64); // size
+    push_u32_le(&mut out, text_offset); // offset in file
+    push_u32_le(&mut out, 2); // align (log2 → 2^2 = 4)
+    push_u32_le(&mut out, reloc_offset); // reloff
+    push_u32_le(&mut out, nreloc); // nreloc
+    push_u32_le(&mut out, 0x8000_0400); // flags
+    push_u32_le(&mut out, 0); // reserved1
+    push_u32_le(&mut out, 0); // reserved2
+    push_u32_le(&mut out, 0); // reserved3
+
+    // LC_SYMTAB (24 bytes)
+    push_u32_le(&mut out, 0x0000_0002); // LC_SYMTAB
+    push_u32_le(&mut out, 24);
+    push_u32_le(&mut out, sym_offset);
+    push_u32_le(&mut out, nsyms);
+    push_u32_le(&mut out, str_offset);
+    push_u32_le(&mut out, strtab.len() as u32);
+
+    // Text bytes (padded to 4)
+    out.extend_from_slice(&text_bytes);
+    while out.len() < (text_offset + text_padded) as usize {
+        out.push(0);
+    }
+
+    // Relocation entries
+    out.extend_from_slice(&reloc_bytes);
+
+    // Symbol table
+    out.extend_from_slice(&symtab_bytes);
+
+    // String table
+    out.extend_from_slice(&strtab);
+
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Task 6: AArch64 COFF object emission
+// ---------------------------------------------------------------------------
+
+/// Emit a COFF relocatable object for the given AArch64 module (Windows ARM64).
+///
+/// The emitted file:
+/// - `Machine` at offset 0–1 = `0xAA64` (IMAGE_FILE_MACHINE_ARM64, little-endian)
+pub fn emit_aarch64_coff_object_bytes(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    let (text_bytes, symbol_table, relocs) =
+        lower_executable_krir_to_aarch64_object_inner(module, target)?;
+
+    let undefined_names: Vec<String> = {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for (_, sym) in &relocs {
+            names.insert(sym.clone());
+        }
+        names.into_iter().collect()
+    };
+
+    let mut strtab_strings: Vec<u8> = Vec::new();
+    let mut name_strtab_offsets: BTreeMap<String, u32> = BTreeMap::new();
+
+    // Number of symbols: 1 (.text section) + defined + undefined.
+    let num_syms = 1 + symbol_table.len() + undefined_names.len();
+
+    let mut sym_index: BTreeMap<String, u32> = BTreeMap::new();
+    for (i, (name, _, _)) in symbol_table.iter().enumerate() {
+        sym_index.insert(name.clone(), (1 + i) as u32);
+    }
+    for (i, name) in undefined_names.iter().enumerate() {
+        sym_index.insert(name.clone(), (1 + symbol_table.len() + i) as u32);
+    }
+
+    // IMAGE_RELOCATION entries (10 bytes each).
+    // IMAGE_REL_ARM64_BRANCH26 = 0x0003
+    let mut reloc_bytes: Vec<u8> = Vec::new();
+    for (patch_offset, target_sym) in &relocs {
+        push_u32_le(&mut reloc_bytes, *patch_offset);
+        let sidx = *sym_index.get(target_sym).expect("reloc sym in index");
+        push_u32_le(&mut reloc_bytes, sidx);
+        push_u16_le(&mut reloc_bytes, 0x0003); // IMAGE_REL_ARM64_BRANCH26
+    }
+    let nrelocs = relocs.len() as u16;
+
+    // File layout.
+    let text_raw_offset: u32 = 20 + 40; // COFF header + section header = 60
+    let text_len = text_bytes.len() as u32;
+    let text_padded = (text_len + 3) & !3u32;
+    let reloc_ptr: u32 = text_raw_offset + text_padded;
+    let sym_table_ptr: u32 = reloc_ptr + reloc_bytes.len() as u32;
+
+    let mut out: Vec<u8> = Vec::new();
+
+    // IMAGE_FILE_HEADER (20 bytes)
+    push_u16_le(&mut out, 0xAA64); // Machine = ARM64
+    push_u16_le(&mut out, 1); // NumberOfSections
+    push_u32_le(&mut out, 0); // TimeDateStamp
+    push_u32_le(&mut out, sym_table_ptr); // PointerToSymbolTable
+    push_u32_le(&mut out, num_syms as u32); // NumberOfSymbols
+    push_u16_le(&mut out, 0); // SizeOfOptionalHeader
+    push_u16_le(&mut out, 0); // Characteristics
+
+    // IMAGE_SECTION_HEADER for .text (40 bytes)
+    out.extend_from_slice(b".text\0\0\0");
+    push_u32_le(&mut out, 0); // VirtualSize
+    push_u32_le(&mut out, 0); // VirtualAddress
+    push_u32_le(&mut out, text_padded); // SizeOfRawData
+    push_u32_le(&mut out, text_raw_offset); // PointerToRawData
+    push_u32_le(&mut out, if nrelocs == 0 { 0 } else { reloc_ptr }); // PointerToRelocations
+    push_u32_le(&mut out, 0); // PointerToLinenumbers
+    push_u16_le(&mut out, nrelocs); // NumberOfRelocations
+    push_u16_le(&mut out, 0); // NumberOfLinenumbers
+    push_u32_le(&mut out, 0x60500020); // Characteristics
+
+    // Text bytes (padded to 4)
+    out.extend_from_slice(&text_bytes);
+    while out.len() < (text_raw_offset + text_padded) as usize {
+        out.push(0);
+    }
+
+    // Relocation entries
+    out.extend_from_slice(&reloc_bytes);
+
+    // Symbol table.
+    // Section symbol (.text)
+    let section_name_buf = {
+        let mut b = [0u8; 8];
+        b[..5].copy_from_slice(b".text");
+        b
+    };
+    push_coff_sym(&mut out, section_name_buf, 0, 1, 0, 0x03); // STATIC
+
+    // Defined function symbols
+    for (name, offset, _size) in &symbol_table {
+        let name_buf = coff_encode_name(name, &mut strtab_strings, &mut name_strtab_offsets);
+        push_coff_sym(
+            &mut out,
+            name_buf,
+            *offset,
+            1,
+            0x0020,
+            0x02, // EXTERNAL
+        );
+    }
+
+    // Undefined function symbols
+    for name in &undefined_names {
+        let name_buf = coff_encode_name(name, &mut strtab_strings, &mut name_strtab_offsets);
+        push_coff_sym(&mut out, name_buf, 0, 0, 0x0020, 0x02);
+    }
+
+    // String table
+    let strtab_total_size = (4 + strtab_strings.len()) as u32;
+    push_u32_le(&mut out, strtab_total_size);
+    out.extend_from_slice(&strtab_strings);
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -12477,5 +13258,90 @@ mod tests {
         assert_eq!(asm_module.functions.len(), 1);
         assert_eq!(asm_module.functions[0].symbol, "entry");
         assert!(!asm_module.functions[0].instructions.is_empty());
+    }
+
+    fn minimal_aarch64_module() -> ExecutableKrirModule {
+        ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                is_extern: false,
+                signature: ExecutableSignature {
+                    params: vec![],
+                    result: ExecutableValueType::Unit,
+                },
+                facts: ExecutableFacts {
+                    ctx_ok: vec![],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                },
+                entry_block: "b0".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "b0".to_string(),
+                    ops: vec![],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+            }],
+            extern_declarations: vec![],
+            call_edges: vec![],
+        }
+    }
+
+    #[test]
+    fn aarch64_elf_object_smoke() {
+        use super::{emit_aarch64_elf_object_bytes, BackendTargetContract};
+        let module = minimal_aarch64_module();
+        let target = BackendTargetContract::aarch64_sysv();
+        let result = emit_aarch64_elf_object_bytes(&module, &target);
+        assert!(result.is_ok(), "{:?}", result.err());
+        let bytes = result.unwrap();
+        assert_eq!(&bytes[0..4], b"\x7fELF");
+        // e_machine at ELF offset 18-19: EM_AARCH64 = 0x00B7 (LE)
+        assert_eq!(
+            u16::from_le_bytes([bytes[18], bytes[19]]),
+            0x00B7,
+            "expected EM_AARCH64 (0x00B7) at offset 18"
+        );
+    }
+
+    #[test]
+    fn aarch64_macho_object_smoke() {
+        use super::{emit_aarch64_macho_object_bytes, BackendTargetContract};
+        let module = minimal_aarch64_module();
+        let target = BackendTargetContract::aarch64_macho();
+        let result = emit_aarch64_macho_object_bytes(&module, &target);
+        assert!(result.is_ok(), "{:?}", result.err());
+        let bytes = result.unwrap();
+        // Mach-O 64-bit LE magic: 0xFEEDFACF = [0xCF, 0xFA, 0xED, 0xFE]
+        assert_eq!(
+            &bytes[0..4],
+            &[0xCF, 0xFA, 0xED, 0xFE],
+            "expected MH_MAGIC_64"
+        );
+        // cputype at offset 4: CPU_TYPE_ARM64 = 0x0100000C (LE)
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            0x0100_000C,
+            "expected CPU_TYPE_ARM64 (0x0100000C) at offset 4"
+        );
+    }
+
+    #[test]
+    fn aarch64_coff_object_smoke() {
+        use super::{emit_aarch64_coff_object_bytes, BackendTargetContract};
+        let module = minimal_aarch64_module();
+        let target = BackendTargetContract::aarch64_win();
+        let result = emit_aarch64_coff_object_bytes(&module, &target);
+        assert!(result.is_ok(), "{:?}", result.err());
+        let bytes = result.unwrap();
+        // COFF Machine at offset 0: IMAGE_FILE_MACHINE_ARM64 = 0xAA64 (LE)
+        assert_eq!(
+            u16::from_le_bytes([bytes[0], bytes[1]]),
+            0xAA64,
+            "expected IMAGE_FILE_MACHINE_ARM64 (0xAA64) at offset 0"
+        );
     }
 }
