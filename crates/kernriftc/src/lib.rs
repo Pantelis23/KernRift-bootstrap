@@ -19,10 +19,14 @@ pub use hir::{
 };
 pub use krir::BackendTargetId as CompilerBackendTargetId;
 use krir::{
-    BackendTargetContract, BackendTargetId, KrirModule, KrirOp, emit_compiler_owned_object_bytes,
-    emit_krbo_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
+    BackendTargetContract, BackendTargetId, KrirModule, KrirOp, TargetArch,
+    emit_compiler_owned_object_bytes, emit_krbo_bytes, emit_x86_64_asm_text,
+    emit_x86_64_object_bytes, emit_krbofat_bytes, emit_aarch64_asm_text,
+    emit_aarch64_elf_object_bytes,
     lower_current_krir_to_executable_krir, lower_executable_krir_to_compiler_owned_object,
     lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
+    lower_executable_krir_to_aarch64_asm,
+    KRBO_FAT_ARCH_X86_64, KRBO_FAT_ARCH_AARCH64,
 };
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
@@ -54,6 +58,7 @@ pub enum BackendArtifactKind {
     ElfObject,
     ElfExecutable,
     KrboExecutable,
+    KrboFat,
     Asm,
     StaticLib,
 }
@@ -65,6 +70,7 @@ impl BackendArtifactKind {
             Self::ElfObject => "elfobj",
             Self::ElfExecutable => "elfexe",
             Self::KrboExecutable => "krboexe",
+            Self::KrboFat => "krbofat",
             Self::Asm => "asm",
             Self::StaticLib => "staticlib",
         }
@@ -76,10 +82,11 @@ impl BackendArtifactKind {
             "elfobj" => Ok(Self::ElfObject),
             "elfexe" => Ok(Self::ElfExecutable),
             "krboexe" => Ok(Self::KrboExecutable),
+            "krbofat" => Ok(Self::KrboFat),
             "asm" => Ok(Self::Asm),
             "staticlib" => Ok(Self::StaticLib),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'krboexe', 'asm', or 'staticlib'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'krboexe', 'krbofat', 'asm', or 'staticlib'",
                 value
             )),
         }
@@ -129,22 +136,53 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
                 .map_err(|err| vec![err])?;
             Ok(emit_compiler_owned_object_bytes(&object))
         }
-        BackendArtifactKind::ElfObject => {
-            let object = lower_executable_krir_to_x86_64_object(&executable, &target)
-                .map_err(|err| vec![err])?;
-            Ok(emit_x86_64_object_bytes(&object))
+        BackendArtifactKind::KrboFat => {
+            let x86_target = BackendTargetId::X86_64Sysv.default_contract();
+            let x86_obj =
+                lower_executable_krir_to_compiler_owned_object(&executable, &x86_target)
+                    .map_err(|e| vec![e])?;
+            let x86_bytes = emit_compiler_owned_object_bytes(&x86_obj);
+
+            let arm_target = BackendTargetId::Aarch64Sysv.default_contract();
+            let arm_obj =
+                lower_executable_krir_to_compiler_owned_object(&executable, &arm_target)
+                    .map_err(|e| vec![e])?;
+            let arm_bytes = emit_compiler_owned_object_bytes(&arm_obj);
+
+            emit_krbofat_bytes(&[
+                (KRBO_FAT_ARCH_X86_64, x86_bytes),
+                (KRBO_FAT_ARCH_AARCH64, arm_bytes),
+            ])
+            .map_err(|e| vec![e])
         }
+        BackendArtifactKind::ElfObject => match target.arch {
+            TargetArch::X86_64 => {
+                let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+                    .map_err(|err| vec![err])?;
+                Ok(emit_x86_64_object_bytes(&object))
+            }
+            TargetArch::AArch64 => {
+                emit_aarch64_elf_object_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+        },
         BackendArtifactKind::ElfExecutable => {
             emit_x86_64_elf_executable_bytes(&executable, &target).map_err(|err| vec![err])
         }
         BackendArtifactKind::KrboExecutable => {
             emit_x86_64_executable_bytes(&executable, &target).map_err(|err| vec![err])
         }
-        BackendArtifactKind::Asm => {
-            let asm = lower_executable_krir_to_x86_64_asm(&executable, &target)
-                .map_err(|err| vec![err])?;
-            Ok(emit_x86_64_asm_text(&asm).into_bytes())
-        }
+        BackendArtifactKind::Asm => match target.arch {
+            TargetArch::X86_64 => {
+                let asm = lower_executable_krir_to_x86_64_asm(&executable, &target)
+                    .map_err(|err| vec![err])?;
+                Ok(emit_x86_64_asm_text(&asm).into_bytes())
+            }
+            TargetArch::AArch64 => {
+                let asm = lower_executable_krir_to_aarch64_asm(&executable, &target)
+                    .map_err(|err| vec![err])?;
+                Ok(emit_aarch64_asm_text(&asm).into_bytes())
+            }
+        },
         BackendArtifactKind::StaticLib => {
             emit_x86_64_static_library(&executable, &target).map_err(|err| vec![err])
         }
@@ -679,10 +717,17 @@ fn format_check_error(err: &CheckError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{atomic_temp_path_for, write_atomic_file};
+    use super::{BackendArtifactKind, atomic_temp_path_for, write_atomic_file};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn emit_kind_krbofat_parses() {
+        let kind = BackendArtifactKind::parse("krbofat");
+        assert!(kind.is_ok());
+        assert_eq!(kind.unwrap().as_str(), "krbofat");
+    }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let ts = SystemTime::now()

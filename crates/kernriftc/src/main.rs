@@ -361,7 +361,7 @@ fn main() -> ExitCode {
                 let output = format!("{}.krbo", stem);
                 let synthetic: Vec<String> =
                     vec!["-o".to_string(), output.clone(), next_arg.clone()];
-                match parse_backend_emit_args("krboexe", &synthetic, surface) {
+                match parse_backend_emit_args("krbofat", &synthetic, surface) {
                     Ok(parsed) => {
                         let result = run_backend_emit(&parsed);
                         #[cfg(unix)]
@@ -556,7 +556,7 @@ fn main() -> ExitCode {
                 .unwrap_or("output");
             let output = format!("{}.krbo", stem);
             let synthetic: Vec<String> = vec!["-o".to_string(), output.clone(), arg.to_string()];
-            match parse_backend_emit_args("krboexe", &synthetic, SurfaceProfile::Stable) {
+            match parse_backend_emit_args("krbofat", &synthetic, SurfaceProfile::Stable) {
                 Ok(parsed) => {
                     let result = run_backend_emit(&parsed);
                     #[cfg(unix)]
@@ -2044,13 +2044,21 @@ features & proposals:
   kernriftc proposals --promote <feature-id> --dry-run --diff
 
 emit:
+  kernriftc --emit=krbofat -o <output.krbo> <file.kr>           (fat: x86_64 + arm64)
   kernriftc --emit=krbo -o <output.krbo> <file.kr>
   kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>
   kernriftc --emit=elfobj -o <output.o> <file.kr>
+  kernriftc --emit=elfobj --arch x86_64 -o <output.o> <file.kr>
+  kernriftc --emit=elfobj --arch arm64 -o <output.o> <file.kr>
   kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>
   kernriftc --emit=krboexe -o <output.krbo> <file.kr>
   kernriftc --emit=asm -o <output.s> <file.kr>
+  kernriftc --emit=asm --arch x86_64 -o <output.s> <file.kr>
+  kernriftc --emit=asm --arch arm64 -o <output.s> <file.kr>
   kernriftc --emit=staticlib -o <output.a> <file.kr>
+  kernriftc --emit=staticlib --arch x86_64 -o <output.a> <file.kr>
+  kernriftc --emit=staticlib --arch arm64 -o <output.a> <file.kr>
+  kernriftc --surface stable --emit=krbofat -o <output.krbo> <file.kr>
   kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>
   kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>
   kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>

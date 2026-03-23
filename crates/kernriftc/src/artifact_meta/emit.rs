@@ -44,6 +44,9 @@ fn build_backend_artifact_metadata(
         BackendArtifactKind::ElfExecutable => {
             return Err("invalid emit mode: --meta-out is unsupported for 'elfexe'".to_string());
         }
+        BackendArtifactKind::KrboFat => {
+            return Err("invalid emit mode: --meta-out is unsupported for 'krbofat'".to_string());
+        }
     };
     let (normalized_input_path, input_path_kind) =
         normalize_backend_artifact_input_path(input_path);

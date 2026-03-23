@@ -238,6 +238,9 @@ fn verify_backend_artifact_metadata(
         BackendArtifactKind::ElfExecutable => Err(VerifyArtifactMetaError::InvalidInput(
             "verify-artifact-meta: unsupported artifact bytes".to_string(),
         )),
+        BackendArtifactKind::KrboFat => Err(VerifyArtifactMetaError::InvalidInput(
+            "verify-artifact-meta: unsupported artifact bytes".to_string(),
+        )),
     }
 }
 

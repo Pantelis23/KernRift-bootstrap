@@ -5,6 +5,7 @@ pub(crate) struct BackendEmitArgs {
     pub(crate) surface: SurfaceProfile,
     pub(crate) kind: BackendArtifactKind,
     pub(crate) target_id: CompilerBackendTargetId,
+    pub(crate) arch: Option<krir::TargetArch>,
     pub(crate) output_path: String,
     pub(crate) meta_output_path: Option<String>,
     pub(crate) telemetry_output_path: Option<String>,
@@ -22,6 +23,7 @@ pub(crate) fn parse_backend_emit_args(
     let mut meta_output_path = None::<String>;
     let mut telemetry_output_path = None::<String>;
     let mut target_id = CompilerBackendTargetId::X86_64Sysv;
+    let mut arch = None::<krir::TargetArch>;
     let mut positionals = Vec::<String>::new();
 
     let mut idx = 0usize;
@@ -67,6 +69,24 @@ pub(crate) fn parse_backend_emit_args(
                 telemetry_output_path = Some(value.clone());
                 idx += 2;
             }
+            "--arch" => {
+                let Some(value) = args.get(idx + 1) else {
+                    return Err(
+                        "invalid emit mode: --arch requires x86_64 or arm64".to_string(),
+                    );
+                };
+                arch = Some(match value.as_str() {
+                    "x86_64" => krir::TargetArch::X86_64,
+                    "arm64" | "aarch64" => krir::TargetArch::AArch64,
+                    other => {
+                        return Err(format!(
+                            "invalid emit mode: unknown arch '{}'; expected x86_64 or arm64",
+                            other
+                        ));
+                    }
+                });
+                idx += 2;
+            }
             other if other.starts_with('-') => {
                 return Err(format!("invalid emit mode: unknown flag '{}'", other));
             }
@@ -86,6 +106,7 @@ pub(crate) fn parse_backend_emit_args(
             kind,
             BackendArtifactKind::Asm
                 | BackendArtifactKind::KrboExecutable
+                | BackendArtifactKind::KrboFat
                 | BackendArtifactKind::StaticLib
                 | BackendArtifactKind::ElfExecutable
         )
@@ -104,6 +125,7 @@ pub(crate) fn parse_backend_emit_args(
         surface,
         kind,
         target_id,
+        arch,
         output_path,
         meta_output_path,
         telemetry_output_path,
