@@ -213,6 +213,7 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 
 | Command | Output | Description |
 |---------|--------|-------------|
+| `kernriftc --version` / `-V` | version string | Print compiler version and exit |
 | `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** |
 | `kernrift <file.krbo>` | — | **Run a compiled program** |
 | `kernriftc check <file.kr>` | stderr diagnostics | Analysis only, no binary |

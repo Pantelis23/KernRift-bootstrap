@@ -26,6 +26,8 @@ hidden costs.
 13. [Per-CPU Variables](#13-per-cpu-variables)
 14. [Extern Functions](#14-extern-functions)
 15. [Tail Calls](#15-tail-calls)
+16. [Critical Blocks](#16-critical-blocks)
+17. [Unsafe Blocks](#17-unsafe-blocks)
 
 ---
 
@@ -531,6 +533,33 @@ handlers and scheduler hooks.
 fn irq_handler() { ... }
 ```
 
+### `@hotpath`
+
+Aligns the function to a 16-byte boundary and marks it as a performance-critical
+hot path.  Use on syscall fast paths and tight interrupt dispatch loops.
+
+```kr
+@hotpath
+@ctx(irq)
+fn fast_dispatch() { ... }
+```
+
+### `yieldpoint()`
+
+Inserts a voluntary CPU yield point.  Legal only when not in IRQ context and
+not inside a `critical { }` block or under `@noyield`.  The compiler rejects
+uses that violate these constraints.
+
+```kr
+@ctx(thread)
+fn pump() {
+    while pending() {
+        process_one()
+        yieldpoint()    // cooperatively yield to the scheduler
+    }
+}
+```
+
 ---
 
 ## 12. Locks
@@ -644,6 +673,50 @@ fn uart_poll(uint64 head) {
 - `tail_call` must be the last statement executed in the function.
 - The callee's `@ctx` must be compatible with the caller's (same rules as any other call edge).
 - Arguments are limited to six by the SysV ABI on x86-64.
+
+---
+
+## 16. Critical Blocks
+
+A `critical { }` block declares that the enclosed statements form an atomic
+critical section.  The kernel profile (`--profile kernel`) forbids `alloc`,
+`block`, and `yield` effects anywhere inside a critical block.
+
+```kr
+lock ConsoleLock
+
+fn write_char(uint8 b) {
+    acquire(ConsoleLock)
+    critical {
+        UART0.Data = b     // no yield, no alloc inside this block
+    }
+    release(ConsoleLock)
+}
+```
+
+Critical blocks may be nested.  The effect restriction applies to the entire
+dynamic extent — including any function called from inside the block.
+
+---
+
+## 17. Unsafe Blocks
+
+An `unsafe { }` block enables operations that bypass the compiler's normal
+safety checks, such as inline assembly via `asm!`.  The compiler emits
+`UnsafeEnter`/`UnsafeExit` markers in KRIR so the unsafe region is visible
+to downstream analysis passes.
+
+```kr
+fn flush_tlb() {
+    unsafe {
+        asm!(invlpg)
+    }
+}
+```
+
+Use `unsafe` only for unavoidable hardware interactions that have no safe
+surface equivalent.  All capability and context rules still apply inside an
+unsafe block.
 
 ---
 

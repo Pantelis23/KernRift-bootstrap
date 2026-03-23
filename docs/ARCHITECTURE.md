@@ -1,4 +1,4 @@
-# KernRift Architecture (Initial)
+# KernRift Architecture
 
 ## Scope
 
@@ -23,7 +23,10 @@ Freestanding, ahead-of-time language + compiler targeting kernel and driver deve
 - Callgraph pinning and section placement constraints
 
 4. Backend
-- LLVM backend first, with strict lowering constraints
+- Custom compiler-owned backend; no LLVM or host-compiler dependency
+- Primary artifact: `krbo` (KernRift Binary Object), a deterministic compiler-owned binary format with explicit symbols and fixups
+- ELF64 relocatable object export (`elfobj`) derived from `krbo` for linker compatibility
+- Textual x86-64 SysV assembly export (`asm`) for debug/reference only
 - Native object emission (ELF), section control, symbol visibility
 - Linker script integration for kernel builds
 
