@@ -52,6 +52,7 @@ pub struct CanonicalFixSourceResult {
 pub enum BackendArtifactKind {
     Krbo,
     ElfObject,
+    ElfExecutable,
     KrboExecutable,
     Asm,
     StaticLib,
@@ -62,6 +63,7 @@ impl BackendArtifactKind {
         match self {
             Self::Krbo => "krbo",
             Self::ElfObject => "elfobj",
+            Self::ElfExecutable => "elfexe",
             Self::KrboExecutable => "krboexe",
             Self::Asm => "asm",
             Self::StaticLib => "staticlib",
@@ -72,11 +74,12 @@ impl BackendArtifactKind {
         match value {
             "krbo" => Ok(Self::Krbo),
             "elfobj" => Ok(Self::ElfObject),
+            "elfexe" => Ok(Self::ElfExecutable),
             "krboexe" => Ok(Self::KrboExecutable),
             "asm" => Ok(Self::Asm),
             "staticlib" => Ok(Self::StaticLib),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'krboexe', 'asm', or 'staticlib'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'krboexe', 'asm', or 'staticlib'",
                 value
             )),
         }
@@ -130,6 +133,9 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
             let object = lower_executable_krir_to_x86_64_object(&executable, &target)
                 .map_err(|err| vec![err])?;
             Ok(emit_x86_64_object_bytes(&object))
+        }
+        BackendArtifactKind::ElfExecutable => {
+            emit_x86_64_elf_executable_bytes(&executable, &target).map_err(|err| vec![err])
         }
         BackendArtifactKind::KrboExecutable => {
             emit_x86_64_executable_bytes(&executable, &target).map_err(|err| vec![err])
@@ -488,6 +494,81 @@ fn emit_x86_64_executable_bytes(
 
     // Emit KRBO container
     Ok(emit_krbo_bytes(&object, entry_offset))
+}
+
+fn emit_x86_64_elf_executable_bytes(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    if !executable.extern_declarations.is_empty() {
+        let unresolved = executable
+            .extern_declarations
+            .iter()
+            .map(|decl| decl.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "elfexe emit requires no extern declarations; unresolved externs: {}",
+            unresolved
+        ));
+    }
+
+    let ld = find_host_tool(&["ld.lld", "ld"])
+        .ok_or_else(|| "elfexe emit requires a linker (ld.lld or ld)".to_string())?;
+
+    let object = lower_executable_krir_to_x86_64_object(executable, target)?;
+    let object_bytes = emit_x86_64_object_bytes(&object);
+
+    let temp_dir = unique_temp_dir("elfexe");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!(
+            "failed to create temp dir '{}': {}",
+            temp_dir.display(),
+            err
+        )
+    })?;
+
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
+    let object_path = temp_dir.join("input.o");
+    let output_path = temp_dir.join("output.elf");
+
+    fs::write(&object_path, &object_bytes).map_err(|err| {
+        format!(
+            "failed to write temp object '{}': {}",
+            object_path.display(),
+            err
+        )
+    })?;
+
+    let ld_output = Command::new(&ld)
+        .arg("-e")
+        .arg("entry")
+        .arg("-o")
+        .arg(&output_path)
+        .arg(&object_path)
+        .output()
+        .map_err(|err| format!("failed to run linker '{}': {}", ld, err))?;
+
+    if !ld_output.status.success() {
+        return Err(format!(
+            "elfexe link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+            ld,
+            String::from_utf8_lossy(&ld_output.stdout),
+            String::from_utf8_lossy(&ld_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!(
+            "failed to read linked output '{}': {}",
+            output_path.display(),
+            err
+        )
+    })?;
+    drop(cleanup);
+    Ok(bytes)
 }
 
 fn emit_x86_64_static_library(
