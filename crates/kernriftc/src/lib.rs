@@ -1006,7 +1006,135 @@ pub fn detect_patterns(report: &TelemetryReport) -> Vec<PatternMatch> {
         });
     }
 
+    // ── Pattern: irq_raw_mmio ─────────────────────────────────────────────────
+    let raw_mmio_count = report.op_counts.get("raw_mmio_read").copied().unwrap_or(0)
+        + report.op_counts.get("raw_mmio_write").copied().unwrap_or(0);
+    if report.irq_fn_count > 0 && raw_mmio_count > 0 {
+        let fitness = ((30usize + report.irq_fn_count * 10) as u8).min(80);
+        matches.push(PatternMatch {
+            id: "irq_raw_mmio",
+            title: "Raw MMIO in IRQ context",
+            signal: format!(
+                "module has {} irq-context function(s) performing raw MMIO — consider a spinlock or atomic abstraction",
+                report.irq_fn_count
+            ),
+            suggestion: "Wrap raw MMIO access in a spinlock or use an atomic abstraction.",
+            fitness,
+            requires_experimental: false,
+        });
+    }
+
+    // ── Pattern: high_lock_depth ──────────────────────────────────────────────
+    if report.max_lock_depth >= 3 {
+        let fitness = (20u64 + report.max_lock_depth.saturating_sub(2) * 15).min(75) as u8;
+        matches.push(PatternMatch {
+            id: "high_lock_depth",
+            title: "Deep lock nesting",
+            signal: format!(
+                "max lock nesting depth is {} — consider flattening the acquisition order to reduce deadlock risk",
+                report.max_lock_depth
+            ),
+            suggestion: "Restructure lock acquisition so no path holds more than 2 locks simultaneously.",
+            fitness,
+            requires_experimental: false,
+        });
+    }
+
+    // ── Pattern: mmio_without_lock ────────────────────────────────────────────
+    if report.mmio_register_count > 0 && report.lock_class_count == 0 {
+        matches.push(PatternMatch {
+            id: "mmio_without_lock",
+            title: "MMIO without lock class",
+            signal: format!(
+                "module declares {} MMIO register(s) but no lock class — concurrent access from thread and IRQ contexts is unguarded",
+                report.mmio_register_count
+            ),
+            suggestion: "Declare a lock class and use it to guard all MMIO access.",
+            fitness: 40,
+            requires_experimental: false,
+        });
+    }
+
     // Sort: fitness descending, then id ascending for deterministic output.
     matches.sort_by(|a, b| b.fitness.cmp(&a.fitness).then(a.id.cmp(b.id)));
     matches
+}
+
+#[cfg(test)]
+mod lc_pattern_tests {
+    use super::*;
+
+    fn base_report() -> TelemetryReport {
+        TelemetryReport {
+            surface: "stable",
+            function_count: 1,
+            extern_function_count: 0,
+            call_edge_count: 0,
+            mmio_base_count: 0,
+            mmio_register_count: 0,
+            lock_class_count: 0,
+            percpu_var_count: 0,
+            total_ops: 0,
+            op_counts: Default::default(),
+            experimental_features: vec![],
+            ctx_distribution: Default::default(),
+            eff_distribution: Default::default(),
+            module_caps: vec![],
+            irq_fn_count: 0,
+            max_lock_depth: 0,
+        }
+    }
+
+    #[test]
+    fn irq_raw_mmio_fires() {
+        let mut r = base_report();
+        r.irq_fn_count = 2;
+        r.op_counts.insert("raw_mmio_write".to_string(), 3);
+        let ms = detect_patterns(&r);
+        let m = ms.iter().find(|m| m.id == "irq_raw_mmio").expect("pattern fired");
+        assert_eq!(m.fitness, 50); // min(30 + 2*10, 80) = 50
+    }
+
+    #[test]
+    fn irq_raw_mmio_no_fire_without_irq() {
+        let mut r = base_report();
+        r.op_counts.insert("raw_mmio_write".to_string(), 3);
+        let ms = detect_patterns(&r);
+        assert!(ms.iter().all(|m| m.id != "irq_raw_mmio"));
+    }
+
+    #[test]
+    fn high_lock_depth_fires_at_3() {
+        let mut r = base_report();
+        r.max_lock_depth = 3;
+        let ms = detect_patterns(&r);
+        let m = ms.iter().find(|m| m.id == "high_lock_depth").expect("pattern fired");
+        assert_eq!(m.fitness, 35); // 20 + (3-2)*15 = 35
+    }
+
+    #[test]
+    fn high_lock_depth_no_fire_at_2() {
+        let mut r = base_report();
+        r.max_lock_depth = 2;
+        let ms = detect_patterns(&r);
+        assert!(ms.iter().all(|m| m.id != "high_lock_depth"));
+    }
+
+    #[test]
+    fn mmio_without_lock_fires() {
+        let mut r = base_report();
+        r.mmio_register_count = 2;
+        let ms = detect_patterns(&r);
+        let m = ms.iter().find(|m| m.id == "mmio_without_lock").expect("pattern fired");
+        assert_eq!(m.fitness, 40);
+    }
+
+    #[test]
+    fn mmio_without_lock_no_fire_with_lock() {
+        let mut r = base_report();
+        r.mmio_register_count = 2;
+        r.lock_class_count = 1;
+        let ms = detect_patterns(&r);
+        assert!(ms.iter().all(|m| m.id != "mmio_without_lock"));
+    }
 }
