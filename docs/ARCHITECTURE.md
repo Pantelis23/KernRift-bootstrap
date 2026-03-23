@@ -29,6 +29,8 @@ Freestanding, ahead-of-time language + compiler targeting kernel and driver deve
 - Textual x86-64 SysV assembly export (`asm`) for debug/reference only
 - Native object emission (ELF), section control, symbol visibility
 - Linker script integration for kernel builds
+- ARM64 (AArch64) targets: `aarch64-sysv` (Linux), `aarch64-macho` (macOS), `aarch64-win` (Windows)
+- Fat binary output (`KRBOFAT`): both x86_64 and ARM64 slices, LZ4-compressed per slice; fat-first detection in both compiler and runtime
 
 ## Core Language Features (MVP)
 

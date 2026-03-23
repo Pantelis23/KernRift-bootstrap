@@ -2,6 +2,16 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## [Unreleased]
+
+### Added
+- AArch64 (ARM64) backend: `aarch64-sysv` (Linux), `aarch64-macho` (macOS), `aarch64-win` (Windows).
+- `KRBOFAT` fat binary container: LZ4-compressed per-arch slices, fat-first detection.
+- Default `kernriftc <file.kr>` output is now a fat binary containing x86_64 and ARM64 code.
+- `--arch x86_64|arm64` flag for single-arch krbo output.
+- Dual-file output for `--emit=elfobj`, `--emit=asm`, `--emit=staticlib` without `--arch`.
+- `kernrift` runner: automatic host-arch slice extraction from fat binaries.
+
 ## v0.3.1 - 2026-03-23
 
 ### Added

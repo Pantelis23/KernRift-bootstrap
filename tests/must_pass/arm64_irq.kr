@@ -1,0 +1,3 @@
+@ctx(irq)
+fn handle_irq() {
+}

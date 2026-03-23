@@ -214,7 +214,9 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 | Command | Output | Description |
 |---------|--------|-------------|
 | `kernriftc --version` / `-V` | version string | Print compiler version and exit |
-| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** |
+| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** (fat krbo: x86_64 + ARM64) |
+| `kernriftc --arch x86_64 <file.kr>` | `<stem>.krbo` (x86_64 only) | Single-arch compile for x86_64 |
+| `kernriftc --arch arm64 <file.kr>`  | `<stem>.krbo` (ARM64 only)  | Single-arch compile for ARM64  |
 | `kernrift <file.krbo>` | — | **Run a compiled program** |
 | `kernriftc check <file.kr>` | stderr diagnostics | Analysis only, no binary |
 | `kernriftc check --emit=krir <file.kr>` | JSON to **stdout** | KRIR canonical IR |
