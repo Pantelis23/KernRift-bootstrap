@@ -25,6 +25,7 @@ hidden costs.
 12. [Locks](#12-locks)
 13. [Per-CPU Variables](#13-per-cpu-variables)
 14. [Extern Functions](#14-extern-functions)
+15. [Tail Calls](#15-tail-calls)
 
 ---
 
@@ -609,6 +610,40 @@ extern @ctx(thread, boot) fn platform_barrier();
 extern @ctx(irq) fn uart_irq_ack();
 extern @ctx(thread, boot) fn memcpy([uint8] dst, [uint8] src, uint64 n);
 ```
+
+---
+
+## 15. Tail Calls
+
+A tail call discards the current function's stack frame and jumps directly to the callee.  The result is zero stack growth per iteration, which is the correct way to implement unbounded poll loops and state machines in kernel code — especially in `@ctx(irq)` functions where stack space is fixed and never reclaimed.
+
+### Intrinsic form
+
+```kr
+tail_call(callee[, arg, ...])
+```
+
+`tail_call` is an explicit intrinsic statement.  It transfers control to `callee` with zero stack growth.  Arguments are passed positionally.
+
+```kr
+@ctx(irq)
+fn uart_poll(uint64 head) {
+    uint64 next = (head + 1) & 7
+    tail_call(uart_poll, next)   // jmp uart_poll — no frame growth
+}
+```
+
+`tail_call` requires `--surface experimental`.  On stable surface, the living compiler emits the `try_tail_call` suggestion when plain calls are present but no tail calls are.
+
+### Auto-fix
+
+`kernriftc lc --fix --dry-run <file.kr>` previews what a tail-call rewrite would look like as a unified diff.  `--fix --write` applies it atomically.  The rewrite prepends `tail ` to the last bare call statement in each function body.
+
+### Constraints
+
+- `tail_call` must be the last statement executed in the function.
+- The callee's `@ctx` must be compatible with the caller's (same rules as any other call edge).
+- Arguments are limited to six by the SysV ABI on x86-64.
 
 ---
 

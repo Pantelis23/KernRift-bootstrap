@@ -2,7 +2,7 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
-## [Unreleased]
+## v0.3.1 - 2026-03-23
 
 ### Added
 - `kernrift` split into its own crate so `cargo install` tracks both binaries independently.

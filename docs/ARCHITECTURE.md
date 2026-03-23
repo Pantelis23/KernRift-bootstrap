@@ -129,6 +129,83 @@ The following must survive lowering unchanged in meaning:
 - Custom calling conventions where required
 - Exact section placement for boot, ISR tables, per-cpu segments, and linker-defined symbols
 
+## Living Compiler
+
+`kernriftc lc` (alias: `living-compiler`) is an advisory static analysis layer. It compiles the input, collects a `TelemetryReport`, and then matches patterns to produce ranked suggestions. It does not modify or reject the source — all output is advisory.
+
+### Command forms
+
+```
+kernriftc lc <file.kr>
+kernriftc lc --format json <file.kr>
+kernriftc lc --surface experimental <file.kr>
+kernriftc lc --ci <file.kr>
+kernriftc lc --ci --min-fitness 70 <file.kr>
+kernriftc lc --diff <file.kr>
+kernriftc lc --diff <before.kr> <after.kr>
+kernriftc lc --fix --dry-run <file.kr>
+kernriftc lc --fix --write <file.kr>
+kernriftc living-compiler <file.kr>   # backwards-compatible alias
+```
+
+### TelemetryReport fields
+
+`collect_telemetry` populates these fields from the compiled `KrirModule`:
+
+| Field | Meaning |
+|-------|---------|
+| `op_counts` | Per-op-kind counts across all functions |
+| `mmio_register_count` | Number of declared device registers |
+| `lock_class_count` | Number of declared lock classes |
+| `ctx_distribution` | Function count per execution context |
+| `irq_fn_count` | Functions whose `ctx_ok` includes `Irq` |
+| `max_lock_depth` | Deepest lock nesting depth (from `passes::AnalysisReport`) |
+
+### Patterns
+
+Each pattern has an `id`, a `fitness` (0–100), a human-readable `signal`, and a `suggestion`. Higher fitness means the pattern applies more strongly.
+
+| Pattern | Condition | Fitness | Surface |
+|---------|-----------|---------|---------|
+| `try_tail_call` | plain calls present, no `tail_call` op | `min(call_count × 15, 100)` | stable |
+| `high_extern_ratio` | high ratio of extern calls | varies | stable |
+| `irq_raw_mmio` | IRQ functions + raw MMIO ops | `min(30 + irq_fn_count × 10, 80)` | stable |
+| `high_lock_depth` | `max_lock_depth ≥ 3` | `min(20 + (depth − 2) × 15, 75)` | stable |
+| `mmio_without_lock` | MMIO registers declared, no lock class | 40 (fixed) | stable |
+
+`irq_raw_mmio` distinguishes `KrirOp::RawMmioRead`/`RawMmioWrite` (unguarded hardware access) from the abstracted `KrirOp::MmioRead`/`MmioWrite` (device-block accesses). Only raw ops trigger the pattern.
+
+### CI mode
+
+`--ci` exits 1 if any suggestion has fitness ≥ 50. Override with `--min-fitness N`. Using `--min-fitness` without `--ci` is valid but only affects display filtering (suggestions below the threshold are hidden).
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | No suggestions at or above threshold, or no suggestions at all |
+| 1 | At least one suggestion at or above threshold (CI mode) |
+| 2 | Compile error, bad arguments, or I/O error |
+
+### Diff mode
+
+Shows only suggestions that are new or worsened (fitness increased by ≥ 10) between two states:
+
+- **`--diff <file.kr>`** — compares the current file against `git show HEAD:<file>`. Requires `git` on PATH.
+- **`--diff <before.kr> <after.kr>`** — two-file form, no git dependency.
+
+`--diff` and `--fix` cannot be combined.
+
+### Auto-fix (`try_tail_call`)
+
+`--fix` rewrites the last bare call statement in each function body to include the `tail` keyword, enabling zero-stack-growth loop-back patterns. Only `try_tail_call` is fixable in this version.
+
+- `--fix --dry-run` — emits a unified diff to stdout; no files changed. With `--ci`, CI gate evaluates the pre-fix state.
+- `--fix --write` — writes the patched source atomically (temp file + rename). With `--ci`, re-runs analysis on the patched file.
+- `--fix` alone (without `--dry-run` or `--write`) is an error (exit 2).
+
+---
+
 ## Near-Term Risk Controls
 
 - Keep language surface small until KR2
