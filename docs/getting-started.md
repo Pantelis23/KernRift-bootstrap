@@ -225,6 +225,8 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 | `kernriftc policy --policy <p> --contracts <c>` | JSON to **stdout** | Policy evaluation |
 | `kernriftc inspect-artifact <path>` | JSON/text to **stdout** | Artifact inspection |
 | `kernriftc fix ...` | Source edits | Apply canonical fixes |
+| `kernriftc living-compiler <file.kr>` | text to **stdout** | Suggest optimisation opportunities |
+| `kernriftc living-compiler --format json <file.kr>` | JSON to **stdout** | Same, machine-readable |
 
 ---
 

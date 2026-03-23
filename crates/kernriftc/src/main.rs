@@ -1991,6 +1991,9 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promote <feature-id> --diff");
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
     eprintln!("  kernriftc link <file1.kr> [file2.kr ...]");
+    eprintln!("  kernriftc living-compiler <file.kr>");
+    eprintln!("  kernriftc living-compiler --surface experimental <file.kr>");
+    eprintln!("  kernriftc living-compiler --format json <file.kr>");
     eprintln!("  kernriftc migrate <file.kr>");
     eprintln!("  kernriftc migrate <file.kr> --dry-run");
     eprintln!("  kernriftc migrate <file.kr> --surface experimental");
