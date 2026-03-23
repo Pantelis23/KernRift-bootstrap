@@ -763,6 +763,12 @@ pub struct TelemetryReport {
     pub ctx_distribution: std::collections::BTreeMap<String, usize>,
     /// Number of functions that declare each `eff` annotation.
     pub eff_distribution: std::collections::BTreeMap<String, usize>,
+    /// Number of functions annotated with `@ctx(irq)`. Derived from `ctx_distribution`.
+    #[serde(default)]
+    pub irq_fn_count: usize,
+    /// Deepest observed lock nesting depth. Populated from `passes::AnalysisReport`.
+    #[serde(default)]
+    pub max_lock_depth: u64,
     /// Capability strings declared at the module level.
     pub module_caps: Vec<String>,
 }
@@ -834,6 +840,10 @@ pub fn collect_telemetry(module: &KrirModule, surface: SurfaceProfile) -> Teleme
         experimental_features,
         ctx_distribution,
         eff_distribution,
+        irq_fn_count: module.functions.iter()
+            .filter(|f| f.ctx_ok.contains(&krir::Ctx::Irq))
+            .count(),
+        max_lock_depth: 0, // filled by caller after passes::analyze_module
         module_caps: module.module_caps.clone(),
     }
 }
