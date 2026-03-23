@@ -99,6 +99,29 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
         ));
     }
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ptr as *mut u8, code.len()) };
+
+    // On AArch64, the I-cache and D-cache are not coherent.
+    // After writing code via the D-cache we must clean + invalidate
+    // the I-cache range before executing, or the CPU fetches stale
+    // (or zero) cache lines and raises SIGILL.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let start = ptr as usize;
+        let end = start + code.len();
+        const CACHE_LINE: usize = 64;
+        let mut addr = start & !(CACHE_LINE - 1);
+        while addr < end {
+            std::arch::asm!(
+                "dc cvau, {x}",  // clean D-cache by VA to PoU
+                "ic ivau, {x}",  // invalidate I-cache by VA to PoU
+                x = in(reg) addr,
+                options(nostack),
+            );
+            addr += CACHE_LINE;
+        }
+        std::arch::asm!("dsb ish", "isb", options(nostack));
+    }
+
     Ok(ptr as *mut u8)
 }
 
