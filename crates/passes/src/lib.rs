@@ -11,6 +11,7 @@ pub struct CheckError {
 const PASS_LOCK: &str = "lockgraph";
 const PASS_ANALYSIS: &str = "analysis";
 const PASS_CRITICAL_REGION: &str = "critical-region";
+const PASS_LINK_LOCK: &str = "link-lock-cycle";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LockEdge {
@@ -1056,8 +1057,8 @@ fn lock_edge_dfs(
     errs: &mut Vec<CheckError>,
 ) {
     visited.insert(node.to_string());
-    in_stack.insert(node.to_string());
     stack.push(node.to_string());
+    in_stack.insert(node.to_string());
 
     if let Some(neighbors) = adj.get(node) {
         for neighbor in neighbors {
@@ -1067,7 +1068,7 @@ fn lock_edge_dfs(
                 let cycle_start = stack.iter().position(|n| n == neighbor).unwrap_or(0);
                 let cycle: Vec<&str> = stack[cycle_start..].iter().map(|s| s.as_str()).collect();
                 errs.push(CheckError {
-                    pass: "link-lock-cycle",
+                    pass: PASS_LINK_LOCK,
                     message: format!(
                         "link-time lock order cycle: {} -> {}",
                         cycle.join(" -> "),

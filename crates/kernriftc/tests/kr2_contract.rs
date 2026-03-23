@@ -261,9 +261,11 @@ fn kernriftc_bin() -> std::path::PathBuf {
 
 #[test]
 fn link_detects_cross_module_lock_inversion() {
-    let tmp1 = std::env::temp_dir().join("link_test_inversion_a.kr");
-    let tmp2 = std::env::temp_dir().join("link_test_inversion_b.kr");
+    let pid = std::process::id();
+    let tmp1 = std::env::temp_dir().join(format!("link_inversion_{pid}_a.kr"));
+    let tmp2 = std::env::temp_dir().join(format!("link_inversion_{pid}_b.kr"));
 
+    // File A: only acquires Lock1 → Lock2 (no inversion in this file alone)
     std::fs::write(&tmp1, r#"
 spinlock Lock1;
 spinlock Lock2;
@@ -271,9 +273,11 @@ spinlock Lock2;
 fn a() { acquire(Lock1); acquire(Lock2); release(Lock2); release(Lock1); }
 "#).unwrap();
 
+    // File B: only acquires Lock2 → Lock1 (no inversion in this file alone)
+    // Together with A the merged graph has Lock1→Lock2 and Lock2→Lock1 → cycle
     std::fs::write(&tmp2, r#"
-spinlock Lock1;
 spinlock Lock2;
+spinlock Lock1;
 @ctx(thread)
 fn b() { acquire(Lock2); acquire(Lock1); release(Lock1); release(Lock2); }
 "#).unwrap();
@@ -298,8 +302,9 @@ fn b() { acquire(Lock2); acquire(Lock1); release(Lock1); release(Lock2); }
 
 #[test]
 fn link_passes_for_consistent_ordering() {
-    let tmp1 = std::env::temp_dir().join("link_ok_ordering_a.kr");
-    let tmp2 = std::env::temp_dir().join("link_ok_ordering_b.kr");
+    let pid = std::process::id();
+    let tmp1 = std::env::temp_dir().join(format!("link_ok_{pid}_a.kr"));
+    let tmp2 = std::env::temp_dir().join(format!("link_ok_{pid}_b.kr"));
 
     std::fs::write(&tmp1, r#"
 spinlock Lock1;
