@@ -85,7 +85,7 @@ pub(crate) fn parse_living_compiler_args(args: &[String]) -> Result<LivingCompil
             "--min-fitness" => {
                 let Some(value) = args.get(idx + 1) else {
                     return Err(
-                        "invalid living-compiler mode: --min-fitness requires a value".to_string()
+                        "invalid living-compiler mode: --min-fitness requires a value".to_string(),
                     );
                 };
                 ci_min_fitness = value.parse::<u8>().map_err(|_| {
@@ -128,12 +128,12 @@ pub(crate) fn parse_living_compiler_args(args: &[String]) -> Result<LivingCompil
 
     // Validate flag combinations.
     if diff && fix {
-        return Err("invalid living-compiler mode: --diff and --fix cannot be combined".to_string());
+        return Err(
+            "invalid living-compiler mode: --diff and --fix cannot be combined".to_string(),
+        );
     }
     if fix && !dry_run && !write {
-        return Err(
-            "error: --fix requires --dry-run or --write".to_string()
-        );
+        return Err("error: --fix requires --dry-run or --write".to_string());
     }
 
     // Validate positional arguments.
@@ -143,7 +143,8 @@ pub(crate) fn parse_living_compiler_args(args: &[String]) -> Result<LivingCompil
             2 => {} // two-file mode
             _ => {
                 return Err(
-                    "invalid living-compiler mode: --diff requires 1 or 2 <file.kr> arguments".to_string()
+                    "invalid living-compiler mode: --diff requires 1 or 2 <file.kr> arguments"
+                        .to_string(),
                 );
             }
         }
@@ -176,7 +177,9 @@ pub(crate) fn parse_living_compiler_args(args: &[String]) -> Result<LivingCompil
 mod tests {
     use super::*;
 
-    fn s(v: &str) -> String { v.to_string() }
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
 
     #[test]
     fn parse_ci_flag() {
@@ -187,7 +190,8 @@ mod tests {
 
     #[test]
     fn parse_min_fitness_override() {
-        let a = parse_living_compiler_args(&[s("--ci"), s("--min-fitness"), s("70"), s("file.kr")]).unwrap();
+        let a = parse_living_compiler_args(&[s("--ci"), s("--min-fitness"), s("70"), s("file.kr")])
+            .unwrap();
         assert_eq!(a.ci_min_fitness, 70);
         assert!(a.min_fitness_explicit);
     }
@@ -224,7 +228,8 @@ mod tests {
 
     #[test]
     fn diff_and_fix_is_error() {
-        let e = parse_living_compiler_args(&[s("--diff"), s("--fix"), s("--write"), s("file.kr")]).unwrap_err();
+        let e = parse_living_compiler_args(&[s("--diff"), s("--fix"), s("--write"), s("file.kr")])
+            .unwrap_err();
         assert!(e.contains("cannot be combined"), "got: {}", e);
     }
 }

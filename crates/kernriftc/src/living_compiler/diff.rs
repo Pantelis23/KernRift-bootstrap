@@ -32,7 +32,9 @@ pub(crate) fn compute_diff(before: &[PatternMatch], after: &[PatternMatch]) -> V
             }
             Some(b) if a.fitness >= b.fitness + 10 => {
                 entries.push(DiffEntry {
-                    status: DiffStatus::Worsened { fitness_before: b.fitness },
+                    status: DiffStatus::Worsened {
+                        fitness_before: b.fitness,
+                    },
                     suggestion: a.clone(),
                 });
             }
@@ -97,7 +99,10 @@ mod tests {
         let after = vec![pm("a", 40)];
         let diff = compute_diff(&before, &after);
         assert_eq!(diff.len(), 1);
-        assert!(matches!(diff[0].status, DiffStatus::Worsened { fitness_before: 30 }));
+        assert!(matches!(
+            diff[0].status,
+            DiffStatus::Worsened { fitness_before: 30 }
+        ));
     }
 
     #[test]

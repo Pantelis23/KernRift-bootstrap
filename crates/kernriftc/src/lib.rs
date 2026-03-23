@@ -840,7 +840,9 @@ pub fn collect_telemetry(module: &KrirModule, surface: SurfaceProfile) -> Teleme
         experimental_features,
         ctx_distribution,
         eff_distribution,
-        irq_fn_count: module.functions.iter()
+        irq_fn_count: module
+            .functions
+            .iter()
             .filter(|f| f.ctx_ok.contains(&krir::Ctx::Irq))
             .count(),
         max_lock_depth: 0, // filled by caller after passes::analyze_module
@@ -1091,7 +1093,10 @@ mod lc_pattern_tests {
         r.irq_fn_count = 2;
         r.op_counts.insert("raw_mmio_write".to_string(), 3);
         let ms = detect_patterns(&r);
-        let m = ms.iter().find(|m| m.id == "irq_raw_mmio").expect("pattern fired");
+        let m = ms
+            .iter()
+            .find(|m| m.id == "irq_raw_mmio")
+            .expect("pattern fired");
         assert_eq!(m.fitness, 50); // min(30 + 2*10, 80) = 50
     }
 
@@ -1108,7 +1113,10 @@ mod lc_pattern_tests {
         let mut r = base_report();
         r.max_lock_depth = 3;
         let ms = detect_patterns(&r);
-        let m = ms.iter().find(|m| m.id == "high_lock_depth").expect("pattern fired");
+        let m = ms
+            .iter()
+            .find(|m| m.id == "high_lock_depth")
+            .expect("pattern fired");
         assert_eq!(m.fitness, 35); // 20 + (3-2)*15 = 35
     }
 
@@ -1125,7 +1133,10 @@ mod lc_pattern_tests {
         let mut r = base_report();
         r.mmio_register_count = 2;
         let ms = detect_patterns(&r);
-        let m = ms.iter().find(|m| m.id == "mmio_without_lock").expect("pattern fired");
+        let m = ms
+            .iter()
+            .find(|m| m.id == "mmio_without_lock")
+            .expect("pattern fired");
         assert_eq!(m.fitness, 40);
     }
 
