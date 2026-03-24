@@ -3105,6 +3105,16 @@ fn lower_stmt(
                 let mut krir_args = Vec::new();
                 let mut ok = true;
                 for arg in args {
+                    // Resolve named constants to integer literals so they
+                    // survive the KRIR executable lowering slot-map lookup.
+                    if let ParserExpr::Ident(name) = arg {
+                        if let Some(literal) = const_map.get(name.as_str()) {
+                            krir_args.push(KrirMmioValueExpr::IntLiteral {
+                                value: literal.clone(),
+                            });
+                            continue;
+                        }
+                    }
                     match lower_expr(arg, ops, slot_counter, device_regs, eff_used) {
                         Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                         Err(e) => {
