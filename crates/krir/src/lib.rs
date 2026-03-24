@@ -1067,6 +1067,16 @@ fn infer_executable_function_result_types(
         let mut result_ty = None::<MmioScalarType>;
         let mut saw_return_slot = false;
 
+        // Pre-pass: build cell→type from StackCell declarations so that
+        // CallCaptureWithArgs captures can be resolved to their types.
+        let mut cell_type_map: std::collections::HashMap<&str, MmioScalarType> =
+            std::collections::HashMap::new();
+        for op in &function.ops {
+            if let KrirOp::StackCell { ty, cell } = op {
+                cell_type_map.insert(cell.as_str(), *ty);
+            }
+        }
+
         for (index, op) in function.ops.iter().enumerate() {
             match op {
                 KrirOp::MmioRead {
@@ -1082,6 +1092,14 @@ fn infer_executable_function_result_types(
                         executable_slot_name = Some(slot_name.clone());
                     }
                     last_read = Some((slot_name, *ty));
+                }
+                KrirOp::CallCaptureWithArgs { capture_slot, .. } => {
+                    if let Some(&ty) = cell_type_map.get(capture_slot.as_str()) {
+                        if executable_slot_name.is_none() {
+                            executable_slot_name = Some(capture_slot.clone());
+                        }
+                        last_read = Some((capture_slot.clone(), ty));
+                    }
                 }
                 KrirOp::ReturnSlot { slot } => {
                     let invocation = format_return_slot_invocation(slot);
@@ -1110,10 +1128,9 @@ fn infer_executable_function_result_types(
 
                     let Some((read_slot, read_ty)) = last_read.as_ref() else {
                         errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' requires a prior mmio_read, raw_mmio_read, or call_capture_with_args that captures into '{}' in the same function",
                             function.name,
                             invocation,
-                            slot,
                             slot,
                             slot
                         ));
@@ -1122,10 +1139,9 @@ fn infer_executable_function_result_types(
 
                     if read_slot != slot {
                         errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' requires a prior mmio_read, raw_mmio_read, or call_capture_with_args that captures into '{}' in the same function",
                             function.name,
                             invocation,
-                            slot,
                             slot,
                             slot
                         ));
@@ -1452,6 +1468,17 @@ pub fn lower_current_krir_to_executable_krir(
                             args: exec_args,
                             ty,
                             slot_idx,
+                        });
+                        // Load the result back from the stack slot into %rbx so
+                        // ReturnSavedValue and downstream SavedSlot consumers work.
+                        exec_ops.push(ExecutableOp::StackLoad { ty, slot_idx });
+                        if executable_slot_name.is_none() {
+                            executable_slot_name = Some(capture_slot.clone());
+                        }
+                        last_value = Some(ExecutableCapturedValue {
+                            slot: capture_slot.clone(),
+                            ty,
+                            source: ExecutableCapturedValueSource::SavedSlot,
                         });
                     }
                 }
