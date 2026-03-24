@@ -156,14 +156,15 @@ jobs:
       # ── Smoke tests ────────────────────────────────────────────────────────
       # Two tiers:
       #
-      #  A. smoke_noop (ALL platforms, ARM64 + Windows included)
-      #     examples/smoke_noop.kr has no MMIO ops so the AArch64 encoder
-      #     produces a complete fat binary (both slices).  kernrift runs the
-      #     host-native slice and exits 0.
+      #  A. smoke_noop (ALL platforms)
+      #     examples/smoke_noop.kr has no MMIO ops → fat binary with both
+      #     slices on every platform.  kernrift runs the native slice, exits 0.
       #
-      #  B. hello.kr (x86_64 only)
-      #     hello.kr uses print() → MMIO writes, so only the x86_64 slice is
-      #     present in the fat binary.  On x86_64 we also verify stdout output.
+      #  B. hello.kr (ALL platforms — AArch64 encoder now supports MMIO)
+      #     hello.kr uses print() → MmioWriteImm.  The fat binary contains
+      #     both x86_64 and AArch64 slices.  We verify stdout output on every
+      #     supported architecture.  Windows is excluded because the UART
+      #     buffer flush path is not yet wired for Windows ARM64 (beta runner).
       #
       # Windows note: git bash (shell: bash on Windows Actions runners) does NOT
       # automatically add .exe to ./path/to/bin, so we detect RUNNER_OS and set
@@ -177,13 +178,22 @@ jobs:
           "./target/release/kernrift${exe}" smoke_noop.krbo
           echo "smoke_noop: PASS"
 
-      - name: Smoke – compile hello.kr and verify output (x86_64 only)
-        if: matrix.arch == 'x86_64'
+      - name: Smoke – compile hello.kr and verify output (non-Windows)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          exe=""; [[ "$RUNNER_OS" == "Windows" ]] && exe=".exe"
-          "./target/release/kernriftc${exe}" hello.kr
-          output=$("./target/release/kernrift${exe}" hello.krbo)
+          "./target/release/kernriftc" hello.kr
+          output=$("./target/release/kernrift" hello.krbo)
+          printf '%s\n' "$output"
+          echo "$output" | grep -q "Hello, World!"
+          echo "hello smoke: PASS"
+
+      - name: Smoke – compile hello.kr and verify output (Windows x86_64)
+        if: runner.os == 'Windows' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          "./target/release/kernriftc.exe" hello.kr
+          output=$("./target/release/kernrift.exe" hello.krbo)
           printf '%s\n' "$output"
           echo "$output" | grep -q "Hello, World!"
           echo "hello smoke: PASS"

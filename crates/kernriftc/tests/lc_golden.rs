@@ -16,7 +16,7 @@ fn lc_ci_exit0_with_high_min_fitness() {
     let input = root.join("tests/golden/cases/lc_ci.kr");
     let expected_file = root.join("tests/golden/expect/lc_ci.lc_ci_exit0.stdout");
 
-    let out = Command::new(&bin)
+    let out = Command::new(bin)
         .args(["lc", "--ci", "--min-fitness", "90"])
         .arg(&input)
         .output()
@@ -40,7 +40,7 @@ fn lc_fix_nothing_to_fix() {
     let bin = assert_cmd::cargo::cargo_bin!("kernriftc");
     let input = root.join("tests/golden/cases/lc_ci.kr");
 
-    let out = Command::new(&bin)
+    let out = Command::new(bin)
         .args(["lc", "--fix", "--dry-run"])
         .arg(&input)
         .output()
@@ -60,7 +60,7 @@ fn lc_fix_write_applies_fix() {
     let tmp = std::env::temp_dir().join("lc_fix_write_test.kr");
     std::fs::copy(&src, &tmp).expect("copy lc_fix.kr");
 
-    let out = Command::new(&bin)
+    let out = Command::new(bin)
         .args(["lc", "--fix", "--write"])
         .arg(&tmp)
         .output()

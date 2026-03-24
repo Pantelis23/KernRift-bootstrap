@@ -8865,7 +8865,7 @@ pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> 
         out.extend_from_slice(&(raw.len() as u64).to_le_bytes());
     }
 
-    out.extend(std::iter::repeat(0u8).take(padding));
+    out.extend(std::iter::repeat_n(0u8, padding));
     for c in &compressed { out.extend_from_slice(c); }
 
     Ok(out)
@@ -8954,14 +8954,81 @@ struct AArch64EncodedFunction {
     relocs: Vec<AArch64PendingReloc>,
 }
 
+// ── AArch64 binary-encoding helpers ─────────────────────────────────────────
+
+/// Load a 64-bit immediate value into register `rd` using MOVZ + up to three
+/// MOVK instructions.  Emits the minimum number of instructions needed.
+fn emit_aa64_imm64(out: &mut Vec<u8>, rd: u32, value: u64) {
+    let parts: [u16; 4] = [
+        (value & 0xFFFF) as u16,
+        ((value >> 16) & 0xFFFF) as u16,
+        ((value >> 32) & 0xFFFF) as u16,
+        ((value >> 48) & 0xFFFF) as u16,
+    ];
+    // Use the first non-zero halfword as the MOVZ target (clears other bits).
+    // Fall back to hw=0 if the value is zero.
+    let first_nz = parts.iter().position(|&v| v != 0).unwrap_or(0);
+    let hw0 = first_nz as u32;
+    // MOVZ Xd, #parts[first_nz], LSL #(hw0 * 16)
+    out.extend_from_slice(
+        &(0xD280_0000u32 | (hw0 << 21) | ((parts[first_nz] as u32) << 5) | rd).to_le_bytes(),
+    );
+    for (hw, &part) in parts.iter().enumerate().skip(first_nz + 1) {
+        if part != 0 {
+            // MOVK Xd, #part, LSL #(hw * 16)
+            out.extend_from_slice(
+                &(0xF280_0000u32 | ((hw as u32) << 21) | ((part as u32) << 5) | rd)
+                    .to_le_bytes(),
+            );
+        }
+    }
+}
+
+/// Emit a typed store: `STR[BH]? Rt, [Rn]` with zero offset.
+///
+/// Access width is determined by `ty`:
+/// - U8/U16/U32/U64 → STRB/STRH/STR W/STR X
+/// - F32/F64        → same as U32/U64 (MMIO cares only about bit width)
+fn emit_aa64_str_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
+    let base: u32 = match ty {
+        MmioScalarType::U8 => 0x3900_0000,
+        MmioScalarType::U16 => 0x7900_0000,
+        MmioScalarType::U32 | MmioScalarType::F32 => 0xB900_0000,
+        MmioScalarType::U64 | MmioScalarType::F64 => 0xF900_0000,
+    };
+    out.extend_from_slice(&(base | (rn << 5) | rt).to_le_bytes());
+}
+
+/// Emit a typed load: `LDR[BH]? Rt, [Rn]` with zero offset (zero-extends).
+fn emit_aa64_ldr_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
+    let base: u32 = match ty {
+        MmioScalarType::U8 => 0x3940_0000,
+        MmioScalarType::U16 => 0x7940_0000,
+        MmioScalarType::U32 | MmioScalarType::F32 => 0xB940_0000,
+        MmioScalarType::U64 | MmioScalarType::F64 => 0xF940_0000,
+    };
+    out.extend_from_slice(&(base | (rn << 5) | rt).to_le_bytes());
+}
+
+// ── AArch64 function encoder ─────────────────────────────────────────────────
+
 /// Encode the prologue + body + epilogue of one AArch64 asm function into `out`.
 ///
 /// Returns the symbol, byte offset, and size suitable for building the symbol
-/// table, plus any external-call relocations.
+/// table, plus ALL symbol references (both internal calls that the outer loop
+/// will patch and external calls left for the linker).
+///
+/// Register conventions used throughout:
+///   x0  — "saved value": holds the result of the last `CallCapture`, `MmioRead`,
+///          or `StackLoad`.  Also used as the return value register (AAPCS64).
+///   x9  — scratch A: used for MMIO addresses, compare values, masks, and the
+///          loop-condition register (replacing x86-64's `eax` in `TestEaxEax`).
+///   x10 — scratch B: used for write values in `MmioWriteImm`.
+///   x29 — frame pointer; stack slots live at `[x29 + 16 + slot_idx * 8]`.
 fn encode_aarch64_function(
     func: &AArch64AsmFunction,
     out: &mut Vec<u8>,
-    defined_symbols: &BTreeSet<&str>,
+    _defined_symbols: &BTreeSet<&str>, // kept for API compatibility; all relocs unified below
 ) -> Result<AArch64EncodedFunction, String> {
     let start_offset = out.len() as u32;
 
@@ -8969,98 +9036,290 @@ fn encode_aarch64_function(
     let stack_bytes = (func.n_stack_cells as usize * 8 + 15) & !15usize;
     let frame_bytes = stack_bytes + 16;
 
-    // Prologue: stp x29, x30, [sp, #-frame_bytes]!
-    // Encoding: pre-index pair, 64-bit registers.
-    // The immediate field is (−frame_bytes / 8) encoded as a 7-bit signed value.
-    // Opcode: STP Xt1, Xt2, [Xn, #imm]! = 1010 1001 1 0iiiii i Xt2 Xn Xt1
-    // For stp x29, x30, [sp, #-16]!:
-    //   imm7 = -16/8 = -2 → 0b1111110 (7-bit two's complement)
-    //   Rt2 = 30, Rn = 31 (sp), Rt1 = 29
+    // ── Prologue: stp x29, x30, [sp, #-frame_bytes]! ────────────────────────
+    // STP (pre-index, 64-bit): 0xA9800000 | (imm7 << 15) | (x30 << 10) | (sp << 5) | x29
     {
         let imm = -(frame_bytes as i32) / 8; // must be in [-64, 63]
-        if imm < -64 || imm > 63 {
+        if !(-64..=63).contains(&imm) {
             return Err(format!(
-                "aarch64 object: frame size {} exceeds STP immediate range in function '{}'",
+                "aarch64: frame size {} exceeds STP range in function '{}'",
                 frame_bytes, func.symbol
             ));
         }
         let imm7 = (imm as u32) & 0x7F;
-        // STP (pre-index, 64-bit): opc=10, V=0, L=0, pre-index bit set
-        // 1010 1001 1 imm7[6:0] Rt2[4:0] Rn[4:0] Rt1[4:0]
-        // bits[31:30]=10, bits[29:27]=101, bit[26]=0(V), bits[25:24]=01(STP pre-index class),
-        // bit[23]=1(pre-index), bit[22]=0(L=store)
-        // Standard encoding: 0xA9800000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29
-        let word: u32 = 0xA980_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29;
-        out.extend_from_slice(&word.to_le_bytes());
+        out.extend_from_slice(&(0xA980_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29).to_le_bytes());
     }
-
     // mov x29, sp  →  add x29, sp, #0  →  0x910003FD
     out.extend_from_slice(&0x910003FDu32.to_le_bytes());
 
+    // ── Branch-patch infrastructure ──────────────────────────────────────────
+    // Forward branches and label-directed jumps need a two-pass approach:
+    // emit a placeholder instruction, record where it is, then fix the
+    // displacement once the target label's offset is known.
+    #[allow(dead_code)]
+    enum BPKind {
+        B,      // B  imm26  (0x14000000)
+        CbzX0,  // CBZ  X0,  imm19
+        CbzX9,  // CBZ  X9,  imm19  (after LoadSlotU8ToEax)
+        CbnzX9, // CBNZ X9,  imm19
+        BNe,    // B.NE      imm19
+        BEq,    // B.EQ      imm19
+    }
+    // (patch_offset_in_out, target_label, kind)
+    let mut branch_patches: Vec<(u32, String, BPKind)> = Vec::new();
+    let mut label_offsets: BTreeMap<String, u32> = BTreeMap::new();
+    let mut synth_ctr: usize = 0; // counter for synthetic label names
     let mut relocs: Vec<AArch64PendingReloc> = Vec::new();
 
+    // Emit a BL to `sym`, always recording it as a reloc so the outer loop can
+    // patch it (for internal targets) or leave it for the linker (external).
+    macro_rules! emit_bl {
+        ($sym:expr) => {{
+            let po = out.len() as u32;
+            relocs.push(AArch64PendingReloc {
+                patch_offset: po,
+                target_symbol: ($sym).to_string(),
+            });
+            out.extend_from_slice(&0x9400_0000u32.to_le_bytes());
+        }};
+    }
+
+    // LDR X{rd}, [X29, #(16 + slot*8)]  (64-bit slot load, imm12 scaled by 8)
+    macro_rules! slot_ldr {
+        ($rd:expr, $slot:expr) => {{
+            let imm12 = 2u32 + $slot as u32; // (16 + slot*8) / 8
+            out.extend_from_slice(
+                &(0xF940_0000u32 | (imm12 << 10) | (29 << 5) | ($rd as u32)).to_le_bytes(),
+            );
+        }};
+    }
+
+    // STR X{rs}, [X29, #(16 + slot*8)]
+    macro_rules! slot_str {
+        ($rs:expr, $slot:expr) => {{
+            let imm12 = 2u32 + $slot as u32;
+            out.extend_from_slice(
+                &(0xF900_0000u32 | (imm12 << 10) | (29 << 5) | ($rs as u32)).to_le_bytes(),
+            );
+        }};
+    }
+
+    // LDP epilogue helper (post-index restore of x29/x30, then either RET or B).
+    macro_rules! emit_ldp_epilogue {
+        () => {{
+            let imm = frame_bytes as i32 / 8;
+            if !(-64..=63).contains(&imm) {
+                return Err(format!(
+                    "aarch64: frame size {} exceeds LDP range in function '{}'",
+                    frame_bytes, func.symbol
+                ));
+            }
+            let imm7 = (imm as u32) & 0x7F;
+            out.extend_from_slice(
+                &(0xA8C0_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29).to_le_bytes(),
+            );
+        }};
+    }
+
+    // ── Instruction encoding loop ─────────────────────────────────────────────
     for instr in &func.instructions {
         match instr {
+            // ── Calls (BL; result in x0) ─────────────────────────────────────
             AArch64AsmInstruction::Call { symbol }
             | AArch64AsmInstruction::CallWithArgs { symbol, .. }
             | AArch64AsmInstruction::CallCapture { symbol, .. } => {
-                // BL instruction: 0x94000000 | imm26
-                // For internal calls we can patch the displacement; for
-                // external calls we emit a relocation and leave imm26 = 0.
-                let patch_offset = out.len() as u32;
-                if defined_symbols.contains(symbol.as_str()) {
-                    // Internal: will be patched after all functions are laid out.
-                    // Leave as 0 for now; caller must patch.
-                    out.extend_from_slice(&0x9400_0000u32.to_le_bytes());
-                } else {
-                    out.extend_from_slice(&0x9400_0000u32.to_le_bytes());
-                    relocs.push(AArch64PendingReloc {
-                        patch_offset,
-                        target_symbol: symbol.clone(),
-                    });
-                }
+                emit_bl!(symbol);
             }
+
+            // ── Tail-call (LDP epilogue + B) ──────────────────────────────────
             AArch64AsmInstruction::TailCall { symbol, args: _ } => {
-                // Epilogue then B (unconditional branch).
-                let imm = frame_bytes as i32 / 8; // positive for LDP post-index
-                if imm < -64 || imm > 63 {
-                    return Err(format!(
-                        "aarch64 object: frame size {} exceeds LDP immediate range in function '{}'",
-                        frame_bytes, func.symbol
-                    ));
-                }
-                let imm7 = (imm as u32) & 0x7F;
-                // LDP (post-index, 64-bit, L=1): 0xA8C00000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29
-                let ldp_word: u32 = 0xA8C0_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29;
-                out.extend_from_slice(&ldp_word.to_le_bytes());
-                // B <symbol>: 0x14000000 | imm26 (leave 0, reloc or internal patch)
-                let patch_offset = out.len() as u32;
-                out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
-                if !defined_symbols.contains(symbol.as_str()) {
-                    relocs.push(AArch64PendingReloc {
-                        patch_offset,
-                        target_symbol: symbol.clone(),
-                    });
-                }
+                emit_ldp_epilogue!();
+                let po = out.len() as u32;
+                relocs.push(AArch64PendingReloc {
+                    patch_offset: po,
+                    target_symbol: symbol.clone(),
+                });
+                out.extend_from_slice(&0x1400_0000u32.to_le_bytes()); // B placeholder
             }
+
+            // ── Return (LDP epilogue + ret) ───────────────────────────────────
             AArch64AsmInstruction::Ret => {
-                // Epilogue: ldp x29, x30, [sp], #frame_bytes
-                let imm = frame_bytes as i32 / 8;
-                if imm < -64 || imm > 63 {
+                emit_ldp_epilogue!();
+                out.extend_from_slice(&0xD65F03C0u32.to_le_bytes()); // ret
+            }
+
+            // ── Label (zero bytes; records position for branch-patch loop) ────
+            AArch64AsmInstruction::Label(name) => {
+                label_offsets.insert(name.clone(), out.len() as u32);
+            }
+
+            // ── Unconditional jump to label ───────────────────────────────────
+            AArch64AsmInstruction::JmpLabel(label) => {
+                let po = out.len() as u32;
+                branch_patches.push((po, label.clone(), BPKind::B));
+                out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
+            }
+
+            // ── Conditional jumps (x9 was loaded by LoadSlotU8ToEax) ─────────
+            AArch64AsmInstruction::JmpIfZeroLabel(label) => {
+                let po = out.len() as u32;
+                branch_patches.push((po, label.clone(), BPKind::CbzX9));
+                out.extend_from_slice(&0xB400_0009u32.to_le_bytes()); // CBZ X9 placeholder
+            }
+            AArch64AsmInstruction::JmpIfNonZeroLabel(label) => {
+                let po = out.len() as u32;
+                branch_patches.push((po, label.clone(), BPKind::CbnzX9));
+                out.extend_from_slice(&0xB500_0009u32.to_le_bytes()); // CBNZ X9 placeholder
+            }
+
+            // ── Loop-condition slot load (x86-64: mov eax,[rbp-n]) ────────────
+            // On AArch64 we load the u8 slot into x9 (our "eax" equivalent).
+            // LDRB W9, [X29, #(16 + slot_idx * 8)]  — byte access, imm12 = byte offset
+            AArch64AsmInstruction::LoadSlotU8ToEax { slot_idx } => {
+                let byte_off = 16u32 + (*slot_idx as u32) * 8;
+                if byte_off > 4095 {
                     return Err(format!(
-                        "aarch64 object: frame size {} exceeds LDP immediate range in function '{}'",
-                        frame_bytes, func.symbol
+                        "aarch64: slot {} LDRB offset {} exceeds imm12 range in '{}'",
+                        slot_idx, byte_off, func.symbol
                     ));
                 }
-                let imm7 = (imm as u32) & 0x7F;
-                let ldp_word: u32 = 0xA8C0_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29;
-                out.extend_from_slice(&ldp_word.to_le_bytes());
-                // ret  →  0xD65F03C0
-                out.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+                // LDRB W9, [X29, #byte_off]
+                out.extend_from_slice(
+                    &(0x3940_0000u32 | (byte_off << 10) | (29 << 5) | 9).to_le_bytes(),
+                );
             }
-            AArch64AsmInstruction::Label(_) => {
-                // Zero bytes emitted; label is a logical marker only.
+
+            // ── Flags set for loop condition (x86-64: test eax, eax) ─────────
+            // On AArch64 we use CBZ/CBNZ directly on x9, so no separate
+            // flag-setting instruction is required.
+            AArch64AsmInstruction::TestEaxEax => {}
+
+            // ── Return saved value (x0 already holds it — no-op) ─────────────
+            AArch64AsmInstruction::ReturnSavedValue { ty } => {
+                // AAPCS64: the return value lives in x0, which is also the
+                // "saved value" register.  Nothing to do.
+                let _ = ty;
             }
+
+            // ── MMIO write: x9 = addr, x10 = value, store ────────────────────
+            AArch64AsmInstruction::MmioWriteImm { ty, addr, value } => {
+                emit_aa64_imm64(out, 9, *addr);
+                emit_aa64_imm64(out, 10, *value);
+                emit_aa64_str_ty(out, 10, 9, *ty);
+            }
+
+            // ── MMIO read: x9 = addr, x0 = load ──────────────────────────────
+            AArch64AsmInstruction::MmioRead { ty, addr, capture_value } => {
+                emit_aa64_imm64(out, 9, *addr);
+                emit_aa64_ldr_ty(out, 0, 9, *ty); // result in x0 (saved-value register)
+                let _ = capture_value;
+            }
+
+            // ── MMIO write saved value: x9 = addr, store x0 ──────────────────
+            AArch64AsmInstruction::MmioWriteValue { ty, addr } => {
+                emit_aa64_imm64(out, 9, *addr);
+                emit_aa64_str_ty(out, 0, 9, *ty);
+            }
+
+            // ── Stack: store immediate value into slot ────────────────────────
+            AArch64AsmInstruction::StackStoreImm { ty, value, slot_idx } => {
+                let _ = ty; // always stored as 64-bit in the 8-byte slot
+                emit_aa64_imm64(out, 9, *value);
+                slot_str!(9, *slot_idx);
+            }
+
+            // ── Stack: store saved value (x0) into slot ───────────────────────
+            AArch64AsmInstruction::StackStoreValue { ty, slot_idx } => {
+                let _ = ty;
+                slot_str!(0, *slot_idx);
+            }
+
+            // ── Stack: load slot into saved value (x0) ────────────────────────
+            AArch64AsmInstruction::StackLoad { ty, slot_idx } => {
+                let _ = ty;
+                slot_ldr!(0, *slot_idx);
+            }
+
+            // ── BranchIfZero: if x0 == 0 → then_symbol, else → else_symbol ───
+            AArch64AsmInstruction::BranchIfZero { ty, then_symbol, else_symbol } => {
+                let _ = ty;
+                let then_lbl = format!("__aa64_then_{}", synth_ctr);
+                let merge_lbl = format!("__aa64_merge_{}", synth_ctr);
+                synth_ctr += 1;
+                // CBZ X0, .then_lbl
+                let po = out.len() as u32;
+                branch_patches.push((po, then_lbl.clone(), BPKind::CbzX0));
+                out.extend_from_slice(&0xB400_0000u32.to_le_bytes());
+                // BL else_symbol
+                emit_bl!(else_symbol);
+                // B .merge_lbl
+                let po = out.len() as u32;
+                branch_patches.push((po, merge_lbl.clone(), BPKind::B));
+                out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
+                // .then_lbl:
+                label_offsets.insert(then_lbl, out.len() as u32);
+                // BL then_symbol
+                emit_bl!(then_symbol);
+                // .merge_lbl:
+                label_offsets.insert(merge_lbl, out.len() as u32);
+            }
+
+            // ── BranchIfEqImm: if x0 == compare → then, else → else ──────────
+            AArch64AsmInstruction::BranchIfEqImm { ty, compare_value, then_symbol, else_symbol } => {
+                let _ = ty;
+                let else_lbl = format!("__aa64_else_{}", synth_ctr);
+                let merge_lbl = format!("__aa64_merge_{}", synth_ctr);
+                synth_ctr += 1;
+                // x9 = compare_value
+                emit_aa64_imm64(out, 9, *compare_value);
+                // CMP X0, X9  (SUBS XZR, X0, X9)
+                out.extend_from_slice(&0xEB09_001Fu32.to_le_bytes());
+                // B.NE .else_lbl  (x0 != compare → else branch)
+                let po = out.len() as u32;
+                branch_patches.push((po, else_lbl.clone(), BPKind::BNe));
+                out.extend_from_slice(&0x5400_0001u32.to_le_bytes()); // B.NE placeholder
+                // BL then_symbol
+                emit_bl!(then_symbol);
+                // B .merge_lbl
+                let po = out.len() as u32;
+                branch_patches.push((po, merge_lbl.clone(), BPKind::B));
+                out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
+                // .else_lbl:
+                label_offsets.insert(else_lbl, out.len() as u32);
+                // BL else_symbol
+                emit_bl!(else_symbol);
+                // .merge_lbl:
+                label_offsets.insert(merge_lbl, out.len() as u32);
+            }
+
+            // ── BranchIfMaskNonZeroImm: if (x0 & mask) != 0 → then, else → else
+            AArch64AsmInstruction::BranchIfMaskNonZeroImm { ty, mask_value, then_symbol, else_symbol } => {
+                let _ = ty;
+                let else_lbl = format!("__aa64_else_{}", synth_ctr);
+                let merge_lbl = format!("__aa64_merge_{}", synth_ctr);
+                synth_ctr += 1;
+                // x9 = mask_value
+                emit_aa64_imm64(out, 9, *mask_value);
+                // TST X0, X9  (ANDS XZR, X0, X9)
+                out.extend_from_slice(&0xEA09_001Fu32.to_le_bytes());
+                // B.EQ .else_lbl  ((x0 & mask) == 0 → else)
+                let po = out.len() as u32;
+                branch_patches.push((po, else_lbl.clone(), BPKind::BEq));
+                out.extend_from_slice(&0x5400_0000u32.to_le_bytes()); // B.EQ placeholder
+                // BL then_symbol
+                emit_bl!(then_symbol);
+                // B .merge_lbl
+                let po = out.len() as u32;
+                branch_patches.push((po, merge_lbl.clone(), BPKind::B));
+                out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
+                // .else_lbl:
+                label_offsets.insert(else_lbl, out.len() as u32);
+                // BL else_symbol
+                emit_bl!(else_symbol);
+                // .merge_lbl:
+                label_offsets.insert(merge_lbl, out.len() as u32);
+            }
+
             _ => {
                 return Err(format!(
                     "aarch64 object emission: unsupported instruction {:?} in function '{}'",
@@ -9070,14 +9329,76 @@ fn encode_aarch64_function(
         }
     }
 
+    // ── Patch label branches ──────────────────────────────────────────────────
+    // AArch64 branch offsets are PC-relative from the branch instruction address
+    // (not from PC+4 as on x86-64).  Formula: imm = (target - branch_pc) / 4.
+    for (patch_off, label, kind) in &branch_patches {
+        let target_off = *label_offsets.get(label.as_str()).ok_or_else(|| {
+            format!("aarch64: undefined label '{}' in function '{}'", label, func.symbol)
+        })?;
+        let patch_pc = *patch_off as i64;
+        let target = target_off as i64;
+        let disp = target - patch_pc;
+        if disp % 4 != 0 {
+            return Err(format!(
+                "aarch64: branch to '{}' has non-4-byte-aligned displacement in '{}'",
+                label, func.symbol
+            ));
+        }
+        let idx = *patch_off as usize;
+        let word: u32 = match kind {
+            BPKind::B => {
+                let imm26 = (disp / 4) as i32;
+                if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
+                    return Err(format!("aarch64: B to '{}' exceeds imm26 range", label));
+                }
+                0x1400_0000 | ((imm26 as u32) & 0x03FF_FFFF)
+            }
+            BPKind::CbzX0 => {
+                let imm19 = (disp / 4) as i32;
+                if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
+                    return Err(format!("aarch64: CBZ X0 to '{}' exceeds imm19 range", label));
+                }
+                0xB400_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5)
+            }
+            BPKind::CbzX9 => {
+                let imm19 = (disp / 4) as i32;
+                if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
+                    return Err(format!("aarch64: CBZ X9 to '{}' exceeds imm19 range", label));
+                }
+                0xB400_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5) | 9
+            }
+            BPKind::CbnzX9 => {
+                let imm19 = (disp / 4) as i32;
+                if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
+                    return Err(format!("aarch64: CBNZ X9 to '{}' exceeds imm19 range", label));
+                }
+                0xB500_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5) | 9
+            }
+            BPKind::BNe => {
+                let imm19 = (disp / 4) as i32;
+                if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
+                    return Err(format!("aarch64: B.NE to '{}' exceeds imm19 range", label));
+                }
+                0x5400_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5) | 1 // NE = cond 0b0001
+            }
+            BPKind::BEq => {
+                let imm19 = (disp / 4) as i32;
+                if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
+                    return Err(format!("aarch64: B.EQ to '{}' exceeds imm19 range", label));
+                }
+                0x5400_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5) // EQ = cond 0b0000
+            }
+        };
+        out[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+    }
+
     let size = out.len() as u32 - start_offset;
-    Ok(AArch64EncodedFunction {
-        symbol: func.symbol.clone(),
-        offset: start_offset,
-        size,
-        relocs,
-    })
+    Ok(AArch64EncodedFunction { symbol: func.symbol.clone(), offset: start_offset, size, relocs })
 }
+
+// (text_bytes, [(name, offset, size)], [(patch_offset, target_symbol)])
+type AArch64ObjectInner = (Vec<u8>, Vec<(String, u32, u32)>, Vec<(u32, String)>);
 
 /// Shared inner lowering step for all three AArch64 object formats.
 ///
@@ -9089,7 +9410,7 @@ fn encode_aarch64_function(
 fn lower_executable_krir_to_aarch64_object_inner(
     module: &ExecutableKrirModule,
     target: &BackendTargetContract,
-) -> Result<(Vec<u8>, Vec<(String, u32, u32)>, Vec<(u32, String)>), String> {
+) -> Result<AArch64ObjectInner, String> {
     let asm = lower_executable_krir_to_aarch64_asm(module, target)?;
 
     // Collect all defined symbol names so encode_aarch64_function can
@@ -9104,114 +9425,56 @@ fn lower_executable_krir_to_aarch64_object_inner(
         encoded_fns.push(enc);
     }
 
-    // Patch internal BL/B targets (defined symbols).
-    // We emitted a BL 0 placeholder; now fix the imm26 displacement.
-    for enc in &encoded_fns {
-        // Internal call relocs were NOT pushed into enc.relocs (only external ones were).
-        // Instead we need to scan instructions again to patch.
-        // Simpler: re-scan the original asm to find calls to defined symbols.
-        // For now internal calls within the object are handled correctly because
-        // we know offset of every defined function.
-        let _ = enc; // nothing to patch here yet — see note below
-    }
-    // Note: the above loop does nothing. Internal call patch: we need the
-    // asm module again. Build a name→offset map and re-scan.
+    // ── Patch internal BL/B targets using the unified reloc list ─────────────
+    // encode_aarch64_function adds ALL BL/B sites to enc.relocs (both internal
+    // and external).  Internal targets are patched here; external ones are
+    // collected into all_relocs for linker fixup.
+    //
+    // AArch64 branch displacement formula: disp = target - branch_instruction_pc
+    // (NOT target - (pc+4) as on x86-64).
     let fn_offset: BTreeMap<&str, u32> = encoded_fns
         .iter()
         .map(|e| (e.symbol.as_str(), e.offset))
         .collect();
 
-    // Re-scan each function's instructions to patch internal BL/B immediates.
-    for (func, enc) in asm.functions.iter().zip(encoded_fns.iter()) {
-        let frame_bytes = ((func.n_stack_cells as usize * 8 + 15) & !15usize) + 16;
-        // byte offset within function at which each encoded instruction starts.
-        // Prologue = 2 instructions = 8 bytes.
-        let mut local_byte = 8u32; // after prologue
-        for instr in &func.instructions {
-            match instr {
-                AArch64AsmInstruction::Call { symbol }
-                | AArch64AsmInstruction::CallWithArgs { symbol, .. }
-                | AArch64AsmInstruction::CallCapture { symbol, .. } => {
-                    if let Some(&target_off) = fn_offset.get(symbol.as_str()) {
-                        let patch_abs = enc.offset + local_byte;
-                        let next_pc = (patch_abs + 4) as i64;
-                        let disp = (target_off as i64) - next_pc;
-                        if disp % 4 != 0 {
-                            return Err(format!(
-                                "aarch64 object: BL displacement to '{}' is not 4-byte aligned",
-                                symbol
-                            ));
-                        }
-                        let imm26 = (disp / 4) as i32;
-                        if imm26 < -(1 << 25) || imm26 >= (1 << 25) {
-                            return Err(format!(
-                                "aarch64 object: BL displacement to '{}' exceeds imm26 range",
-                                symbol
-                            ));
-                        }
-                        let word = 0x9400_0000u32 | ((imm26 as u32) & 0x03FF_FFFF);
-                        let idx = patch_abs as usize;
-                        text_bytes[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
-                    }
-                    local_byte += 4;
+    let mut all_relocs: Vec<(u32, String)> = Vec::new();
+    for enc in &encoded_fns {
+        for r in &enc.relocs {
+            if let Some(&target_off) = fn_offset.get(r.target_symbol.as_str()) {
+                // Internal target: patch the imm26 field in-place.
+                let patch_pc = r.patch_offset as i64;
+                let disp = target_off as i64 - patch_pc;
+                if disp % 4 != 0 {
+                    return Err(format!(
+                        "aarch64 object: symbol '{}' displacement {} not 4-byte aligned",
+                        r.target_symbol, disp
+                    ));
                 }
-                AArch64AsmInstruction::TailCall { symbol, args: _ } => {
-                    // LDP (4 bytes) then B (4 bytes).
-                    let b_abs = enc.offset + local_byte + 4;
-                    if let Some(&target_off) = fn_offset.get(symbol.as_str()) {
-                        let next_pc = (b_abs + 4) as i64;
-                        let disp = (target_off as i64) - next_pc;
-                        if disp % 4 != 0 {
-                            return Err(format!(
-                                "aarch64 object: B displacement to '{}' is not 4-byte aligned",
-                                symbol
-                            ));
-                        }
-                        let imm26 = (disp / 4) as i32;
-                        if imm26 < -(1 << 25) || imm26 >= (1 << 25) {
-                            return Err(format!(
-                                "aarch64 object: B displacement to '{}' exceeds imm26 range",
-                                symbol
-                            ));
-                        }
-                        let word = 0x1400_0000u32 | ((imm26 as u32) & 0x03FF_FFFF);
-                        let idx = b_abs as usize;
-                        text_bytes[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
-                    }
-                    local_byte += 8; // LDP + B
+                let imm26 = (disp / 4) as i32;
+                if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
+                    return Err(format!(
+                        "aarch64 object: displacement to '{}' exceeds imm26 range",
+                        r.target_symbol
+                    ));
                 }
-                AArch64AsmInstruction::Ret => {
-                    local_byte += 8; // LDP + RET
-                }
-                AArch64AsmInstruction::Label(_) => {
-                    // zero bytes
-                }
-                _ => {
-                    local_byte += 4; // single 4-byte instruction (approximate)
-                }
+                let idx = r.patch_offset as usize;
+                let existing =
+                    u32::from_le_bytes(text_bytes[idx..idx + 4].try_into().unwrap());
+                // Preserve opcode bits [31:26] (BL=0x25, B=0x05, etc.) and
+                // overwrite only the imm26 field [25:0].
+                let word = (existing & 0xFC00_0000) | ((imm26 as u32) & 0x03FF_FFFF);
+                text_bytes[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+            } else {
+                // External target: leave for the linker.
+                all_relocs.push((r.patch_offset, r.target_symbol.clone()));
             }
         }
-        let _ = frame_bytes;
     }
 
     let symbol_table: Vec<(String, u32, u32)> = encoded_fns
         .iter()
         .map(|e| (e.symbol.clone(), e.offset, e.size))
         .collect();
-
-    // Flatten external relocations.
-    let mut all_relocs: Vec<(u32, String)> = Vec::new();
-    for enc in &encoded_fns {
-        for r in &enc.relocs {
-            all_relocs.push((r.patch_offset, r.target_symbol.clone()));
-        }
-    }
-    // Collect external (undefined) symbol names — deduplicated.
-    let ext_symbols: BTreeSet<String> = all_relocs
-        .iter()
-        .map(|(_, s)| s.clone())
-        .collect();
-    let _ = ext_symbols; // returned via all_relocs
 
     Ok((text_bytes, symbol_table, all_relocs))
 }
