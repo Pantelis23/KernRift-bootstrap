@@ -103,6 +103,9 @@ fn map_uart_buffer() -> Result<*mut u8, String> {
 #[cfg(unix)]
 fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
     use libc::*;
+    // Map RW first — macOS (and other W^X-enforcing kernels) reject
+    // mmap(PROT_WRITE|PROT_EXEC) outright.  We write the code while the
+    // mapping is RW, flush the I-cache, then mprotect to RX.
     #[cfg(target_os = "linux")]
     let flags = MAP_PRIVATE | MAP_ANONYMOUS;
     #[cfg(not(target_os = "linux"))]
@@ -112,7 +115,7 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
         mmap(
             std::ptr::null_mut(),
             code.len(),
-            PROT_READ | PROT_WRITE | PROT_EXEC,
+            PROT_READ | PROT_WRITE,
             flags,
             -1,
             0,
@@ -127,9 +130,7 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ptr as *mut u8, code.len()) };
 
     // On AArch64, the I-cache and D-cache are not coherent.
-    // After writing code via the D-cache we must clean + invalidate
-    // the I-cache range before executing, or the CPU fetches stale
-    // (or zero) cache lines and raises SIGILL.
+    // Clean D-cache and invalidate I-cache before switching to RX.
     #[cfg(target_arch = "aarch64")]
     unsafe {
         let start = ptr as usize;
@@ -138,14 +139,23 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
         let mut addr = start & !(CACHE_LINE - 1);
         while addr < end {
             std::arch::asm!(
-                "dc cvau, {x}",  // clean D-cache by VA to PoU
-                "ic ivau, {x}",  // invalidate I-cache by VA to PoU
+                "dc cvau, {x}",
+                "ic ivau, {x}",
                 x = in(reg) addr,
                 options(nostack),
             );
             addr += CACHE_LINE;
         }
         std::arch::asm!("dsb ish", "isb", options(nostack));
+    }
+
+    // Switch from RW to RX now that the code is written.
+    if unsafe { mprotect(ptr, code.len(), PROT_READ | PROT_EXEC) } != 0 {
+        unsafe { munmap(ptr, code.len()) };
+        return Err(format!(
+            "failed to mprotect executable memory: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     Ok(ptr as *mut u8)
@@ -213,8 +223,9 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
     }
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ptr as *mut u8, code.len()) };
     // Flush the I-cache so the CPU sees the newly written code — required on AArch64 Windows.
-    // GetCurrentProcess() always returns pseudohandle -1 (HANDLE = isize in windows-sys).
-    unsafe { FlushInstructionCache(-1isize, ptr, code.len()) };
+    // GetCurrentProcess() always returns pseudohandle (HANDLE)(-1).
+    // In windows-sys 0.61 HANDLE = *mut c_void, so cast via isize.
+    unsafe { FlushInstructionCache((-1isize) as *mut core::ffi::c_void, ptr, code.len()) };
     Ok(ptr as *mut u8)
 }
 
