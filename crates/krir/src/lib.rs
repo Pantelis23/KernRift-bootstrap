@@ -10412,6 +10412,7 @@ mod tests {
             .expect("run linker compatibility tool")
     }
 
+    #[cfg(all(unix, target_arch = "x86_64"))]
     fn linked_output_bytes(path: &Path) -> Vec<u8> {
         fs::read(path).expect("read linked ELF output")
     }
@@ -10437,6 +10438,7 @@ mod tests {
         TempPath { path: object_path }
     }
 
+    #[cfg(all(unix, target_arch = "x86_64"))]
     fn assert_is_elf64_executable(bytes: &[u8]) {
         assert!(
             bytes.len() >= 64,
@@ -10456,6 +10458,7 @@ mod tests {
         assert_ne!(read_u64(bytes, 24), 0, "expected non-zero ELF entry");
     }
 
+    #[cfg(all(unix, target_arch = "x86_64"))]
     fn run_executable_smoke(path: &Path) -> Option<std::process::Output> {
         #[cfg(unix)]
         {
