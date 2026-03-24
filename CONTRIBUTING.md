@@ -35,7 +35,7 @@ The workspace contains 7 crates: a 6-crate compiler pipeline and a standalone ru
 |-------|------|-----------|
 | [`parser`](crates/parser/) | Lexer + AST | `ModuleAst`, `FnAst`, `Stmt`, `Expr`, `DeviceDecl` |
 | [`hir`](crates/hir/) | Type checking, lowering, extern resolution | `HirModule`, `HirFn`, `lower_module` |
-| [`krir`](crates/krir/) | Canonical semantic IR | `KrirModule`, `KrirFn`, `MmioScalarType`, `KrirOp` |
+| [`krir`](crates/krir/) | Canonical semantic IR + backend target model | `KrirModule`, `KrirFn`, `MmioScalarType`, `KrirOp`, `TargetArch`, `AArch64IntegerRegister`, `emit_krbofat_bytes`, `parse_krbofat_slice` |
 | [`passes`](crates/passes/) | Context / effect / capability / lock analysis | `analyze`, `AnalysisReport` |
 | [`emit`](crates/emit/) | JSON and artifact emission | `emit_krir_json`, `emit_contracts_json` |
 | [`kernriftc`](crates/kernriftc/) | Compiler CLI — orchestrates the pipeline | `main`, `compile_file`, `check_file` |

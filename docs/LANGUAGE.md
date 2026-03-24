@@ -1,11 +1,11 @@
 # KernRift Language Reference
 
 KernRift is a freestanding, ahead-of-time compiled systems language for kernel
-and driver development.  It targets bare-metal x86-64 with no runtime, no libc,
-and no implicit heap.  Safety properties — execution context, MMIO capabilities,
-lock order, and yield restrictions — are checked at compile time, not at
-runtime.  Every construct maps directly to machine instructions; there are no
-hidden costs.
+and driver development.  It targets bare-metal x86-64 and ARM64 (AArch64) with
+no runtime, no libc, and no implicit heap.  Safety properties — execution
+context, MMIO capabilities, lock order, and yield restrictions — are checked at
+compile time, not at runtime.  Every construct maps directly to machine
+instructions; there are no hidden costs.
 
 ---
 

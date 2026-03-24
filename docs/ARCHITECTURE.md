@@ -24,13 +24,16 @@ Freestanding, ahead-of-time language + compiler targeting kernel and driver deve
 
 4. Backend
 - Custom compiler-owned backend; no LLVM or host-compiler dependency
-- Primary artifact: `krbo` (KernRift Binary Object), a deterministic compiler-owned binary format with explicit symbols and fixups
+- Default artifact: `KRBOFAT` fat binary (`.krbo`), containing both x86_64 and ARM64 slices (LZ4-compressed); 8-byte magic `KRBOFAT\0` detected before single-arch `KRBO` magic in both compiler and runner
+- Single-arch `krbo` (KernRift Binary Object): deterministic compiler-owned binary format with explicit symbols and fixups; emitted via `--emit=krboexe`
+- Explicit fat binary emit: `--emit=krbofat`
 - ELF64 relocatable object export (`elfobj`) derived from `krbo` for linker compatibility
-- Textual x86-64 SysV assembly export (`asm`) for debug/reference only
-- Native object emission (ELF), section control, symbol visibility
+- Textual assembly export (`asm`) for debug/reference only: x86-64 SysV and AArch64 variants
+- Native object emission (ELF, Mach-O, COFF), section control, symbol visibility
 - Linker script integration for kernel builds
+- x86_64 target: `x86_64-sysv` (Linux/macOS), `x86_64-win` (Windows)
 - ARM64 (AArch64) targets: `aarch64-sysv` (Linux), `aarch64-macho` (macOS), `aarch64-win` (Windows)
-- Fat binary output (`KRBOFAT`): both x86_64 and ARM64 slices, LZ4-compressed per slice; fat-first detection in both compiler and runtime
+- ARM64 I-cache flush: runner flushes instruction cache after writing AArch64 code to executable memory
 
 ## Core Language Features (MVP)
 

@@ -6,11 +6,22 @@ All notable changes to `kernriftc` are documented in this file.
 
 ### Added
 - AArch64 (ARM64) backend: `aarch64-sysv` (Linux), `aarch64-macho` (macOS), `aarch64-win` (Windows).
-- `KRBOFAT` fat binary container: LZ4-compressed per-arch slices, fat-first detection.
-- Default `kernriftc <file.kr>` output is now a fat binary containing x86_64 and ARM64 code.
-- `--arch x86_64|arm64` flag for single-arch krbo output.
+- `KRBOFAT` fat binary container: 8-byte magic `KRBOFAT\0`, LZ4-compressed per-arch slices, fat-first detection (checked before single-arch `KRBO` magic).
+- Default `kernriftc <file.kr>` output is now a fat binary (`.krbo`) containing x86_64 and ARM64 slices.
+- `--arch x86_64|arm64|aarch64` flag: routes compilation to the specified target; output is still a fat binary. `aarch64` is an accepted alias for `arm64`.
+- `--emit=krbofat` explicit fat binary emit mode (equivalent to default compile).
+- `--emit=krboexe` for single-arch x86_64 KRBO (unchanged from prior behavior when requesting single-arch output explicitly).
 - Dual-file output for `--emit=elfobj`, `--emit=asm`, `--emit=staticlib` without `--arch`.
-- `kernrift` runner: automatic host-arch slice extraction from fat binaries.
+- `kernrift` runner: fat-first detection reads 8-byte magic before the 4-byte single-arch check; extracts host-arch slice and executes it.
+- ARM64 I-cache flush: `kernrift` flushes the instruction cache after writing ARM64 code to executable memory (required for AArch64 coherence on all Linux/macOS ARM64 hosts).
+- New `krir` crate constants and APIs: `KRBO_ARCH_AARCH64` (`0x02`), `KRBO_FAT_MAGIC`, `KRBO_FAT_VERSION`, `KRBO_FAT_ARCH_X86_64`, `KRBO_FAT_ARCH_AARCH64`, `KRBO_FAT_COMPRESSION_NONE`, `KRBO_FAT_COMPRESSION_LZ4`, `emit_aarch64_executable_bytes()`, `emit_aarch64_elf_object_bytes()`, `emit_aarch64_macho_object_bytes()`, `emit_aarch64_coff_object_bytes()`, `emit_krbofat_bytes()`, `parse_krbofat_slice()`.
+- New `krir` types: `TargetArch::AArch64`, `TargetAbi::Aapcs64`/`Aapcs64Win`, `BackendTargetId::Aarch64Sysv`/`Aarch64MachO`/`Aarch64Win`, `AArch64IntegerRegister` (X0–X15, X19–X30, Sp, Xzr; X16/X17/X18 excluded), `lower_executable_krir_to_aarch64_asm()`.
+- New `kernriftc` CLI: `BackendArtifactKind::KrboFat` ("krbofat").
+- New spec docs in `docs/spec/`: `aarch64-asm-linear-subset-v0.1.md`, `aarch64-object-linear-subset-v0.1.md`, `backend-target-model-aarch64-sysv-v0.1.md`, `backend-target-model-aarch64-macho-v0.1.md`, `backend-target-model-aarch64-win-v0.1.md`, `krbofat-container-v0.1.md`.
+
+### Tested
+- `noop.kr` compiled on Pi 400 (aarch64 Linux), fat binary pulled and run on x86_64 — exit 0.
+- `noop.kr` compiled on x86_64, fat binary run on Pi 400 — exit 0.
 
 ## v0.3.1 - 2026-03-23
 

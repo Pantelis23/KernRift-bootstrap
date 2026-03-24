@@ -214,10 +214,12 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 | Command | Output | Description |
 |---------|--------|-------------|
 | `kernriftc --version` / `-V` | version string | Print compiler version and exit |
-| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** (fat krbo: x86_64 + ARM64) |
-| `kernriftc --arch x86_64 <file.kr>` | `<stem>.krbo` (x86_64 only) | Single-arch compile for x86_64 |
-| `kernriftc --arch arm64 <file.kr>`  | `<stem>.krbo` (ARM64 only)  | Single-arch compile for ARM64  |
-| `kernrift <file.krbo>` | — | **Run a compiled program** |
+| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** — KRBOFAT fat binary (x86_64 + ARM64 slices, LZ4-compressed) |
+| `kernriftc --arch x86_64 <file.kr>` | `<stem>.krbo` (fat, x86_64 targeted) | Fat binary with x86_64 slice |
+| `kernriftc --arch arm64 <file.kr>`  | `<stem>.krbo` (fat, ARM64 targeted)  | Fat binary with ARM64 slice; `--arch aarch64` is an accepted alias |
+| `kernriftc --emit=krbofat -o <out> <file.kr>` | fat binary | Explicit KRBOFAT emit (equivalent to default) |
+| `kernriftc --emit=krboexe -o <out> <file.kr>` | x86_64 single-arch KRBO | Single-arch executable KRBO (legacy / explicit) |
+| `kernrift <file.krbo>` | — | **Run a compiled program** — fat-first detection: reads 8-byte magic, extracts host-arch slice, flushes I-cache on ARM64 before execution |
 | `kernriftc check <file.kr>` | stderr diagnostics | Analysis only, no binary |
 | `kernriftc check --emit=krir <file.kr>` | JSON to **stdout** | KRIR canonical IR |
 | `kernriftc check --emit=lockgraph <file.kr>` | JSON to **stdout** | Lock graph analysis |

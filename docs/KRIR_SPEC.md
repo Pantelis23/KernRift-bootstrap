@@ -17,16 +17,23 @@ Between surface KernRift and executable KRIR, the compiler owns a separate canon
 
 The executable subset is intentionally narrow. It is specified separately so backend work does not pretend the current fact-heavy analysis IR is already codegen-ready.
 
-The first target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. It defines target facts only; the contract itself still does not perform instruction selection, register allocation, or stack-frame lowering.
+The x86_64 target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. AArch64 target contracts are specified in `docs/spec/backend-target-model-aarch64-sysv-v0.1.md`, `docs/spec/backend-target-model-aarch64-macho-v0.1.md`, and `docs/spec/backend-target-model-aarch64-win-v0.1.md`. These define target facts only; the contracts themselves do not perform instruction selection, register allocation, or stack-frame lowering.
 
-The first compiler-owned object subset is specified separately in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to a deterministic compiler-owned binary object format with explicit symbols and fixups.
+The compiler-owned object subset is specified separately in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to a deterministic compiler-owned binary object format with explicit symbols and fixups.
 
-The first target-specific lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly and is not the primary backend artifact.
+The x86_64 assembly lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly and is not the primary backend artifact. The AArch64 assembly lowering subset is specified in `docs/spec/aarch64-asm-linear-subset-v0.1.md`.
 
-The first ELF machine-facing compatibility/export subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It exports the current tiny compiler-owned object subset to a deterministic ELF64 relocatable object subset with explicit symbol-order, symbol-index, relocation-order, and `.rela.text` metadata guarantees. It is not the primary internal object contract. Compatibility smoke checks against standard ELF inspection tools, relocatable linker flows, the smallest practical final-link flows, and narrow runtime execution smoke verify acceptance of the emitted bytes without making those tools a second semantic source.
+The x86_64 ELF machine-facing compatibility/export subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It exports the current tiny compiler-owned object subset to a deterministic ELF64 relocatable object subset with explicit symbol-order, symbol-index, relocation-order, and `.rela.text` metadata guarantees. It is not the primary internal object contract. The AArch64 object subset is specified in `docs/spec/aarch64-object-linear-subset-v0.1.md`. Compatibility smoke checks against standard ELF inspection tools, relocatable linker flows, the smallest practical final-link flows, and narrow runtime execution smoke verify acceptance of the emitted bytes without making those tools a second semantic source.
+
+The fat binary container format (`KRBOFAT`) is specified in `docs/spec/krbofat-container-v0.1.md`. It defines the 8-byte magic, per-arch slice layout, LZ4 compression encoding, and detection order (fat-first, before single-arch `KRBO` magic).
 
 `kernriftc` can export the current backend artifacts directly:
 
+- `kernriftc <file.kr>` (default: KRBOFAT fat binary, x86_64 + ARM64 slices)
+- `kernriftc --arch x86_64 <file.kr>` (fat binary, x86_64 targeted)
+- `kernriftc --arch arm64 <file.kr>` (fat binary, ARM64 targeted; `--arch aarch64` accepted as alias)
+- `kernriftc --emit=krbofat -o <output.krbo> <file.kr>` (explicit fat binary emit)
+- `kernriftc --emit=krboexe -o <output.krbo> <file.kr>` (single-arch x86_64 KRBO)
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
 - `kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --surface stable --emit=asm -o <output.s> <file.kr>`
@@ -212,6 +219,10 @@ Any violation is a compile error.
 
 ## Artifact Outputs (MVP)
 
+- `kernriftc <file.kr>` (default: KRBOFAT fat binary, x86_64 + ARM64)
+- `kernriftc --arch x86_64 <file.kr>` / `--arch arm64 <file.kr>` / `--arch aarch64 <file.kr>`
+- `kernriftc --emit=krbofat -o <output.krbo> <file.kr>`
+- `kernriftc --emit=krboexe -o <output.krbo> <file.kr>`
 - `kernriftc --emit krir <file.kr>`
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
 - `kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
@@ -270,7 +281,7 @@ Future backend/codegen work must lower:
 - to executable KRIR
 - against an explicit backend target contract
 
-The backend target contract is not executable KRIR and is not semantic authority. It records machine-facing constraints such as register sets, ABI, stack alignment, symbol naming, and section naming for a chosen target. In KR0.x the first defined contract is `x86_64-sysv`, but this branch still does not emit machine code.
+The backend target contract is not executable KRIR and is not semantic authority. It records machine-facing constraints such as register sets, ABI, stack alignment, symbol naming, and section naming for a chosen target. In KR0.x the defined contracts are `x86_64-sysv`, `aarch64-sysv` (Linux), `aarch64-macho` (macOS), and `aarch64-win` (Windows).
 
 ## Target-Specific Assembly Boundary
 
