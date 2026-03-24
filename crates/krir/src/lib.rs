@@ -10256,7 +10256,7 @@ mod tests {
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
     use serde_json::json;
-    #[cfg(unix)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     use std::os::unix::fs::PermissionsExt;
     use std::{
         collections::BTreeSet,

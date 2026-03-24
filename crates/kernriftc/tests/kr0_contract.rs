@@ -6,9 +6,10 @@ use emit::{
     ContractsSchema, emit_caps_manifest_json, emit_contracts_json, emit_contracts_json_with_schema,
     emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
+#[cfg(unix)]
+use kernriftc::{BackendArtifactKind, emit_backend_artifact_file};
 use kernriftc::{
-    BackendArtifactKind, SurfaceProfile, analyze, check_file, check_module, compile_file,
-    compile_source_with_surface, emit_backend_artifact_file,
+    SurfaceProfile, analyze, check_file, check_module, compile_file, compile_source_with_surface,
 };
 use krir::{
     BackendTargetContract, lower_current_krir_to_executable_krir,
