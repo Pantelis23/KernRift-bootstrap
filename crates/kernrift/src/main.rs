@@ -231,26 +231,15 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
 
 #[cfg(windows)]
 fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
-    use windows_sys::Win32::Storage::FileSystem::WriteFile;
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+    use std::io::Write;
     let buf = unsafe { std::slice::from_raw_parts(uart_ptr, buf_size) };
     let len = buf
         .iter()
         .position(|&b| b == 0)
         .unwrap_or(buf_size)
-        .min(buf_size) as u32;
+        .min(buf_size);
     if len > 0 {
-        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
-        let mut written = 0u32;
-        unsafe {
-            WriteFile(
-                handle,
-                buf.as_ptr(),
-                len,
-                &mut written,
-                std::ptr::null_mut(),
-            )
-        };
+        let _ = std::io::stdout().write_all(&buf[..len]);
     }
 }
 
