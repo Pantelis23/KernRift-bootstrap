@@ -1211,13 +1211,13 @@ pub fn lower_current_krir_to_executable_krir(
     let mut static_strings: Vec<String> = Vec::new();
     for function in &module.functions {
         for op in &function.ops {
-            if let KrirOp::LoadStaticCstrAddr { value, .. } = op {
-                if !string_indices.contains_key(value.as_str()) {
-                    let idx = u8::try_from(static_strings.len())
-                        .unwrap_or_else(|_| panic!("too many string literals (max 256)"));
-                    string_indices.insert(value.clone(), idx);
-                    static_strings.push(value.clone());
-                }
+            if let KrirOp::LoadStaticCstrAddr { value, .. } = op
+                && !string_indices.contains_key(value.as_str())
+            {
+                let idx = u8::try_from(static_strings.len())
+                    .unwrap_or_else(|_| panic!("too many string literals (max 256)"));
+                string_indices.insert(value.clone(), idx);
+                static_strings.push(value.clone());
             }
         }
     }
