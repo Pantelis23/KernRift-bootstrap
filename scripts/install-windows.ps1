@@ -52,7 +52,8 @@ if ($env:PATH -notlike "*$cargoBin*") {
 
 # ── 3. install KernRift ───────────────────────────────────────────────────────
 Write-Info "Installing kernriftc and kernrift from $Repo ..."
-cargo install --git $Repo --bin kernriftc --bin kernrift --locked
+cargo install --git $Repo --locked kernriftc
+cargo install --git $Repo --locked kernrift
 if ($LASTEXITCODE -ne 0) { Write-Error 'cargo install failed.'; exit 1 }
 
 # ── 4. verify ─────────────────────────────────────────────────────────────────
