@@ -8175,25 +8175,23 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     // local_offset += 0 (LoopBegin has 0 encoded bytes)
                 }
                 ExecutableOp::LoopEnd => {
-                    let (head_abs, break_patches) =
-                        loop_stack.pop().expect("LoopEnd without matching LoopBegin");
+                    let (head_abs, break_patches) = loop_stack
+                        .pop()
+                        .expect("LoopEnd without matching LoopBegin");
                     // Emit JMP rel32 backward to head.
                     let jmp_start = code_bytes.len();
                     code_bytes.push(0xE9);
                     code_bytes.extend_from_slice(&[0u8; 4]);
                     let after_jmp = code_bytes.len(); // jmp_start + 5
                     let rel32 = (head_abs as i64 - after_jmp as i64) as i32;
-                    code_bytes[jmp_start + 1..jmp_start + 5]
-                        .copy_from_slice(&rel32.to_le_bytes());
+                    code_bytes[jmp_start + 1..jmp_start + 5].copy_from_slice(&rel32.to_le_bytes());
                     local_offset += 5;
                     // Backfill break/branch-break patches to point past this LoopEnd.
                     let after_loop = code_bytes.len();
                     for patch in break_patches {
                         let after_fwd_jmp = patch + 4;
-                        let fwd_rel32 =
-                            (after_loop as i64 - after_fwd_jmp as i64) as i32;
-                        code_bytes[patch..patch + 4]
-                            .copy_from_slice(&fwd_rel32.to_le_bytes());
+                        let fwd_rel32 = (after_loop as i64 - after_fwd_jmp as i64) as i32;
+                        code_bytes[patch..patch + 4].copy_from_slice(&fwd_rel32.to_le_bytes());
                     }
                 }
                 ExecutableOp::LoopBreak => {
@@ -8210,17 +8208,13 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 }
                 ExecutableOp::LoopContinue => {
                     // Emit JMP rel32 backward to head (same as LoopEnd but no pop/backfill).
-                    let head_abs = loop_stack
-                        .last()
-                        .expect("LoopContinue outside loop")
-                        .0;
+                    let head_abs = loop_stack.last().expect("LoopContinue outside loop").0;
                     let jmp_start = code_bytes.len();
                     code_bytes.push(0xE9);
                     code_bytes.extend_from_slice(&[0u8; 4]);
                     let after_jmp = code_bytes.len();
                     let rel32 = (head_abs as i64 - after_jmp as i64) as i32;
-                    code_bytes[jmp_start + 1..jmp_start + 5]
-                        .copy_from_slice(&rel32.to_le_bytes());
+                    code_bytes[jmp_start + 1..jmp_start + 5].copy_from_slice(&rel32.to_le_bytes());
                     local_offset += 5;
                 }
                 ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {

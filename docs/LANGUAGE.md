@@ -28,6 +28,8 @@ instructions; there are no hidden costs.
 15. [Tail Calls](#15-tail-calls)
 16. [Critical Blocks](#16-critical-blocks)
 17. [Unsafe Blocks](#17-unsafe-blocks)
+18. [Compiler CLI Reference](#18-compiler-cli-reference)
+19. [Binary Artifact Formats](#19-binary-artifact-formats)
 
 ---
 
@@ -42,7 +44,28 @@ ignored.
 
 ## 2. Quick Start
 
-A minimal driver that sends a byte over UART:
+### Hello, kernel world
+
+The simplest valid program prints a string and exits:
+
+```kr
+@ctx(thread, boot)
+fn entry() {
+    print("Hello, kernel!\n")
+}
+```
+
+Compile and run it:
+
+```sh
+kernriftc hello.kr                # produces hello.krbo (native .krbo)
+kernrift hello.krbo               # executes it, prints to stdout
+
+kernriftc --emit=krbofat -o hello.krbo hello.kr   # fat binary (x86_64 + arm64)
+kernrift hello.krbo               # auto-selects slice for the host arch
+```
+
+### Minimal MMIO driver
 
 ```kr
 @module_caps(Mmio)
@@ -233,6 +256,63 @@ fn write_buf([uint8] data) {
 }
 ```
 
+### Calling functions
+
+A function defined anywhere in the same file can be called by name.  Arguments
+are passed positionally.  The call result can be assigned to a variable whose
+type matches the callee's return type.
+
+```kr
+fn double(uint32 n) -> uint32 {
+    uint32 result = n
+    result += n
+    return result
+}
+
+fn quadruple(uint32 n) -> uint32 {
+    uint32 r = double(n)
+    r = double(r)
+    return r
+}
+
+@ctx(thread, boot)
+fn entry() {
+    uint32 x = quadruple(3)   // x == 12
+}
+```
+
+The compiler performs a topological sort of all call edges and rejects any
+cycle, including trivial self-calls and mutual recursion (`a → b → a`).  Use
+an explicit loop for iterative algorithms.
+
+**KR0.1 restriction:** recursive calls are rejected at compile time.  A
+function that calls itself directly or through a cycle will produce an error:
+
+```
+error: recursion unsupported in KR0.1: factorial -> factorial
+```
+
+Mutual recursion (`a → b → a`) is equally rejected.  Use an explicit loop or
+an iterative stack to replace recursive algorithms.
+
+### Built-in `print` statement
+
+`print("literal")` writes a string literal to the UART output buffer.  The
+argument must be a string literal — variables and expressions are not accepted.
+Newlines are written as `\n`.
+
+```kr
+@ctx(thread, boot)
+fn entry() {
+    print("Booting...\n")
+    print("Done.\n")
+}
+```
+
+`print` is the only built-in I/O statement in the freestanding environment.
+It writes to a memory-mapped UART buffer at `0x10000000`; the `kernrift`
+runtime flushes the buffer to stdout after the program returns.
+
 ---
 
 ## 7. Control Flow
@@ -270,6 +350,19 @@ while condition {
 uint32 i = 0
 while i < n {
     i += 1
+}
+```
+
+The type of the condition expression must be boolean or a comparison.  When
+the loop variable is a typed integer (`uint32`, `uint64`, etc.), the compiler
+uses that type for all arithmetic inside the loop body.
+
+A `while` loop with a literal bound:
+
+```kr
+uint32 i = 0
+while i < 10 {
+    i = i + 1
 }
 ```
 
@@ -311,9 +404,31 @@ return expr    // return a value
 return         // void return
 ```
 
+Return a variable:
+
 ```kr
 fn get_val() -> uint32 {
     uint32 x = 42
+    return x
+}
+```
+
+Return a function parameter (parameters are fully accessible as local variables):
+
+```kr
+fn identity(uint32 n) -> uint32 {
+    return n
+}
+```
+
+Return after a conditional:
+
+```kr
+fn clamp_byte(uint32 x) -> uint32 {
+    if x > 255 {
+        uint32 max = 255
+        return max
+    }
     return x
 }
 ```
@@ -720,9 +835,169 @@ unsafe block.
 
 ---
 
+## 18. Compiler CLI Reference
+
+### Default compilation
+
+```sh
+kernriftc <file.kr>                        # compile to <stem>.krbo (native arch)
+kernriftc --version
+```
+
+### Check and analyse
+
+```sh
+kernriftc check <file.kr>
+kernriftc check --surface stable <file.kr>
+kernriftc check --surface experimental <file.kr>
+kernriftc check --profile kernel <file.kr>
+kernriftc check --policy <policy.toml> <file.kr>
+kernriftc check --contracts-out <contracts.json> <file.kr>
+kernriftc link <file1.kr> [file2.kr ...]   # cross-file lock-cycle check
+```
+
+The `--surface` flag controls which language features are accepted:
+
+| Surface       | Meaning                                       |
+|---------------|-----------------------------------------------|
+| `stable`      | Default. All stable features.                 |
+| `experimental`| Enables proposals under active development.   |
+
+### Emit binary artifacts
+
+```sh
+kernriftc --emit=krbofat -o out.krbo <file.kr>        # fat binary (x86_64 + arm64)
+kernriftc --emit=krbo    -o out.krbo <file.kr>        # native-arch .krbo
+kernriftc --emit=krboexe -o out.krbo <file.kr>        # self-contained .krbo (single-arch)
+kernriftc --emit=elfobj  -o out.o    <file.kr>        # ELF relocatable object
+kernriftc --emit=elfobj  --arch arm64 -o out.o <file.kr>
+kernriftc --emit=asm     -o out.s    <file.kr>        # textual assembly
+kernriftc --emit=asm     --arch arm64 -o out.s <file.kr>
+kernriftc --emit=staticlib -o out.a  <file.kr>        # static library archive
+```
+
+Optionally emit a sidecar metadata JSON alongside the binary:
+
+```sh
+kernriftc --emit=krbo -o out.krbo --meta-out out.json <file.kr>
+```
+
+### Introspection
+
+```sh
+kernriftc --emit krir      <file.kr>   # dump KRIR IR as JSON
+kernriftc --emit lockgraph <file.kr>   # dump lock graph as JSON
+kernriftc --emit caps      <file.kr>   # dump capability manifest as JSON
+kernriftc --emit contracts <file.kr>   # dump semantic contracts as JSON
+kernriftc inspect --contracts <contracts.json>
+kernriftc inspect-artifact <artifact>
+kernriftc inspect-artifact <artifact> --format json
+```
+
+### Contracts and verification
+
+```sh
+kernriftc check --contracts-out contracts.json \
+    --hash-out contracts.sha256 \
+    --sign-ed25519 secret.hex \
+    --sig-out contracts.sig \
+    driver.kr
+
+kernriftc verify --contracts contracts.json \
+    --hash contracts.sha256 \
+    --sig contracts.sig \
+    --pubkey pubkey.hex
+```
+
+### Living compiler (automated style fixes)
+
+The living compiler (`lc`) analyses a source file for non-canonical annotation
+spellings and can rewrite them automatically:
+
+```sh
+kernriftc lc <file.kr>             # report non-canonical annotations
+kernriftc lc --fix --dry-run <file.kr>   # preview changes as a diff
+kernriftc lc --fix --write <file.kr>     # apply changes in-place
+kernriftc lc --ci --min-fitness 70 <file.kr>   # CI mode: fail below fitness score
+```
+
+### Canonical form
+
+```sh
+kernriftc check --canonical <file.kr>
+kernriftc migrate <file.kr>        # rewrite to canonical annotation form
+kernriftc migrate <file.kr> --dry-run
+```
+
+### Running compiled programs
+
+```sh
+kernrift <file.krbo>
+```
+
+The `kernrift` runtime maps the UART buffer, copies the code to executable
+memory, runs the entry function, and flushes `print()` output to stdout.
+
+---
+
+## 19. Binary Artifact Formats
+
+### `.krbo` — KernRift binary object
+
+The native binary format produced by `kernriftc`.  A single `.krbo` contains
+code for one architecture.  The 16-byte header layout:
+
+| Offset | Size | Field          | Description                         |
+|--------|------|----------------|-------------------------------------|
+| 0      | 4    | magic          | `KRBO` (ASCII)                      |
+| 4      | 1    | arch           | `0x01` = x86-64, `0x02` = AArch64  |
+| 5      | 1    | abi            | `0x01` = SysV                       |
+| 6      | 2    | reserved       | Must be zero                        |
+| 8      | 4    | code\_length   | Byte length of the code section     |
+| 12     | 4    | entry\_offset  | Byte offset of the entry point      |
+
+### `.krbo` fat binary
+
+A fat binary begins with an 8-byte magic `KRBOFATx` and contains multiple
+architecture slices.  `kernrift` automatically selects the matching slice for
+the host architecture at runtime.
+
+Produce a fat binary with:
+
+```sh
+kernriftc --emit=krbofat -o output.krbo source.kr
+```
+
+A fat binary is the recommended distribution format: a single file runs on
+both x86-64 and ARM64 without recompilation.
+
+### ELF relocatable object
+
+`--emit=elfobj` produces a standard ELF `.o` for linking into an existing
+kernel or bootloader build system.  Use `--arch arm64` or `--arch x86_64` to
+override the target architecture.
+
+### Static library
+
+`--emit=staticlib` produces an `ar`-format `.a` archive containing the ELF
+object.  Suitable for embedding KernRift modules into C/C++ kernel builds.
+
+### Sidecar metadata (`.json`)
+
+`--meta-out <path>` emits a JSON file alongside the binary that records the
+artifact kind, surface profile, input path, byte length, and SHA-256 hash of
+the binary.  Verify a binary against its sidecar at any later point:
+
+```sh
+kernriftc verify-artifact-meta <artifact> <meta.json>
+kernriftc verify-artifact-meta --format json <artifact> <meta.json>
+```
+
+---
+
 ## Full example
 
-A complete UART send driver using the new surface syntax:
+A complete UART send driver plus a `print`-based hello path:
 
 ```kr
 @module_caps(Mmio)
@@ -755,6 +1030,12 @@ fn uart_send(uint8 b) {
         i += 1
     }
     release(UartLock)
+}
+
+@ctx(thread, boot)
+fn entry() {
+    print("KernRift boot\n")
+    uart_send(0x0A)            // newline over UART
 }
 ```
 

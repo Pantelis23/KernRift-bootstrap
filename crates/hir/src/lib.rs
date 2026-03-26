@@ -1403,7 +1403,13 @@ pub fn lower_to_krir_with_surface(
 
     let mut module_fn_counter: u32 = 0;
     for item in &ast.items {
-        match lower_function(item, surface_profile, &const_map, &device_regs, &mut module_fn_counter) {
+        match lower_function(
+            item,
+            surface_profile,
+            &const_map,
+            &device_regs,
+            &mut module_fn_counter,
+        ) {
             Ok(fns) => functions.extend(fns),
             Err(errs) => errors.extend(errs),
         }
@@ -1651,7 +1657,9 @@ fn lower_function(
                     ops.push(KrirOp::StackStore {
                         ty: kty,
                         cell: pname.clone(),
-                        value: KrirMmioValueExpr::Ident { name: pname.clone() },
+                        value: KrirMmioValueExpr::Ident {
+                            name: pname.clone(),
+                        },
                     });
                 }
             }
@@ -2855,7 +2863,10 @@ fn lower_expr(
             // Arithmetic ops. Determine type from lhs.
             let arith_op = binop_to_krir_arith(*op)
                 .ok_or_else(|| format!("unsupported binary operator {:?}", op))?;
-            let arith_ty = slot_types.get(&l).copied().unwrap_or(KrirMmioScalarType::U64);
+            let arith_ty = slot_types
+                .get(&l)
+                .copied()
+                .unwrap_or(KrirMmioScalarType::U64);
             // Integer literal rhs: use immediate form to avoid type mismatch on temp slot.
             if let ParserExpr::IntLiteral(n) = rhs.as_ref() {
                 ops.push(KrirOp::CellArithImm {
@@ -3210,7 +3221,9 @@ fn lower_stmt(
                 }
             }
             _ => {
-                if let Err(e) = lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types) {
+                if let Err(e) =
+                    lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types)
+                {
                     errors.push(e);
                 }
             }
@@ -3250,7 +3263,8 @@ fn lower_stmt(
                             });
                             continue;
                         }
-                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types) {
+                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types)
+                        {
                             Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
                                 errors.push(e);
@@ -3274,7 +3288,14 @@ fn lower_stmt(
                         },
                     });
                 } else {
-                    match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    match lower_expr(
+                        init_expr,
+                        ops,
+                        slot_counter,
+                        device_regs,
+                        eff_used,
+                        slot_types,
+                    ) {
                         Ok(src) => ops.push(KrirOp::StackStore {
                             ty: lower_mmio_scalar_type(ty.storage_type()),
                             cell: name.clone(),
@@ -3287,7 +3308,10 @@ fn lower_stmt(
         }
         Stmt::Assign { target, value } => match target {
             ParserAssignTarget::Ident(name) => {
-                let store_ty = slot_types.get(name).copied().unwrap_or(KrirMmioScalarType::U64);
+                let store_ty = slot_types
+                    .get(name)
+                    .copied()
+                    .unwrap_or(KrirMmioScalarType::U64);
                 match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
                     Ok(src) => {
                         // If src == name, the value was already updated in place
@@ -3333,7 +3357,10 @@ fn lower_stmt(
         },
         Stmt::CompoundAssign { target, op, value } => match target {
             ParserAssignTarget::Ident(name) => {
-                let arith_ty = slot_types.get(name).copied().unwrap_or(KrirMmioScalarType::U64);
+                let arith_ty = slot_types
+                    .get(name)
+                    .copied()
+                    .unwrap_or(KrirMmioScalarType::U64);
                 match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
                     Ok(rhs) => match binop_to_krir_arith(*op) {
                         Some(arith_op) => ops.push(KrirOp::SlotArith {
@@ -3363,13 +3390,14 @@ fn lower_stmt(
             else_body,
         } => {
             // Lower condition into a bool slot.
-            let cond_slot = match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types) {
-                Ok(s) => s,
-                Err(e) => {
-                    errors.push(e);
-                    return;
-                }
-            };
+            let cond_slot =
+                match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(e);
+                        return;
+                    }
+                };
             let then_name = fresh_fn_name("__if_then", fn_counter);
             let end_name = fresh_fn_name("__if_end", fn_counter);
             let else_name = if else_body.is_empty() {
@@ -3455,13 +3483,14 @@ fn lower_stmt(
             }
             ops.push(KrirOp::LoopBegin);
             // Compute end bound and break if var >= end (exclusive) or var > end (inclusive).
-            let end_slot = match lower_expr(end, ops, slot_counter, device_regs, eff_used, slot_types) {
-                Ok(s) => s,
-                Err(e) => {
-                    errors.push(e);
-                    return;
-                }
-            };
+            let end_slot =
+                match lower_expr(end, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(e);
+                        return;
+                    }
+                };
             let cmp_slot = fresh_slot(slot_counter);
             ops.push(KrirOp::StackCell {
                 ty: KrirMmioScalarType::U8,
