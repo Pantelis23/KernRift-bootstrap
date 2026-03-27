@@ -21,6 +21,15 @@ pub fn run_krbo_file(path: &str) -> Result<(), String> {
         &bytes
     };
 
+    // Compiler-owned object format (version_major=0, version_minor=1) carries
+    // fixup records for unresolved extern symbols.  Such artifacts need a
+    // linker step before they can be executed directly.
+    if krbo_bytes.len() >= 6 && krbo_bytes[0..4] == *b"KRBO" && krbo_bytes[4] == 0 {
+        return Err("this .krbo artifact contains unresolved imports; \
+             link or relocate the artifact before running it with kernrift"
+            .to_string());
+    }
+
     let header = krir::parse_krbo_header(krbo_bytes)?;
     let code_start = 16usize;
     let code_end = code_start + header.code_length as usize;

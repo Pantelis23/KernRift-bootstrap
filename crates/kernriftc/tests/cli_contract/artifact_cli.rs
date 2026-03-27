@@ -298,6 +298,45 @@ fn emit_krbo_supports_declared_extern_call_target_and_metadata_verifies() {
 }
 
 #[test]
+fn emit_krbofat_with_extern_produces_import_aware_x86_64_slice() {
+    // Regression test: --emit=krbofat previously failed when the source had
+    // unresolved extern declarations.  The x86_64 slice must now use the
+    // compiler-owned object format (KRBO version=0.1 with fixup records)
+    // so the artifact encodes which symbols need resolution.
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let output_path = unique_temp_output_path("emit-krbofat-extern", "krbo");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krbofat")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let fat_bytes = fs::read(&output_path).expect("read krbofat output");
+    assert!(fat_bytes.len() >= 8, "krbofat output too small");
+    assert_eq!(&fat_bytes[0..8], krir::KRBO_FAT_MAGIC, "expected KRBOFAT magic");
+
+    // Extract and inspect the x86_64 slice — must be compiler-owned format.
+    let x86_slice =
+        krir::parse_krbofat_slice(&fat_bytes, krir::KRBO_FAT_ARCH_X86_64, Some("output.krbo"))
+            .expect("x86_64 slice must be present");
+    assert!(x86_slice.len() >= 12, "x86_64 slice too small");
+    assert_eq!(&x86_slice[0..4], b"KRBO", "x86_64 slice: expected KRBO magic");
+    // Compiler-owned object format uses version_major=0, version_minor=1.
+    assert_eq!(x86_slice[4], 0, "x86_64 slice: expected compiler-owned format (version_major=0)");
+    assert_eq!(x86_slice[5], 1, "x86_64 slice: expected version_minor=1");
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
 fn emit_elfobj_supports_declared_extern_call_target_and_metadata_verifies() {
     let root = repo_root();
     let fixture = root

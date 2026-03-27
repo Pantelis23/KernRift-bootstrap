@@ -142,11 +142,23 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
         }
         BackendArtifactKind::KrboFat => {
             let x86_target = BackendTargetId::X86_64Sysv.default_contract();
-            let x86_bytes =
-                emit_x86_64_executable_bytes(&executable, &x86_target).map_err(|e| vec![e])?;
+            // When the module has unresolved extern declarations, emit the x86_64 slice
+            // in compiler-owned object format (version=0.1, carries fixup records for
+            // each unresolved symbol).  When all symbols are self-contained, keep the
+            // simple executable slice format (version=1) so existing runtimes can run
+            // the artifact directly without a linker step.
+            let x86_bytes = if executable.extern_declarations.is_empty() {
+                emit_x86_64_executable_bytes(&executable, &x86_target).map_err(|e| vec![e])?
+            } else {
+                let object =
+                    lower_executable_krir_to_compiler_owned_object(&executable, &x86_target)
+                        .map_err(|e| vec![e])?;
+                emit_compiler_owned_object_bytes(&object)
+            };
 
             // AArch64 encoding supports a subset of instructions (linear MVP).
-            // If encoding fails, omit the arm64 slice rather than failing the build.
+            // If encoding fails (e.g. unresolved externs or unsupported ops),
+            // omit the arm64 slice rather than failing the build.
             let arm_target = BackendTargetId::Aarch64Sysv.default_contract();
             let mut slices = vec![(KRBO_FAT_ARCH_X86_64, x86_bytes)];
             if let Ok(arm_bytes) = emit_aarch64_executable_bytes(&executable, &arm_target) {
