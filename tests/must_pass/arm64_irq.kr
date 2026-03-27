@@ -1,3 +1,7 @@
 @ctx(irq)
 fn handle_irq() {
 }
+
+@ctx(thread, boot)
+fn entry() {
+}

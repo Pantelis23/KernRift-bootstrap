@@ -5,3 +5,8 @@ mmio_reg UART.DR = 0x00 : u8 rw;
 fn uart_write() {
     mmio_write<u8>(UART, 0x41);
 }
+
+@ctx(thread, boot)
+fn entry() {
+    uart_write()
+}
