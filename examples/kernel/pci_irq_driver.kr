@@ -61,7 +61,7 @@ fn pci_device_disable() {
 // Boot entry point — enables the device on startup.
 @ctx(thread, boot)
 fn entry() {
-    pci_device_enable();
+    pci_device_enable()
 }
 
 // Read the PCI vendor/device ID from config space via I/O ports.
