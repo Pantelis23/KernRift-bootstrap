@@ -69,7 +69,7 @@ pub(crate) fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
     }
 
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("  finished in {:.1} ms", ms);
+    eprintln!("  finished in {:.2} ms", ms);
     ExitCode::SUCCESS
 }
 
