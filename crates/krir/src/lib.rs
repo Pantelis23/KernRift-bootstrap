@@ -1143,19 +1143,19 @@ fn infer_executable_function_result_types(
                     let slot_name = capture_slot
                         .clone()
                         .unwrap_or_else(|| DEFAULT_EXECUTABLE_MMIO_SLOT.to_string());
-                    if executable_slot_name.is_none() {
-                        executable_slot_name = Some(slot_name.clone());
-                    }
+                    executable_slot_name = Some(slot_name.clone());
                     last_read = Some((slot_name, *ty));
                 }
                 KrirOp::CallCapture { capture_slot, .. }
                 | KrirOp::CallCaptureWithArgs { capture_slot, .. } => {
                     if let Some(&ty) = cell_type_map.get(capture_slot.as_str()) {
-                        if executable_slot_name.is_none() {
-                            executable_slot_name = Some(capture_slot.clone());
-                        }
+                        executable_slot_name = Some(capture_slot.clone());
                         last_read = Some((capture_slot.clone(), ty));
                     }
+                }
+                KrirOp::StackLoad { ty, slot, .. } => {
+                    executable_slot_name = Some(slot.clone());
+                    last_read = Some((slot.clone(), *ty));
                 }
                 KrirOp::ReturnSlot { slot } => {
                     let invocation = format_return_slot_invocation(slot);
@@ -1465,20 +1465,7 @@ pub fn lower_current_krir_to_executable_krir(
                             }
                         }
                     };
-                    if let Some(existing) = &executable_slot_name {
-                        if existing != capture_slot {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
-                                function.name,
-                                invocation,
-                                capture_slot,
-                                existing
-                            ));
-                            continue;
-                        }
-                    } else {
-                        executable_slot_name = Some(capture_slot.clone());
-                    }
+                    executable_slot_name = Some(capture_slot.clone());
                     exec_ops.push(ExecutableOp::CallCapture {
                         callee: callee.clone(),
                         ty: return_ty,
@@ -1578,9 +1565,7 @@ pub fn lower_current_krir_to_executable_krir(
                         // Load the result back from the stack slot into %rbx so
                         // ReturnSavedValue and downstream SavedSlot consumers work.
                         exec_ops.push(ExecutableOp::StackLoad { ty, slot_idx });
-                        if executable_slot_name.is_none() {
-                            executable_slot_name = Some(capture_slot.clone());
-                        }
+                        executable_slot_name = Some(capture_slot.clone());
                         last_value = Some(ExecutableCapturedValue {
                             slot: capture_slot.clone(),
                             ty,
@@ -1670,6 +1655,45 @@ pub fn lower_current_krir_to_executable_krir(
                     then_callee,
                     else_callee,
                 } => {
+                    // New-style path: slot is a declared StackCell.
+                    if let Some(&(slot_idx, slot_ty)) = cell_slot_map.get(slot.as_str()) {
+                        let captured_slot_matches = executable_slot_name
+                            .as_deref()
+                            .map(|cs| cs == slot)
+                            .unwrap_or(false);
+                        if !captured_slot_matches {
+                            exec_ops.push(ExecutableOp::StackLoad {
+                                ty: slot_ty,
+                                slot_idx,
+                            });
+                        }
+                        let resolved_compare_value =
+                            match resolve_executable_branch_compare_value(slot_ty, compare_value) {
+                                Ok(value) => value,
+                                Err(err) => {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' contains unsupported {}: {}",
+                                        function.name,
+                                        format_branch_if_eq_invocation(
+                                            slot,
+                                            compare_value,
+                                            then_callee,
+                                            else_callee
+                                        ),
+                                        err
+                                    ));
+                                    continue;
+                                }
+                            };
+                        exec_ops.push(ExecutableOp::BranchIfEqImm {
+                            ty: slot_ty,
+                            compare_value: resolved_compare_value,
+                            then_callee: then_callee.clone(),
+                            else_callee: else_callee.clone(),
+                        });
+                        continue;
+                    }
+                    // Old-style path: slot must be the mmio/call captured slot.
                     let Some(captured_slot) = executable_slot_name.as_deref() else {
                         errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
@@ -1759,6 +1783,45 @@ pub fn lower_current_krir_to_executable_krir(
                     then_callee,
                     else_callee,
                 } => {
+                    // New-style path: slot is a declared StackCell.
+                    if let Some(&(slot_idx, slot_ty)) = cell_slot_map.get(slot.as_str()) {
+                        let captured_slot_matches = executable_slot_name
+                            .as_deref()
+                            .map(|cs| cs == slot)
+                            .unwrap_or(false);
+                        if !captured_slot_matches {
+                            exec_ops.push(ExecutableOp::StackLoad {
+                                ty: slot_ty,
+                                slot_idx,
+                            });
+                        }
+                        let resolved_mask_value =
+                            match resolve_executable_branch_mask_value(slot_ty, mask_value) {
+                                Ok(value) => value,
+                                Err(err) => {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' contains unsupported {}: {}",
+                                        function.name,
+                                        format_branch_if_mask_nonzero_invocation(
+                                            slot,
+                                            mask_value,
+                                            then_callee,
+                                            else_callee
+                                        ),
+                                        err
+                                    ));
+                                    continue;
+                                }
+                            };
+                        exec_ops.push(ExecutableOp::BranchIfMaskNonZeroImm {
+                            ty: slot_ty,
+                            mask_value: resolved_mask_value,
+                            then_callee: then_callee.clone(),
+                            else_callee: else_callee.clone(),
+                        });
+                        continue;
+                    }
+                    // Old-style path: slot must be the mmio/call captured slot.
                     let Some(captured_slot) = executable_slot_name.as_deref() else {
                         errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
@@ -1998,20 +2061,7 @@ pub fn lower_current_krir_to_executable_krir(
                                 continue;
                             }
                         };
-                    if let Some(existing) = &executable_slot_name {
-                        if existing != slot {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
-                                function.name,
-                                invocation,
-                                slot,
-                                existing
-                            ));
-                            continue;
-                        }
-                    } else {
-                        executable_slot_name = Some(slot.clone());
-                    }
+                    executable_slot_name = Some(slot.clone());
                     exec_ops.push(ExecutableOp::StackLoad { ty: *ty, slot_idx });
                     last_value = Some(ExecutableCapturedValue {
                         slot: slot.clone(),
@@ -2122,20 +2172,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let slot_name = capture_slot
                         .clone()
                         .unwrap_or_else(|| DEFAULT_EXECUTABLE_MMIO_SLOT.to_string());
-                    if let Some(existing) = &executable_slot_name {
-                        if existing != &slot_name {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
-                                function.name,
-                                format_mmio_read_invocation(*ty, addr, capture_slot.as_deref()),
-                                slot_name,
-                                existing
-                            ));
-                            continue;
-                        }
-                    } else {
-                        executable_slot_name = Some(slot_name.clone());
-                    }
+                    executable_slot_name = Some(slot_name.clone());
                     // If the address is a u64 parameter, emit a param-addr read op directly.
                     let param_addr = if let MmioAddrExpr::Ident { name } = addr {
                         if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {

@@ -825,10 +825,10 @@ fn emit_krboexe_rejects_mismatched_mmio_value_flow_width_in_current_subset() {
 }
 
 #[test]
-fn emit_krboexe_rejects_multiple_explicit_slot_names_in_one_function() {
+fn emit_krboexe_allows_multiple_slot_names_in_one_function() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-krboexe-explicit-slot-conflict",
+        "emit-krboexe-multiple-slots",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -842,7 +842,7 @@ fn entry() {
 }
 "#,
     );
-    let output_path = unique_temp_output_path("emit-krboexe-explicit-slot-conflict", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-multiple-slots", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -851,15 +851,7 @@ fn entry() {
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        vec![
-            "canonical-exec: function 'entry' contains unsupported mmio_read<u32>(UART0 + 0x00, second): executable value slot 'second' conflicts with already-captured slot 'first' in the same function",
-            "canonical-exec: function 'entry' contains unsupported mmio_write<u32>(UART0 + 0x04, second): named write value 'second' does not match the captured executable slot 'first' in this function",
-        ]
-    );
+    cmd.assert().success();
 
     fs::remove_file(&fixture).ok();
     fs::remove_file(&output_path).ok();
