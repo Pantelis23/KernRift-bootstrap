@@ -986,10 +986,11 @@ impl ExecutableKrirModule {
                                         function.name, callee
                                     ));
                                 }
-                                return Err(format!(
-                                    "executable KRIR function '{}' must not capture extern target '{}'",
-                                    function.name, callee
-                                ));
+                                // Extern callees with scalar return values are allowed;
+                                // the return type is determined by the declared capture-slot
+                                // type and verified at the call site by the ABI convention.
+                                let _ = ty;
+                                continue;
                             };
                             if *result != executable_value_type_from_mmio_scalar(*ty) {
                                 return Err(format!(
@@ -1147,7 +1148,8 @@ fn infer_executable_function_result_types(
                     }
                     last_read = Some((slot_name, *ty));
                 }
-                KrirOp::CallCaptureWithArgs { capture_slot, .. } => {
+                KrirOp::CallCapture { capture_slot, .. }
+                | KrirOp::CallCaptureWithArgs { capture_slot, .. } => {
                     if let Some(&ty) = cell_type_map.get(capture_slot.as_str()) {
                         if executable_slot_name.is_none() {
                             executable_slot_name = Some(capture_slot.clone());
@@ -1425,28 +1427,43 @@ pub fn lower_current_krir_to_executable_krir(
                     capture_slot,
                 } => {
                     let invocation = format_call_capture_invocation(callee, capture_slot);
-                    let Some(return_ty) = function_result_types.get(callee).copied().flatten()
-                    else {
-                        if module
-                            .functions
-                            .iter()
-                            .any(|f| f.name == *callee && f.is_extern)
-                        {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: captured call target '{}' must be an internal executable function with scalar return in the current subset",
-                                function.name,
-                                invocation,
-                                callee
-                            ));
-                        } else {
-                            errors.push(format!(
-                                "canonical-exec: function '{}' contains unsupported {}: captured call target '{}' returns unit in the current executable subset",
-                                function.name,
-                                invocation,
-                                callee
-                            ));
+                    // Try the inferred return-type map first (covers non-extern functions).
+                    // For extern functions it will be absent; fall back to the declared
+                    // StackCell type for the capture slot.
+                    let return_ty = match function_result_types.get(callee).copied().flatten() {
+                        Some(ty) => ty,
+                        None => {
+                            let is_extern = module
+                                .functions
+                                .iter()
+                                .any(|f| f.name == *callee && f.is_extern);
+                            if is_extern {
+                                // Use the StackCell type the HIR declared for the
+                                // capture slot — it was emitted just before CallCapture.
+                                if let Some(&(_, slot_ty)) =
+                                    cell_slot_map.get(capture_slot.as_str())
+                                {
+                                    slot_ty
+                                } else {
+                                    errors.push(format!(
+                                            "canonical-exec: function '{}' contains unsupported {}: extern '{}' capture slot '{}' has no declared StackCell type",
+                                            function.name,
+                                            invocation,
+                                            callee,
+                                            capture_slot
+                                        ));
+                                    continue;
+                                }
+                            } else {
+                                errors.push(format!(
+                                        "canonical-exec: function '{}' contains unsupported {}: captured call target '{}' returns unit in the current executable subset",
+                                        function.name,
+                                        invocation,
+                                        callee
+                                    ));
+                                continue;
+                            }
                         }
-                        continue;
                     };
                     if let Some(existing) = &executable_slot_name {
                         if existing != capture_slot {
@@ -1466,6 +1483,15 @@ pub fn lower_current_krir_to_executable_krir(
                         callee: callee.clone(),
                         ty: return_ty,
                     });
+                    // Persist the return value from the ABI scratch register (%rbx / x9)
+                    // into the declared stack slot so downstream Slot-addressed loads get
+                    // the correct value.
+                    if let Some(&(slot_idx, _)) = cell_slot_map.get(capture_slot.as_str()) {
+                        exec_ops.push(ExecutableOp::StackStoreValue {
+                            ty: return_ty,
+                            slot_idx,
+                        });
+                    }
                     last_value = Some(ExecutableCapturedValue {
                         slot: capture_slot.clone(),
                         ty: return_ty,

@@ -2895,6 +2895,36 @@ fn lower_expr(
             });
             Ok(slot)
         }
+        // Call expression used as a value (e.g. `let x = f()`, `g(f())`, `if f() == 0`).
+        // Allocates a fresh u64 slot, emits CallCapture/CallCaptureWithArgs into it, and
+        // returns the slot so the caller can use the return value as an operand.
+        ParserExpr::Call { callee, args } => {
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: slot.clone(),
+            });
+            if args.is_empty() {
+                ops.push(KrirOp::CallCapture {
+                    callee: callee.clone(),
+                    capture_slot: slot.clone(),
+                });
+            } else {
+                let mut krir_args = Vec::new();
+                for arg in args {
+                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types) {
+                        Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
+                        Err(e) => return Err(e),
+                    }
+                }
+                ops.push(KrirOp::CallCaptureWithArgs {
+                    callee: callee.clone(),
+                    args: krir_args,
+                    capture_slot: slot.clone(),
+                });
+            }
+            Ok(slot)
+        }
         _ => Err(format!(
             "expression type not yet supported in HIR lowering: {:?}",
             expr
