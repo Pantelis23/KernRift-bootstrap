@@ -165,12 +165,22 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
                 emit_aarch64_elf_object_bytes(&executable, &target).map_err(|err| vec![err])
             }
         },
-        BackendArtifactKind::ElfExecutable => {
-            emit_x86_64_elf_executable_bytes(&executable, &target).map_err(|err| vec![err])
-        }
-        BackendArtifactKind::KrboExecutable => {
-            emit_x86_64_executable_bytes(&executable, &target).map_err(|err| vec![err])
-        }
+        BackendArtifactKind::ElfExecutable => match target.arch {
+            TargetArch::X86_64 => {
+                emit_x86_64_elf_executable_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+            TargetArch::AArch64 => {
+                emit_aarch64_elf_executable_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+        },
+        BackendArtifactKind::KrboExecutable => match target.arch {
+            TargetArch::X86_64 => {
+                emit_x86_64_executable_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+            TargetArch::AArch64 => {
+                emit_aarch64_executable_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+        },
         BackendArtifactKind::Asm => match target.arch {
             TargetArch::X86_64 => {
                 let asm = lower_executable_krir_to_x86_64_asm(&executable, &target)
@@ -183,12 +193,22 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
                 Ok(emit_aarch64_asm_text(&asm).into_bytes())
             }
         },
-        BackendArtifactKind::StaticLib => {
-            emit_x86_64_static_library(&executable, &target).map_err(|err| vec![err])
-        }
-        BackendArtifactKind::HostExecutable => {
-            emit_x86_64_host_executable_bytes(&executable, &target).map_err(|err| vec![err])
-        }
+        BackendArtifactKind::StaticLib => match target.arch {
+            TargetArch::X86_64 => {
+                emit_x86_64_static_library(&executable, &target).map_err(|err| vec![err])
+            }
+            TargetArch::AArch64 => {
+                emit_aarch64_static_library(&executable, &target).map_err(|err| vec![err])
+            }
+        },
+        BackendArtifactKind::HostExecutable => match target.arch {
+            TargetArch::X86_64 => {
+                emit_x86_64_host_executable_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+            TargetArch::AArch64 => {
+                emit_aarch64_host_executable_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+        },
     }
 }
 
@@ -756,6 +776,187 @@ fn emit_x86_64_static_library(
             archive_path.display(),
             err
         )
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
+fn emit_aarch64_elf_executable_bytes(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    if !executable.extern_declarations.is_empty() {
+        let unresolved = executable
+            .extern_declarations
+            .iter()
+            .map(|decl| decl.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "elfexe emit requires no extern declarations; unresolved externs: {}",
+            unresolved
+        ));
+    }
+
+    // ld.lld auto-detects architecture from the ELF object.
+    // aarch64-linux-gnu-ld is the standard Binutils cross-linker.
+    // Plain ld works on a native AArch64 host.
+    let ld = find_host_tool(&["ld.lld", "aarch64-linux-gnu-ld", "ld"])
+        .ok_or_else(|| {
+            "elfexe aarch64 emit requires a linker (ld.lld, aarch64-linux-gnu-ld, or ld)".to_string()
+        })?;
+
+    let object_bytes = emit_aarch64_elf_object_bytes(executable, target)?;
+
+    let temp_dir = unique_temp_dir("elfexe-aarch64");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!(
+            "failed to create temp dir '{}': {}",
+            temp_dir.display(),
+            err
+        )
+    })?;
+
+    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let object_path = temp_dir.join("input.o");
+    let output_path = temp_dir.join("output.elf");
+
+    fs::write(&object_path, &object_bytes).map_err(|err| {
+        format!("failed to write temp object '{}': {}", object_path.display(), err)
+    })?;
+
+    let ld_output = Command::new(&ld)
+        .arg("-e").arg("entry")
+        .arg("-o").arg(&output_path)
+        .arg(&object_path)
+        .output()
+        .map_err(|err| format!("failed to run linker '{}': {}", ld, err))?;
+
+    if !ld_output.status.success() {
+        return Err(format!(
+            "elfexe aarch64 link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+            ld,
+            String::from_utf8_lossy(&ld_output.stdout),
+            String::from_utf8_lossy(&ld_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!("failed to read linked output '{}': {}", output_path.display(), err)
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
+fn emit_aarch64_static_library(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    // `ar` is architecture-agnostic — it archives any ELF object regardless of
+    // target arch.
+    let ar = find_host_tool(&["ar"])
+        .ok_or_else(|| "staticlib emit requires ar (from binutils)".to_string())?;
+
+    let object_bytes = emit_aarch64_elf_object_bytes(executable, target)?;
+
+    let temp_dir = unique_temp_dir("staticlib-aarch64");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!("failed to create temporary dir '{}': {}", temp_dir.display(), err)
+    })?;
+
+    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let object_path = temp_dir.join("input.o");
+    let archive_path = temp_dir.join("output.a");
+
+    fs::write(&object_path, &object_bytes).map_err(|err| {
+        format!("failed to write temporary object '{}': {}", object_path.display(), err)
+    })?;
+
+    let ar_output = Command::new(&ar)
+        .arg("rcs")
+        .arg(&archive_path)
+        .arg(&object_path)
+        .output()
+        .map_err(|err| format!("failed to run ar '{}': {}", ar, err))?;
+
+    if !ar_output.status.success() {
+        return Err(format!(
+            "staticlib aarch64 emit failed while archiving with '{}'\nstdout:\n{}\nstderr:\n{}",
+            ar,
+            String::from_utf8_lossy(&ar_output.stdout),
+            String::from_utf8_lossy(&ar_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&archive_path).map_err(|err| {
+        format!("failed to read archive '{}': {}", archive_path.display(), err)
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
+fn emit_aarch64_host_executable_bytes(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    // On a native AArch64 host, `cc` already produces AArch64 binaries.
+    // On a cross-compilation host, prefer the AArch64-specific GCC cross-compiler.
+    let cc = find_host_tool(&["aarch64-linux-gnu-gcc", "cc", "gcc", "clang"]).ok_or_else(|| {
+        "hostexe aarch64 emit requires a C compiler (aarch64-linux-gnu-gcc, cc, gcc, or clang)"
+            .to_string()
+    })?;
+
+    let asm_module = lower_executable_krir_to_aarch64_asm(executable, target)?;
+    let asm_text = emit_aarch64_asm_text(&asm_module);
+
+    let temp_dir = unique_temp_dir("hostexe-aarch64");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!("failed to create temp dir '{}': {}", temp_dir.display(), err)
+    })?;
+
+    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let asm_path = temp_dir.join("input.s");
+    let object_path = temp_dir.join("input.o");
+    let output_path = temp_dir.join("output");
+
+    fs::write(&asm_path, asm_text.as_bytes())
+        .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
+
+    let as_output = Command::new(&cc)
+        .arg("-c")
+        .arg(&asm_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .map_err(|err| format!("failed to assemble with '{}': {}", cc, err))?;
+
+    if !as_output.status.success() {
+        return Err(format!(
+            "hostexe aarch64 assemble failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&as_output.stdout),
+            String::from_utf8_lossy(&as_output.stderr)
+        ));
+    }
+
+    let cc_output = Command::new(&cc)
+        .arg(&object_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
+
+    if !cc_output.status.success() {
+        return Err(format!(
+            "hostexe aarch64 link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&cc_output.stdout),
+            String::from_utf8_lossy(&cc_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!("failed to read linked output '{}': {}", output_path.display(), err)
     })?;
     drop(cleanup);
     Ok(bytes)

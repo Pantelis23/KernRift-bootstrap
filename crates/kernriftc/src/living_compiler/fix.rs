@@ -8,18 +8,21 @@
 //! The parser AST (`Stmt`, `Expr::Call`) does not carry per-statement byte
 //! offsets — only `FnAst` carries a `SourceNote` for the function header.
 //! Walking the AST therefore cannot produce the precise byte offset needed to
-//! insert text.  We fall back to a **text-scan approach**:
+//! insert text.  We fall back to a **token-aware text-scan approach**:
 //!
-//! 1. Iterate over each line of the source.
-//! 2. Track brace depth to detect function bodies.
-//! 3. Inside each function body, record the byte offset of the start of every
-//!    line that looks like a bare call (identifier immediately followed by `(`).
-//! 4. After the closing `}` of the body, emit a `FixSite` for the *last* such
-//!    call line found.
-//!
-//! This is intentionally conservative: it only fixes the last call in a
-//! function, which is the canonical tail-call position, and it skips lines that
-//! look like declarations, assignments, or keywords.
+//! 1. Sanitize the source: replace string-literal contents and comments with
+//!    ASCII spaces of equal byte length.  This prevents injection of `tail`
+//!    into comments or strings that happen to look like calls.  Because
+//!    replacement is in-place (same byte count), all byte offsets remain valid.
+//! 2. Iterate over each line of the sanitized source, tracking brace depth to
+//!    locate function bodies.
+//! 3. Inside each function body, call `last_call_col` on each line.  That
+//!    helper splits on `;` at paren-depth 0 so it correctly handles multiple
+//!    call statements on one line (e.g. `a(); b()`) and returns the column of
+//!    the *last* bare call start.
+//! 4. After the closing `}` of a body, emit a `FixSite` for the last recorded
+//!    call column — which points into the *original* source because sanitization
+//!    preserves byte lengths.
 
 /// A single fixable site.
 #[derive(Debug)]
@@ -65,139 +68,245 @@ pub(crate) fn unified_diff(path: &str, before: &str, after: &str) -> String {
     out
 }
 
-/// Returns true if `trimmed` looks like a bare call statement:
-/// starts with an identifier character, then eventually hits `(` before any
-/// `=`, `{`, `}`, or whitespace-separated keyword.
-fn looks_like_call(trimmed: &str) -> bool {
-    // Must start with a letter or underscore (identifier start).
-    let first = match trimmed.chars().next() {
-        Some(c) => c,
-        None => return false,
-    };
-    if !first.is_ascii_alphabetic() && first != '_' {
-        return false;
+/// Replace string-literal contents and comments with ASCII spaces, preserving
+/// all byte lengths and newlines so that every byte offset in the returned
+/// string maps 1-to-1 to the same offset in `src`.
+///
+/// Rules:
+/// - `// ...` — replaced from `//` through the end of the line (newline kept).
+/// - `/* ... */` — replaced with spaces; embedded newlines are preserved so
+///   that line-number accounting remains stable.
+/// - `"..."` — content replaced with spaces; escape sequences are blanked too;
+///   embedded newlines are preserved.
+fn sanitize_source(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out: Vec<u8> = bytes.to_vec();
+    let mut i = 0;
+    while i < len {
+        // Line comment: // … \n
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+            // leave the '\n' as-is
+        // Block comment: /* … */
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                // Preserve newlines so line accounting stays correct.
+                if bytes[i] != b'\n' {
+                    out[i] = b' ';
+                }
+                i += 1;
+            }
+            if i + 1 < len {
+                out[i] = b' ';
+                out[i + 1] = b' ';
+                i += 2;
+            }
+        // String literal: "…"
+        } else if bytes[i] == b'"' {
+            out[i] = b' ';
+            i += 1;
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    if bytes[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                    if i < len && bytes[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                } else if bytes[i] != b'\n' {
+                    out[i] = b' ';
+                }
+                i += 1;
+            }
+            if i < len {
+                out[i] = b' ';
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
     }
+    // SAFETY: we only wrote ASCII bytes (spaces) over ASCII bytes; any UTF-8
+    // multi-byte sequences are left intact or were inside a string/comment and
+    // their non-\n bytes are replaced with single-byte spaces — which may
+    // produce invalid UTF-8 in theory, but sanitize_source is only ever called
+    // on KernRift source which is ASCII.  Use lossy conversion as a safe fallback.
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
 
-    // Walk until we hit `(` or a disqualifying character.
-    for ch in trimmed.chars() {
-        match ch {
-            '(' => return true,
-            // Assignment, block open/close, or end of statement without a call.
-            '=' | '{' | '}' => return false,
+/// Return the byte column (offset within `line`) where the **last** bare call
+/// statement starts, or `None` if the line does not contain one.
+///
+/// A "bare call statement" is an identifier not preceded by `=` at the same
+/// statement level, followed immediately by `(`.  Keywords (`fn`, `let`, `if`,
+/// `while`, `return`, `tail`) are excluded.
+///
+/// To handle multiple statements on one line (e.g. `a(); b()`), the function
+/// splits on `;` at paren-depth 0 and checks segments from right to left,
+/// including segments that end with a trailing `;` (e.g. `bar();` yields the
+/// segment `"    bar()"` before the `;`, not the empty part after it).
+fn last_call_col(line: &str) -> Option<usize> {
+    const KEYWORDS: &[&str] = &["fn", "let", "if", "while", "return", "tail", "for", "loop"];
+
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+
+    // Collect (start, end) byte ranges for each `;`-separated segment at depth 0.
+    let mut depth: usize = 0;
+    let mut seg_start: usize = 0;
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => {
+                segments.push((seg_start, i));
+                seg_start = i + 1;
+            }
             _ => {}
         }
     }
-    false
+    segments.push((seg_start, len)); // trailing segment (empty for `foo();`)
+
+    // Walk from rightmost to leftmost; return the first segment that is a call.
+    for &(start, end) in segments.iter().rev() {
+        if start >= end {
+            continue;
+        }
+        let seg = &line[start..end];
+        let seg_trimmed = seg.trim_start();
+        if seg_trimmed.is_empty() {
+            continue;
+        }
+
+        let first = match seg_trimmed.chars().next() {
+            Some(c) => c,
+            None => continue,
+        };
+        if !first.is_ascii_alphabetic() && first != '_' {
+            continue;
+        }
+
+        let ident_end = seg_trimmed
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(seg_trimmed.len());
+        let ident = &seg_trimmed[..ident_end];
+
+        if KEYWORDS.contains(&ident) {
+            continue;
+        }
+
+        // After the identifier, optional whitespace, then must be `(`.
+        let mut found = false;
+        for ch in seg_trimmed[ident_end..].chars() {
+            match ch {
+                '(' => { found = true; break; }
+                ' ' | '\t' => {}
+                _ => break,
+            }
+        }
+        if found {
+            let leading = seg.len() - seg_trimmed.len();
+            return Some(start + leading);
+        }
+    }
+    None
 }
 
 /// Scan `source` for tail-call fix sites.
 ///
 /// For each function body found via brace matching, the byte offset of the
-/// last bare-call line is recorded as a `FixSite`.
+/// last bare-call statement is recorded as a `FixSite`.
 ///
 /// Returns an empty `Vec` if no eligible sites are found — the caller already
 /// gates on `suggestions.iter().any(|m| m.id == "try_tail_call")`.
 pub(crate) fn find_fix_sites(source: &str) -> Vec<FixSite> {
+    // Sanitize first: blank out string contents and comments so we never
+    // accidentally detect a call-like pattern inside them.  Byte offsets in
+    // the sanitized string are identical to those in `source`.
+    let sanitized = sanitize_source(source);
+    find_fix_sites_on(&sanitized)
+}
+
+fn find_fix_sites_on(source: &str) -> Vec<FixSite> {
     let mut sites: Vec<FixSite> = Vec::new();
 
-    // Track brace depth and the byte offset where each function body opened.
-    // We only enter "body tracking" mode once we see the `{` that opens a
-    // function (after a line that contains `fn `).
     let mut depth: usize = 0;
-    // Were we inside at least one brace level that was entered after a `fn` line?
     let mut in_fn_body: bool = false;
-    // Depth at which the current function body opened.
     let mut fn_body_depth: usize = 0;
-    // Last call site byte offset seen inside the current function body.
     let mut last_call_offset: Option<usize> = None;
-
-    // We need the previous line to detect whether a `{` belongs to a function.
     let mut prev_line_is_fn = false;
-
     let mut byte_offset: usize = 0;
 
     for line in source.lines() {
         let trimmed = line.trim();
 
-        // Count braces on this line.
         let opens = line.chars().filter(|&c| c == '{').count();
         let closes = line.chars().filter(|&c| c == '}').count();
 
-        // If we're inside a function body, check for a call candidate.
+        // Inside a function body: look for the last bare call on this line.
         if in_fn_body && depth > fn_body_depth {
-            // Skip comments and empty lines.
-            let is_comment = trimmed.starts_with("//") || trimmed.starts_with("/*");
-            if !trimmed.is_empty() && !is_comment && looks_like_call(trimmed) {
-                // Record the byte offset of the call on this line.
-                // We want to insert before the first non-whitespace character.
-                let leading_spaces = line.len() - line.trim_start().len();
-                last_call_offset = Some(byte_offset + leading_spaces);
+            if let Some(col) = last_call_col(line) {
+                last_call_offset = Some(byte_offset + col);
             }
         }
 
-        // Update depth.
         depth = depth.saturating_add(opens).saturating_sub(closes);
 
-        // Detect function body open: a `{` on a line that follows a `fn ` line.
+        // `fn` on previous line, `{` on this line.
         if opens > 0 && prev_line_is_fn && !in_fn_body {
             in_fn_body = true;
-            fn_body_depth = depth - 1; // depth before the `{` on this line
-            // If both `fn` keyword and `{` are on the same line (e.g. `fn foo() {`),
-            // fn_body_depth needs adjustment — but since we check prev_line_is_fn
-            // (set from the *previous* iteration) this case also works when the
-            // `fn ... {` is on one line: prev_line_is_fn is set from the fn-bearing
-            // line and the current line holds the opening brace.
-        }
-
-        // Also handle the common case where `fn foo() {` is all on one line.
-        // In that case, both the fn keyword and the `{` appear on the same line.
-        // prev_line_is_fn would be false (set at *end* of this iteration), so
-        // we handle it here.
-        let line_has_fn = trimmed.starts_with("fn ") || trimmed.contains(" fn ");
-        if line_has_fn && opens > 0 && !in_fn_body {
-            in_fn_body = true;
-            // The body was opened by the last `{` on this line.
-            // depth already includes all opens/closes on this line.
-            // The body's interior is at depth fn_body_depth + 1.
             fn_body_depth = depth - 1;
         }
 
-        // Detect function body close.
+        // `fn foo() {` all on one line.
+        let line_has_fn = trimmed.starts_with("fn ") || trimmed.contains(" fn ");
+        if line_has_fn && opens > 0 && !in_fn_body {
+            in_fn_body = true;
+            fn_body_depth = depth - 1;
+        }
+
+        // Function body closed.
         if in_fn_body && depth <= fn_body_depth {
-            // We've exited the function body.
             if let Some(offset) = last_call_offset.take() {
-                sites.push(FixSite {
-                    insert_before: offset,
-                });
+                sites.push(FixSite { insert_before: offset });
             }
             in_fn_body = false;
             fn_body_depth = 0;
         }
 
-        // Advance byte offset.  `lines()` strips the newline, so add 1 for `\n`.
-        // For `\r\n` line endings add 2.  We detect this by checking the raw bytes.
-        let raw_line_bytes = &source.as_bytes()[byte_offset..];
-        let line_byte_len = line.len();
-        // Check for CRLF
-        let newline_len = if raw_line_bytes.get(line_byte_len) == Some(&b'\r') {
-            2
-        } else if raw_line_bytes.get(line_byte_len) == Some(&b'\n') {
+        // Advance byte offset (`lines()` strips the newline).
+        let raw = &source.as_bytes()[byte_offset..];
+        let line_len = line.len();
+        let newline_len = if raw.get(line_len) == Some(&b'\n') {
             1
+        } else if raw.get(line_len) == Some(&b'\r') {
+            2
         } else {
-            0 // last line with no trailing newline
+            0
         };
-        byte_offset += line_byte_len + newline_len;
+        byte_offset += line_len + newline_len;
 
-        // Update prev_line_is_fn for next iteration.
         prev_line_is_fn = line_has_fn;
     }
 
-    // Handle a function whose body was never closed (malformed source).
-    // Emit whatever last call we found.
-    if in_fn_body && let Some(offset) = last_call_offset.take() {
-        sites.push(FixSite {
-            insert_before: offset,
-        });
+    // Malformed source: body never closed — emit whatever we have.
+    if in_fn_body {
+        if let Some(offset) = last_call_offset.take() {
+            sites.push(FixSite { insert_before: offset });
+        }
     }
 
     sites
@@ -237,7 +346,6 @@ mod tests {
     fn find_fix_sites_last_call_only() {
         let source = "fn foo() {\n    a();\n    b();\n    c();\n}\n";
         let sites = find_fix_sites(source);
-        // Only the last call in the body should be fixed.
         assert_eq!(sites.len(), 1);
         let fixed = apply_fixes(source, &sites);
         assert!(fixed.contains("tail c();"), "got: {:?}", fixed);
@@ -278,5 +386,99 @@ mod tests {
         let src = "fn foo() { }\n";
         let diff = unified_diff("x.kr", src, src);
         assert!(!diff.contains("@@"), "no hunks for identical input");
+    }
+
+    // ── new: sanitize_source ────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_blanks_line_comment() {
+        let src = "foo(); // bar()\n";
+        let san = sanitize_source(src);
+        // comment content replaced with spaces, newline preserved
+        // "foo(); " (7 bytes) + "// bar()" (8 bytes blanked) = "foo();         \n"
+        assert_eq!(san, "foo();         \n");
+    }
+
+    #[test]
+    fn sanitize_blanks_block_comment() {
+        let src = "/* call() */ foo()";
+        let san = sanitize_source(src);
+        assert_eq!(san, "             foo()");
+    }
+
+    #[test]
+    fn sanitize_blanks_string() {
+        let src = "\"init()\" foo()";
+        let san = sanitize_source(src);
+        assert_eq!(san, "         foo()");
+    }
+
+    #[test]
+    fn sanitize_preserves_newlines_in_block_comment() {
+        let src = "/*\ninit()\n*/ foo()";
+        let san = sanitize_source(src);
+        // The two non-newline chars of "/*" and "*/" are blanked; inner newlines kept.
+        assert!(san.contains('\n'), "newlines must be preserved");
+        assert!(!san.contains("init()"), "call inside comment must be erased");
+        assert!(san.ends_with(" foo()"));
+    }
+
+    #[test]
+    fn find_fix_sites_skips_call_in_string() {
+        // A multiline string that contains what looks like a call should NOT
+        // be treated as a fix site.
+        let source = "fn foo() {\n    let x = \"bar()\";\n    baz();\n}\n";
+        let sites = find_fix_sites(source);
+        assert_eq!(sites.len(), 1);
+        let fixed = apply_fixes(source, &sites);
+        assert!(fixed.contains("tail baz();"), "got: {:?}", fixed);
+        assert!(!fixed.contains("tail let"), "assignment must not be fixed");
+    }
+
+    #[test]
+    fn find_fix_sites_skips_call_in_comment() {
+        let source = "fn foo() {\n    // old_fn();\n    bar();\n}\n";
+        let sites = find_fix_sites(source);
+        assert_eq!(sites.len(), 1);
+        let fixed = apply_fixes(source, &sites);
+        assert!(fixed.contains("tail bar();"), "got: {:?}", fixed);
+        assert!(!fixed.contains("tail //"), "comment must not be fixed");
+    }
+
+    #[test]
+    fn find_fix_sites_two_calls_on_one_line() {
+        // `a(); b()` — only b() is the tail call.
+        let source = "fn foo() {\n    a(); b();\n}\n";
+        let sites = find_fix_sites(source);
+        assert_eq!(sites.len(), 1);
+        let fixed = apply_fixes(source, &sites);
+        assert!(fixed.contains("tail b();"), "got: {:?}", fixed);
+        assert!(!fixed.contains("tail a()"), "a() must not be fixed");
+    }
+
+    // ── new: last_call_col ──────────────────────────────────────────────────
+
+    #[test]
+    fn last_call_col_single() {
+        assert_eq!(last_call_col("    foo()"), Some(4));
+    }
+
+    #[test]
+    fn last_call_col_two_on_line() {
+        // Should return the column of `b`, not `a`.
+        let line = "    a(); b()";
+        let col = last_call_col(line).unwrap();
+        assert_eq!(&line[col..col + 1], "b");
+    }
+
+    #[test]
+    fn last_call_col_assignment_rejected() {
+        assert_eq!(last_call_col("    let x = foo()"), None);
+    }
+
+    #[test]
+    fn last_call_col_keyword_rejected() {
+        assert_eq!(last_call_col("    fn foo()"), None);
+        assert_eq!(last_call_col("    return bar()"), None);
     }
 }
