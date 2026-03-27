@@ -1433,13 +1433,11 @@ fn bad(uint32 x) -> uint32 {
 }
 "#;
     let module = compile_source(src).expect("multiplication should compile");
-    let f = module
-        .functions
-        .iter()
-        .find(|f| f.name == "bad")
-        .unwrap();
+    let f = module.functions.iter().find(|f| f.name == "bad").unwrap();
     assert!(
-        f.ops.iter().any(|op| matches!(op, KrirOp::SlotArith { .. } | KrirOp::CellArithImm { .. })),
+        f.ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::SlotArith { .. } | KrirOp::CellArithImm { .. })),
         "expected SlotArith/CellArithImm in bad ops, got: {:?}",
         f.ops
     );

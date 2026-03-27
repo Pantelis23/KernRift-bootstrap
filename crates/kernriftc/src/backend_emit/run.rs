@@ -80,9 +80,13 @@ fn resolve_kind_and_target(
     match (args.kind, args.arch) {
         // --arch arm64 + krbo/krboexe: redirect to KrboExecutable + AArch64 SysV.
         // The Krbo (compiler-owned) path is x86_64-only; KrboExecutable dispatches on arch.
-        (BackendArtifactKind::Krbo | BackendArtifactKind::KrboExecutable, Some(TargetArch::AArch64)) => {
-            (BackendArtifactKind::KrboExecutable, CompilerBackendTargetId::Aarch64Sysv)
-        }
+        (
+            BackendArtifactKind::Krbo | BackendArtifactKind::KrboExecutable,
+            Some(TargetArch::AArch64),
+        ) => (
+            BackendArtifactKind::KrboExecutable,
+            CompilerBackendTargetId::Aarch64Sysv,
+        ),
         // --arch arm64 for all other kinds: keep kind, override target to AArch64 SysV.
         (kind, Some(TargetArch::AArch64)) => (kind, CompilerBackendTargetId::Aarch64Sysv),
         // No --arch: use kind and target_id as-is.

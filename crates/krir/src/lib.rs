@@ -5744,12 +5744,10 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                                     } else {
                                         out.push_str(&format!(" %rax, {}(%rsp)\n", dst_offset));
                                     }
+                                } else if dst_offset == 0 {
+                                    out.push_str(" %rdx, (%rsp)\n");
                                 } else {
-                                    if dst_offset == 0 {
-                                        out.push_str(" %rdx, (%rsp)\n");
-                                    } else {
-                                        out.push_str(&format!(" %rdx, {}(%rsp)\n", dst_offset));
-                                    }
+                                    out.push_str(&format!(" %rdx, {}(%rsp)\n", dst_offset));
                                 }
                             }
                             _ => unreachable!(),
