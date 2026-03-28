@@ -705,11 +705,18 @@ fn emit_x86_64_host_executable_bytes(
     let object_path = temp_dir.join("input.o");
     let output_path = temp_dir.join("output");
 
-    // The C runtime startup calls `main`.  KernRift modules expose `entry`, so
-    // append a thin trampoline that satisfies the CRT without changing the
-    // module's own symbol name.
-    let asm_with_main = format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text);
-    fs::write(&asm_path, asm_with_main.as_bytes())
+    // The C runtime startup calls `main`.  If the module doesn't already
+    // define a `main` symbol (e.g. it uses `fn entry()`), append a thin
+    // trampoline so the CRT can locate the entry point.
+    let needs_main_trampoline = !asm_text.contains("\nmain:\n");
+    let asm_with_main;
+    let asm_final = if needs_main_trampoline {
+        asm_with_main = format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text);
+        asm_with_main.as_str()
+    } else {
+        asm_text.as_str()
+    };
+    fs::write(&asm_path, asm_final.as_bytes())
         .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
 
     // Assemble: cc -c input.s -o input.o
