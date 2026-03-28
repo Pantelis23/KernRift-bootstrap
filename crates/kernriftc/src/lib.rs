@@ -708,14 +708,73 @@ fn emit_x86_64_host_executable_bytes(
     // The C runtime startup calls `main`.  If the module doesn't already
     // define a `main` symbol (e.g. it uses `fn entry()`), append a thin
     // trampoline so the CRT can locate the entry point.
-    let needs_main_trampoline = !asm_text.contains("\nmain:\n");
-    let asm_with_main;
-    let asm_final = if needs_main_trampoline {
-        asm_with_main = format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text);
-        asm_with_main.as_str()
+    let mut asm_final = if !asm_text.contains("\nmain:\n") {
+        format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text)
     } else {
-        asm_text.as_str()
+        asm_text
     };
+
+    // On Windows: the generated x86-64 ASM uses the SysV calling convention
+    // (arg1 in %rdi, arg2 in %rsi, …) but Windows CRT functions expect the MS
+    // x64 ABI (arg1 in %rcx, arg2 in %rdx, …).  We compile a thin C bridge
+    // annotated with `__attribute__((sysv_abi))` — Clang emits the necessary
+    // register-shuffle prologue — and redirect every extern call through it.
+    #[cfg(not(windows))]
+    let bridge_obj: Option<std::path::PathBuf> = None;
+    #[cfg(windows)]
+    let bridge_obj: Option<std::path::PathBuf> = {
+        let extern_names: Vec<String> = executable
+            .extern_declarations
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+
+        if extern_names.is_empty() {
+            None
+        } else {
+            // Rewrite `    call funcname\n` → `    call __kr_bridge_funcname\n`
+            for name in &extern_names {
+                let from = format!("    call {}\n", name);
+                let to = format!("    call __kr_bridge_{}\n", name);
+                asm_final = asm_final.replace(&from, &to);
+            }
+
+            // Generate the bridge C source.
+            let bridge_path = temp_dir.join("bridge.c");
+            let bridge_obj_path = temp_dir.join("bridge.o");
+            let mut bridge_src = String::from("#include <stdint.h>\n");
+            for name in &extern_names {
+                bridge_src.push_str(&format!(
+                    "extern uintptr_t {n}(uintptr_t,uintptr_t,uintptr_t,uintptr_t);\n\
+                     __attribute__((sysv_abi)) uintptr_t __kr_bridge_{n}(\
+                     uintptr_t a0,uintptr_t a1,uintptr_t a2,uintptr_t a3)\
+                     {{return {n}(a0,a1,a2,a3);}}\n",
+                    n = name
+                ));
+            }
+            fs::write(&bridge_path, bridge_src.as_bytes()).map_err(|e| {
+                format!("failed to write bridge.c '{}': {}", bridge_path.display(), e)
+            })?;
+
+            // Compile bridge.c → bridge.o
+            let bridge_compile = Command::new(&cc)
+                .arg("-c")
+                .arg(&bridge_path)
+                .arg("-o")
+                .arg(&bridge_obj_path)
+                .output()
+                .map_err(|e| format!("failed to compile bridge.c: {}", e))?;
+            if !bridge_compile.status.success() {
+                return Err(format!(
+                    "bridge.c compile failed:\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&bridge_compile.stdout),
+                    String::from_utf8_lossy(&bridge_compile.stderr)
+                ));
+            }
+            Some(bridge_obj_path)
+        }
+    };
+
     fs::write(&asm_path, asm_final.as_bytes())
         .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
 
@@ -737,11 +796,15 @@ fn emit_x86_64_host_executable_bytes(
         ));
     }
 
-    // Link: cc input.o -o output  (adds CRT _start, resolves libc).
+    // Link: cc input.o [bridge.o] -o output  (adds CRT _start, resolves libc).
     // On Windows the PE format needs an explicit subsystem flag so the MSVC
     // linker (invoked by VS-bundled clang) doesn't reject the image.
     let mut link_cmd = Command::new(&cc);
-    link_cmd.arg(&object_path).arg("-o").arg(&output_path);
+    link_cmd.arg(&object_path);
+    if let Some(ref b) = bridge_obj {
+        link_cmd.arg(b);
+    }
+    link_cmd.arg("-o").arg(&output_path);
     #[cfg(windows)]
     link_cmd.arg("-Wl,/SUBSYSTEM:CONSOLE");
     let cc_output = link_cmd
