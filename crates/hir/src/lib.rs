@@ -1716,7 +1716,11 @@ fn lower_function(
         result_functions.push(Function {
             name: work.name,
             is_extern: if is_main { item.is_extern } else { false },
-            params: if is_main { main_params.clone() } else { synth_params },
+            params: if is_main {
+                main_params.clone()
+            } else {
+                synth_params
+            },
             ctx_ok: main_ctx_ok.clone(),
             eff_used: eff_used.into_iter().collect(),
             caps_req: main_caps_req.clone(),
@@ -3373,14 +3377,18 @@ fn lower_stmt(
                     ops.push(KrirOp::StackStore {
                         ty: store_ty,
                         cell: name.clone(),
-                        value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+                        value: KrirMmioValueExpr::IntLiteral {
+                            value: n.to_string(),
+                        },
                     });
                 } else if let ParserExpr::BoolLiteral(b) = value {
                     let n: u64 = if *b { 1 } else { 0 };
                     ops.push(KrirOp::StackStore {
                         ty: store_ty,
                         cell: name.clone(),
-                        value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+                        value: KrirMmioValueExpr::IntLiteral {
+                            value: n.to_string(),
+                        },
                     });
                 } else {
                     match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {

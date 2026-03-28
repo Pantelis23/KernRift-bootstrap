@@ -1602,33 +1602,38 @@ pub fn lower_current_krir_to_executable_krir(
                     args,
                 } => {
                     // Resolve the condition slot the same way as BranchIfZero.
-                    let (slot_ty, need_load) =
-                        if let Some(&(slot_idx, slot_ty)) = cell_slot_map.get(slot.as_str()) {
-                            let captured_matches = executable_slot_name
-                                .as_deref()
-                                .map(|cs| cs == slot)
-                                .unwrap_or(false);
-                            if !captured_matches {
-                                exec_ops.push(ExecutableOp::StackLoad {
-                                    ty: slot_ty,
-                                    slot_idx,
-                                });
-                            }
-                            (slot_ty, false)
-                        } else {
-                            errors.push(format!(
+                    let (slot_ty, need_load) = if let Some(&(slot_idx, slot_ty)) =
+                        cell_slot_map.get(slot.as_str())
+                    {
+                        let captured_matches = executable_slot_name
+                            .as_deref()
+                            .map(|cs| cs == slot)
+                            .unwrap_or(false);
+                        if !captured_matches {
+                            exec_ops.push(ExecutableOp::StackLoad {
+                                ty: slot_ty,
+                                slot_idx,
+                            });
+                        }
+                        (slot_ty, false)
+                    } else {
+                        errors.push(format!(
                                 "canonical-exec: function '{}' branch_if_zero_with_args: condition slot '{}' not a declared stack cell",
                                 function.name, slot
                             ));
-                            continue;
-                        };
+                        continue;
+                    };
                     let _ = need_load;
                     // Resolve each arg name to an ExecutableCallArg.
                     let mut exec_args = Vec::new();
                     let mut args_ok = true;
                     for arg_name in args {
-                        let exec_arg = if let Some(&(s_idx, _)) = cell_slot_map.get(arg_name.as_str()) {
-                            ExecutableCallArg::Slot { byte_offset: 8u32 * u32::from(s_idx) }
+                        let exec_arg = if let Some(&(s_idx, _)) =
+                            cell_slot_map.get(arg_name.as_str())
+                        {
+                            ExecutableCallArg::Slot {
+                                byte_offset: 8u32 * u32::from(s_idx),
+                            }
                         } else if let Some(&(p_idx, _)) = param_map.get(arg_name.as_str()) {
                             ExecutableCallArg::Slot {
                                 byte_offset: 8u32 * u32::from(next_slot_idx)
