@@ -753,7 +753,11 @@ fn emit_x86_64_host_executable_bytes(
                 ));
             }
             fs::write(&bridge_path, bridge_src.as_bytes()).map_err(|e| {
-                format!("failed to write bridge.c '{}': {}", bridge_path.display(), e)
+                format!(
+                    "failed to write bridge.c '{}': {}",
+                    bridge_path.display(),
+                    e
+                )
             })?;
 
             // Compile bridge.c → bridge.o
