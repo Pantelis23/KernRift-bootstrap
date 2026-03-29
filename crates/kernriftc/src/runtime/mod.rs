@@ -24,6 +24,11 @@ pub struct RuntimeBlob {
     /// `call main` instruction inside `_start`. The hostexe linker patches
     /// this to: `user_main_offset - (user_code_len + main_call_fixup + 4)`.
     pub main_call_fixup: u32,
+    /// (Windows only) Byte offset within `code` of the 8-byte `iat_base`
+    /// data slot.  The hostexe linker writes the IAT virtual address here so
+    /// the runtime can locate Win32 API function pointers at load time.
+    /// `None` for non-Windows blobs.
+    pub iat_base_data_offset: Option<u32>,
 }
 
 impl RuntimeBlob {

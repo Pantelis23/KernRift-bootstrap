@@ -1363,7 +1363,7 @@ fn staticlib_produces_valid_ar_archive() {
 fn pe_executable_has_valid_header() {
     // Minimal x86 code: xor eax,eax; ret (entry returns 0)
     let text = vec![0x31, 0xC0, 0xC3];
-    let bytes = krir::emit_pe_executable_x86_64(&text, 0, &[]);
+    let bytes = krir::emit_pe_executable_x86_64(&text, 0, &[], false);
     // DOS magic "MZ"
     assert_eq!(bytes[0], b'M');
     assert_eq!(bytes[1], b'Z');
@@ -1383,7 +1383,7 @@ fn pe_executable_has_valid_header() {
 #[test]
 fn macho_executable_has_valid_header_x86_64() {
     let text = vec![0x31, 0xC0, 0xC3]; // xor eax,eax; ret
-    let bytes = krir::emit_macho_executable(&text, 0, false);
+    let bytes = krir::emit_macho_executable(&text, 0, false, false);
     // MH_MAGIC_64
     let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
     assert_eq!(magic, 0xFEED_FACF);
@@ -1399,7 +1399,7 @@ fn macho_executable_has_valid_header_x86_64() {
 fn macho_executable_has_valid_header_arm64() {
     // Minimal AArch64 code: mov x0, #0; ret
     let text = vec![0x00, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6];
-    let bytes = krir::emit_macho_executable(&text, 0, true);
+    let bytes = krir::emit_macho_executable(&text, 0, true, false);
     let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
     assert_eq!(magic, 0xFEED_FACF);
     let cputype = u32::from_le_bytes(bytes[4..8].try_into().unwrap());

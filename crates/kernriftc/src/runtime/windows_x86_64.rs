@@ -54,6 +54,7 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         ("__kr_str_len",    OFF_STR_LEN),
     ],
     main_call_fixup: OFF_BL_MAIN,
+    iat_base_data_offset: Some(0x138),
 };
 
 // Instruction layout with exact offsets:

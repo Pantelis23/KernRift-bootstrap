@@ -356,6 +356,7 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
     // The `call main` instruction is E8 xx xx xx xx at offset 0x1c.
     // The 4-byte rel32 displacement starts at offset 0x1d.
     main_call_fixup: 0x1d,
+    iat_base_data_offset: None,
 };
 
 #[cfg(test)]

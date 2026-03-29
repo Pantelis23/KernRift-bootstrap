@@ -3,6 +3,7 @@ pub mod runtime;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)] // Used by cc-fallback paths on platforms without native hostexe
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,7 @@ use krir::{
     emit_aarch64_elf_object_bytes, emit_aarch64_executable_bytes, emit_compiler_owned_object_bytes,
     emit_krbo_bytes, emit_krbofat_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
     lower_current_krir_to_executable_krir, lower_executable_krir_to_aarch64_asm,
+    lower_executable_krir_to_aarch64_object_inner,
     lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
     lower_executable_krir_to_x86_64_object,
 };
@@ -600,41 +602,39 @@ fn emit_x86_64_elf_executable_bytes(
 
 /// Produce a host-native executable.
 ///
-/// On Linux x86_64 this uses the native hostexe path: lower to an x86_64 object,
-/// concatenate the pre-assembled runtime blob, resolve relocations, and emit a
-/// minimal static ELF — no external compiler, assembler, or linker needed.
+/// On Linux/macOS/Windows, uses the native hostexe path: lower to an x86_64
+/// object, concatenate the pre-assembled runtime blob, resolve relocations,
+/// and emit ELF/Mach-O/PE directly — no external compiler, assembler, or linker.
 ///
-/// On other platforms, fall back to the cc-based path that shells out to a C
-/// compiler driver.
+/// On unsupported platforms, falls back to the cc-based path.
 fn emit_x86_64_host_executable_bytes(
     executable: &krir::ExecutableKrirModule,
-    #[cfg_attr(windows, allow(unused_variables))] target: &BackendTargetContract,
+    target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
-    // On Linux, use native hostexe (no cc dependency)
     #[cfg(target_os = "linux")]
     {
         return emit_native_hostexe_linux_x86_64(executable, target);
     }
 
-    // On other OSes, fall back to cc-based path
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        return emit_native_hostexe_macos_x86_64(executable, target);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return emit_native_hostexe_windows_x86_64(executable, target);
+    }
+
+    // Fallback for unsupported OSes: shell out to a C compiler driver.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
-            "hostexe emit requires a C compiler driver (cc, gcc, or clang); \
-             on Windows install Visual Studio 2019/2022 with 'C++ Clang tools for Windows'"
+            "hostexe emit requires a C compiler driver (cc, gcc, or clang)"
                 .to_string()
         })?;
 
-        // On Windows use the Win64 calling convention so generated ASM passes
-        // arguments in %rcx/%rdx/%r8/%r9 (MS x64 ABI) rather than %rdi/%rsi/%rdx/%rcx
-        // (SysV ABI).  No external bridge needed — the codegen is fully ABI-aware.
-        #[cfg(not(windows))]
-        let effective_target = target.clone();
-        #[cfg(windows)]
-        let effective_target = krir::BackendTargetContract::x86_64_win64();
-
-        // Lower to ASM text (supports CompareIntoSlot / if-else / loops).
-        let asm_module = lower_executable_krir_to_x86_64_asm(executable, &effective_target)?;
+        let asm_module = lower_executable_krir_to_x86_64_asm(executable, target)?;
         let asm_text = emit_x86_64_asm_text(&asm_module);
 
         let temp_dir = unique_temp_dir("hostexe");
@@ -653,9 +653,6 @@ fn emit_x86_64_host_executable_bytes(
         let object_path = temp_dir.join("input.o");
         let output_path = temp_dir.join("output");
 
-        // The C runtime startup calls `main`.  If the module doesn't already
-        // define a `main` symbol (e.g. it uses `fn entry()`), append a thin
-        // trampoline so the CRT can locate the entry point.
         let asm_final = if !asm_text.contains("\nmain:\n") {
             format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text)
         } else {
@@ -665,7 +662,6 @@ fn emit_x86_64_host_executable_bytes(
         fs::write(&asm_path, asm_final.as_bytes())
             .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
 
-        // Assemble: cc -c input.s -o input.o
         let as_output = Command::new(&cc)
             .arg("-c")
             .arg(&asm_path)
@@ -683,13 +679,8 @@ fn emit_x86_64_host_executable_bytes(
             ));
         }
 
-        // Link: cc input.o -o output  (adds CRT _start, resolves libc).
-        // On Windows the PE format needs an explicit subsystem flag so the MSVC
-        // linker (invoked by VS-bundled clang) doesn't reject the image.
         let mut link_cmd = Command::new(&cc);
         link_cmd.arg(&object_path).arg("-o").arg(&output_path);
-        #[cfg(windows)]
-        link_cmd.arg("-Wl,/SUBSYSTEM:CONSOLE");
         let cc_output = link_cmd
             .output()
             .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
@@ -784,6 +775,344 @@ fn emit_native_hostexe_linux_x86_64(
     krir::emit_x86_64_elf_executable_for_hostexe(&text, entry_in_text)
 }
 
+/// Native hostexe emitter for Linux AArch64.
+///
+/// Lowers KRIR to an AArch64 relocatable object, concatenates the pre-assembled
+/// runtime blob, resolves relocations (BL imm26 patching), patches the runtime's
+/// `BL main` fixup, and emits a minimal static ELF executable.
+#[cfg(target_os = "linux")]
+fn emit_native_hostexe_linux_aarch64(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    use crate::runtime::linux_aarch64::BLOB as RT;
+
+    // 1. Lower user code to AArch64 object (internal BL/B already resolved)
+    let (user_text, sym_table, external_relocs) =
+        lower_executable_krir_to_aarch64_object_inner(executable, target)?;
+    let user_len = user_text.len();
+    let rt_len = RT.code.len();
+
+    // 2. Combine user code + runtime blob
+    let mut text = Vec::with_capacity(user_len + rt_len);
+    text.extend_from_slice(&user_text);
+    text.extend_from_slice(RT.code);
+
+    // 3. Build symbol offset map from user symbols
+    let mut user_syms: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for &(ref name, offset, _size) in &sym_table {
+        user_syms.insert(name.as_str(), offset);
+    }
+
+    // 4. Resolve external relocations (user code → runtime functions)
+    for &(patch_offset, ref target_sym) in &external_relocs {
+        let target_offset = if let Some(rt_off) = RT.symbol_offset(target_sym) {
+            user_len as i64 + rt_off as i64
+        } else if let Some(&user_off) = user_syms.get(target_sym.as_str()) {
+            user_off as i64
+        } else {
+            return Err(format!("hostexe: unresolved symbol '{}'", target_sym));
+        };
+
+        // AArch64 BL/B fixup: imm26 field
+        let patch_pc = patch_offset as i64;
+        let disp = target_offset - patch_pc;
+        if disp % 4 != 0 {
+            return Err(format!(
+                "hostexe aarch64: displacement to '{}' not 4-byte aligned", target_sym
+            ));
+        }
+        let imm26 = (disp / 4) as i32;
+        if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
+            return Err(format!(
+                "hostexe aarch64: displacement to '{}' exceeds imm26 range", target_sym
+            ));
+        }
+        let idx = patch_offset as usize;
+        let existing = u32::from_le_bytes(text[idx..idx + 4].try_into().unwrap());
+        let word = (existing & 0xFC00_0000) | ((imm26 as u32) & 0x03FF_FFFF);
+        text[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+    }
+
+    // 5. Patch runtime's BL main to reach user's main/entry
+    let main_offset = user_syms.get("main")
+        .or_else(|| user_syms.get("entry"))
+        .copied()
+        .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
+
+    let bl_offset = user_len as i64 + RT.main_call_fixup as i64;
+    let disp = main_offset as i64 - bl_offset;
+    let imm26 = ((disp >> 2) as u32) & 0x03FF_FFFF;
+    let bl_instr = 0x94000000u32 | imm26;
+    let fixup_off = (user_len as u32 + RT.main_call_fixup) as usize;
+    text[fixup_off..fixup_off + 4].copy_from_slice(&bl_instr.to_le_bytes());
+
+    // 6. Entry point = _start in runtime
+    let start_offset = RT.symbol_offset("_start")
+        .ok_or_else(|| "runtime blob missing _start".to_string())?;
+    let entry_in_text = user_len as u32 + start_offset;
+
+    // 7. Produce ELF executable
+    krir::emit_aarch64_elf_executable_for_hostexe(&text, entry_in_text)
+}
+
+/// Native hostexe emitter for macOS x86_64.
+///
+/// Same x86_64 encoding as Linux, but uses the macOS runtime blob and emits
+/// a Mach-O binary via `krir::emit_macho_executable`.
+#[cfg(target_os = "macos")]
+fn emit_native_hostexe_macos_x86_64(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    use crate::runtime::macos_x86_64::BLOB as RT;
+
+    // 1. Lower user code to x86_64 object
+    let object = lower_executable_krir_to_x86_64_object(executable, target)?;
+    let user_len = object.text_bytes.len();
+    let rt_len = RT.code.len();
+
+    // 2. Combine user code + runtime blob
+    let mut text = Vec::with_capacity(user_len + rt_len);
+    text.extend_from_slice(&object.text_bytes);
+    text.extend_from_slice(RT.code);
+
+    // 3. Build symbol offset map
+    let mut user_syms: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for sym in &object.function_symbols {
+        user_syms.insert(&sym.name, sym.offset);
+    }
+
+    // 4. Resolve relocations (x86_64 rel32 patching)
+    for reloc in &object.relocations {
+        let target_offset = if let Some(rt_off) = RT.symbol_offset(&reloc.target_symbol) {
+            user_len as i64 + rt_off as i64
+        } else if let Some(&user_off) = user_syms.get(reloc.target_symbol.as_str()) {
+            user_off as i64
+        } else {
+            return Err(format!("hostexe: unresolved symbol '{}'", reloc.target_symbol));
+        };
+
+        let value = target_offset - reloc.offset as i64 + reloc.addend;
+        let off = reloc.offset as usize;
+        if off + 4 > text.len() {
+            return Err(format!("hostexe: relocation at {} out of bounds", off));
+        }
+        text[off..off + 4].copy_from_slice(&(value as i32).to_le_bytes());
+    }
+
+    // 5. Patch runtime's "call main"
+    let main_offset = user_syms.get("main")
+        .or_else(|| user_syms.get("entry"))
+        .copied()
+        .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
+
+    let fixup_abs = user_len as u32 + RT.main_call_fixup;
+    let displacement = main_offset as i32 - (fixup_abs as i32 + 4);
+    let fixup_off = fixup_abs as usize;
+    text[fixup_off..fixup_off + 4].copy_from_slice(&displacement.to_le_bytes());
+
+    // 6. Entry point = _start in runtime
+    let start_offset = RT.symbol_offset("_start")
+        .ok_or_else(|| "runtime blob missing _start".to_string())?;
+    let entry_in_text = user_len as u32 + start_offset;
+
+    // 7. Produce Mach-O executable (writable text for runtime data area)
+    Ok(krir::emit_macho_executable(&text, entry_in_text, false, true))
+}
+
+/// Native hostexe emitter for macOS AArch64.
+///
+/// AArch64 encoding with BL imm26 patching, emits a Mach-O binary.
+#[cfg(target_os = "macos")]
+fn emit_native_hostexe_macos_aarch64(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    use crate::runtime::macos_aarch64::BLOB as RT;
+
+    // 1. Lower user code to AArch64 object
+    let (user_text, sym_table, external_relocs) =
+        lower_executable_krir_to_aarch64_object_inner(executable, target)?;
+    let user_len = user_text.len();
+    let rt_len = RT.code.len();
+
+    // 2. Combine user code + runtime blob
+    let mut text = Vec::with_capacity(user_len + rt_len);
+    text.extend_from_slice(&user_text);
+    text.extend_from_slice(RT.code);
+
+    // 3. Build symbol offset map
+    let mut user_syms: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for &(ref name, offset, _size) in &sym_table {
+        user_syms.insert(name.as_str(), offset);
+    }
+
+    // 4. Resolve external relocations (BL imm26 patching)
+    for &(patch_offset, ref target_sym) in &external_relocs {
+        let target_offset = if let Some(rt_off) = RT.symbol_offset(target_sym) {
+            user_len as i64 + rt_off as i64
+        } else if let Some(&user_off) = user_syms.get(target_sym.as_str()) {
+            user_off as i64
+        } else {
+            return Err(format!("hostexe: unresolved symbol '{}'", target_sym));
+        };
+
+        let patch_pc = patch_offset as i64;
+        let disp = target_offset - patch_pc;
+        if disp % 4 != 0 {
+            return Err(format!(
+                "hostexe aarch64: displacement to '{}' not 4-byte aligned", target_sym
+            ));
+        }
+        let imm26 = (disp / 4) as i32;
+        if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
+            return Err(format!(
+                "hostexe aarch64: displacement to '{}' exceeds imm26 range", target_sym
+            ));
+        }
+        let idx = patch_offset as usize;
+        let existing = u32::from_le_bytes(text[idx..idx + 4].try_into().unwrap());
+        let word = (existing & 0xFC00_0000) | ((imm26 as u32) & 0x03FF_FFFF);
+        text[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+    }
+
+    // 5. Patch runtime's BL main
+    let main_offset = user_syms.get("main")
+        .or_else(|| user_syms.get("entry"))
+        .copied()
+        .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
+
+    let bl_offset = user_len as i64 + RT.main_call_fixup as i64;
+    let disp = main_offset as i64 - bl_offset;
+    let imm26 = ((disp >> 2) as u32) & 0x03FF_FFFF;
+    let bl_instr = 0x94000000u32 | imm26;
+    let fixup_off = (user_len as u32 + RT.main_call_fixup) as usize;
+    text[fixup_off..fixup_off + 4].copy_from_slice(&bl_instr.to_le_bytes());
+
+    // 6. Entry point = _start in runtime
+    let start_offset = RT.symbol_offset("_start")
+        .ok_or_else(|| "runtime blob missing _start".to_string())?;
+    let entry_in_text = user_len as u32 + start_offset;
+
+    // 7. Produce Mach-O executable (arm64, writable text for runtime data area)
+    Ok(krir::emit_macho_executable(&text, entry_in_text, true, true))
+}
+
+/// Native hostexe emitter for Windows x86_64.
+///
+/// Same x86_64 encoding as Linux, but uses the Windows runtime blob and emits
+/// a PE executable with kernel32.dll imports.  The runtime blob accesses Win32
+/// APIs through an IAT pointer stored in its data area.
+#[cfg(target_os = "windows")]
+fn emit_native_hostexe_windows_x86_64(
+    executable: &krir::ExecutableKrirModule,
+    _target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    use crate::runtime::windows_x86_64::BLOB as RT;
+
+    // Windows uses the Win64 ABI (args in rcx/rdx/r8/r9)
+    let win_target = krir::BackendTargetContract::x86_64_win64();
+
+    // 1. Lower user code to x86_64 object
+    let object = lower_executable_krir_to_x86_64_object(executable, &win_target)?;
+    let user_len = object.text_bytes.len();
+    let rt_len = RT.code.len();
+
+    // 2. Combine user code + runtime blob
+    let mut text = Vec::with_capacity(user_len + rt_len);
+    text.extend_from_slice(&object.text_bytes);
+    text.extend_from_slice(RT.code);
+
+    // 3. Build symbol offset map
+    let mut user_syms: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for sym in &object.function_symbols {
+        user_syms.insert(&sym.name, sym.offset);
+    }
+
+    // 4. Resolve relocations (x86_64 rel32 patching)
+    for reloc in &object.relocations {
+        let target_offset = if let Some(rt_off) = RT.symbol_offset(&reloc.target_symbol) {
+            user_len as i64 + rt_off as i64
+        } else if let Some(&user_off) = user_syms.get(reloc.target_symbol.as_str()) {
+            user_off as i64
+        } else {
+            return Err(format!("hostexe: unresolved symbol '{}'", reloc.target_symbol));
+        };
+
+        let value = target_offset - reloc.offset as i64 + reloc.addend;
+        let off = reloc.offset as usize;
+        if off + 4 > text.len() {
+            return Err(format!("hostexe: relocation at {} out of bounds", off));
+        }
+        text[off..off + 4].copy_from_slice(&(value as i32).to_le_bytes());
+    }
+
+    // 5. Patch runtime's "call main"
+    let main_offset = user_syms.get("main")
+        .or_else(|| user_syms.get("entry"))
+        .copied()
+        .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
+
+    let fixup_abs = user_len as u32 + RT.main_call_fixup;
+    let displacement = main_offset as i32 - (fixup_abs as i32 + 4);
+    let fixup_off = fixup_abs as usize;
+    text[fixup_off..fixup_off + 4].copy_from_slice(&displacement.to_le_bytes());
+
+    // 6. Entry point = _start in runtime
+    let start_offset = RT.symbol_offset("_start")
+        .ok_or_else(|| "runtime blob missing _start".to_string())?;
+    let entry_in_text = user_len as u32 + start_offset;
+
+    // 7. Build PE imports for kernel32.dll
+    //    IAT order must match the blob's expectations:
+    //    [0] GetStdHandle, [1] WriteFile, [2] ExitProcess, [3] VirtualAlloc,
+    //    [4] GetEnvironmentVariableA, [5] CreateProcessA,
+    //    [6] WaitForSingleObject, [7] GetExitCodeProcess
+    let imports = vec![krir::PeImport {
+        dll_name: "kernel32.dll".to_string(),
+        functions: vec![
+            "GetStdHandle".to_string(),
+            "WriteFile".to_string(),
+            "ExitProcess".to_string(),
+            "VirtualAlloc".to_string(),
+            "GetEnvironmentVariableA".to_string(),
+            "CreateProcessA".to_string(),
+            "WaitForSingleObject".to_string(),
+            "GetExitCodeProcess".to_string(),
+        ],
+    }];
+
+    // 8. Patch iat_base data slot with IAT virtual address.
+    //    The PE emitter places .text at RVA 0x1000 and .idata immediately after.
+    //    Within .idata: IDT, then ILT, then IAT.
+    //    IAT offset = IDT_size + ILT_size.
+    //    IDT = (num_dlls + 1) * 20.  ILT = (num_funcs + 1) * 8 per DLL.
+    let iat_base_off = RT.iat_base_data_offset
+        .ok_or_else(|| "windows runtime blob missing iat_base_data_offset".to_string())?;
+    let abs_iat_base_off = user_len as u32 + iat_base_off;
+
+    // Compute IAT RVA within .idata.  Mirrors emit_pe_executable_x86_64 layout.
+    let text_rva: u32 = 0x1000;
+    let text_virtual_size = text.len() as u32;
+    let idata_rva = text_rva + ((text_virtual_size.max(1) + 0xFFF) & !0xFFF);
+    let num_dlls = imports.len() as u32;
+    let idt_size = (num_dlls + 1) * 20;
+    let mut ilt_size: u32 = 0;
+    for imp in &imports {
+        ilt_size += (imp.functions.len() as u32 + 1) * 8;
+    }
+    let iat_rva = idata_rva + idt_size + ilt_size;
+    let image_base: u64 = 0x140000000;
+    let iat_va = image_base + iat_rva as u64;
+
+    let slot = abs_iat_base_off as usize;
+    text[slot..slot + 8].copy_from_slice(&iat_va.to_le_bytes());
+
+    // 9. Produce PE executable (writable text for runtime data area)
+    Ok(krir::emit_pe_executable_x86_64(&text, entry_in_text, &imports, true))
+}
+
 fn emit_x86_64_static_library(
     executable: &krir::ExecutableKrirModule,
     target: &BackendTargetContract,
@@ -810,83 +1139,103 @@ fn emit_aarch64_static_library(
     Ok(krir::emit_native_ar_archive("input.o", &object_bytes, &symbols))
 }
 
+/// On Linux/macOS, uses the native hostexe path for AArch64: lower to an
+/// AArch64 object, concatenate the pre-assembled runtime blob, resolve BL
+/// relocations, and emit ELF/Mach-O directly.
+///
+/// Windows AArch64 PE writer is not yet implemented; falls back to cc.
+/// On unsupported platforms, falls back to the cc-based path.
 fn emit_aarch64_host_executable_bytes(
     executable: &krir::ExecutableKrirModule,
     target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
-    // On a native AArch64 host, `cc` already produces AArch64 binaries.
-    // On a cross-compilation host, prefer the AArch64-specific GCC cross-compiler.
-    let cc = find_host_tool(&["aarch64-linux-gnu-gcc", "cc", "gcc", "clang"]).ok_or_else(|| {
-        "hostexe aarch64 emit requires a C compiler (aarch64-linux-gnu-gcc, cc, gcc, or clang)"
-            .to_string()
-    })?;
-
-    let asm_module = lower_executable_krir_to_aarch64_asm(executable, target)?;
-    let asm_text = emit_aarch64_asm_text(&asm_module);
-
-    let temp_dir = unique_temp_dir("hostexe-aarch64");
-    fs::create_dir_all(&temp_dir).map_err(|err| {
-        format!(
-            "failed to create temp dir '{}': {}",
-            temp_dir.display(),
-            err
-        )
-    })?;
-
-    let cleanup = TempArtifactDir {
-        path: temp_dir.clone(),
-    };
-    let asm_path = temp_dir.join("input.s");
-    let object_path = temp_dir.join("input.o");
-    let output_path = temp_dir.join("output");
-
-    fs::write(&asm_path, asm_text.as_bytes())
-        .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
-
-    let as_output = Command::new(&cc)
-        .arg("-c")
-        .arg(&asm_path)
-        .arg("-o")
-        .arg(&object_path)
-        .output()
-        .map_err(|err| format!("failed to assemble with '{}': {}", cc, err))?;
-
-    if !as_output.status.success() {
-        return Err(format!(
-            "hostexe aarch64 assemble failed with '{}':\nstdout:\n{}\nstderr:\n{}",
-            cc,
-            String::from_utf8_lossy(&as_output.stdout),
-            String::from_utf8_lossy(&as_output.stderr)
-        ));
+    #[cfg(target_os = "linux")]
+    {
+        return emit_native_hostexe_linux_aarch64(executable, target);
     }
 
-    let cc_output = Command::new(&cc)
-        .arg(&object_path)
-        .arg("-o")
-        .arg(&output_path)
-        .output()
-        .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
-
-    if !cc_output.status.success() {
-        return Err(format!(
-            "hostexe aarch64 link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
-            cc,
-            String::from_utf8_lossy(&cc_output.stdout),
-            String::from_utf8_lossy(&cc_output.stderr)
-        ));
+    #[cfg(target_os = "macos")]
+    {
+        return emit_native_hostexe_macos_aarch64(executable, target);
     }
 
-    let bytes = fs::read(&output_path).map_err(|err| {
-        format!(
-            "failed to read linked output '{}': {}",
-            output_path.display(),
-            err
-        )
-    })?;
-    drop(cleanup);
-    Ok(bytes)
+    // Windows AArch64 and other OSes: fall back to cc-based path.
+    // (AArch64 PE writer not yet implemented.)
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let cc = find_host_tool(&["aarch64-linux-gnu-gcc", "cc", "gcc", "clang"]).ok_or_else(|| {
+            "hostexe aarch64 emit requires a C compiler (aarch64-linux-gnu-gcc, cc, gcc, or clang)"
+                .to_string()
+        })?;
+
+        let asm_module = lower_executable_krir_to_aarch64_asm(executable, target)?;
+        let asm_text = emit_aarch64_asm_text(&asm_module);
+
+        let temp_dir = unique_temp_dir("hostexe-aarch64");
+        fs::create_dir_all(&temp_dir).map_err(|err| {
+            format!(
+                "failed to create temp dir '{}': {}",
+                temp_dir.display(),
+                err
+            )
+        })?;
+
+        let cleanup = TempArtifactDir {
+            path: temp_dir.clone(),
+        };
+        let asm_path = temp_dir.join("input.s");
+        let object_path = temp_dir.join("input.o");
+        let output_path = temp_dir.join("output");
+
+        fs::write(&asm_path, asm_text.as_bytes())
+            .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
+
+        let as_output = Command::new(&cc)
+            .arg("-c")
+            .arg(&asm_path)
+            .arg("-o")
+            .arg(&object_path)
+            .output()
+            .map_err(|err| format!("failed to assemble with '{}': {}", cc, err))?;
+
+        if !as_output.status.success() {
+            return Err(format!(
+                "hostexe aarch64 assemble failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+                cc,
+                String::from_utf8_lossy(&as_output.stdout),
+                String::from_utf8_lossy(&as_output.stderr)
+            ));
+        }
+
+        let cc_output = Command::new(&cc)
+            .arg(&object_path)
+            .arg("-o")
+            .arg(&output_path)
+            .output()
+            .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
+
+        if !cc_output.status.success() {
+            return Err(format!(
+                "hostexe aarch64 link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+                cc,
+                String::from_utf8_lossy(&cc_output.stdout),
+                String::from_utf8_lossy(&cc_output.stderr)
+            ));
+        }
+
+        let bytes = fs::read(&output_path).map_err(|err| {
+            format!(
+                "failed to read linked output '{}': {}",
+                output_path.display(),
+                err
+            )
+        })?;
+        drop(cleanup);
+        Ok(bytes)
+    }
 }
 
+#[allow(dead_code)] // Used only on platforms without native hostexe
 fn find_host_tool(candidates: &[&str]) -> Option<String> {
     // On Windows, also try the `.exe` suffix when searching PATH.
     let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
@@ -958,6 +1307,7 @@ fn find_vs_bundled_clang() -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)] // Used only on platforms without native hostexe
 fn unique_temp_dir(label: &str) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -971,6 +1321,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     ))
 }
 
+#[allow(dead_code)] // Used only on platforms without native hostexe
 struct TempArtifactDir {
     path: PathBuf,
 }

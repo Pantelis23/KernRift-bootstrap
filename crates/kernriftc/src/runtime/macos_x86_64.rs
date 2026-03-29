@@ -344,6 +344,7 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
     ],
     // `call main` at offset 0x07, rel32 at offset 0x08.
     main_call_fixup: 0x08,
+    iat_base_data_offset: None,
 };
 
 #[cfg(test)]

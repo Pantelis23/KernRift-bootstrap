@@ -11654,6 +11654,64 @@ pub fn emit_x86_64_elf_executable_for_hostexe(
     Ok(out)
 }
 
+/// Emit a minimal static ELF64 executable for AArch64 from pre-linked text bytes.
+///
+/// Same layout as `emit_x86_64_elf_executable_for_hostexe` but with
+/// `e_machine = EM_AARCH64 (0xB7)` and `p_flags = PF_R|PF_W|PF_X` so the
+/// runtime blob's data area (envp, heap_ptr, etc.) is writable at runtime.
+pub fn emit_aarch64_elf_executable_for_hostexe(
+    text: &[u8],
+    entry_offset: u32,
+) -> Result<Vec<u8>, String> {
+    let base_vaddr: u64 = 0x400000;
+    let ehdr_size: usize = 64;
+    let phdr_size: usize = 56;
+    let text_file_offset = ehdr_size + phdr_size;
+    let total_file_size = text_file_offset + text.len();
+    let entry_vaddr = base_vaddr + text_file_offset as u64 + entry_offset as u64;
+
+    let mut out = Vec::with_capacity(total_file_size);
+
+    // --- ELF header (64 bytes) ---
+    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
+    out.push(2);                // EI_CLASS: ELFCLASS64
+    out.push(1);                // EI_DATA: ELFDATA2LSB
+    out.push(1);                // EI_VERSION: EV_CURRENT
+    out.push(0);                // EI_OSABI: ELFOSABI_NONE
+    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
+    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    push_u16_le(&mut out, 0xB7); // e_machine: EM_AARCH64
+    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u64_le(&mut out, entry_vaddr); // e_entry
+    push_u64_le(&mut out, ehdr_size as u64); // e_phoff
+    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
+    push_u32_le(&mut out, 0);   // e_flags
+    push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
+    push_u16_le(&mut out, phdr_size as u16); // e_phentsize
+    push_u16_le(&mut out, 1);   // e_phnum
+    push_u16_le(&mut out, 64);  // e_shentsize
+    push_u16_le(&mut out, 0);   // e_shnum
+    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    debug_assert_eq!(out.len(), ehdr_size);
+
+    // --- Program header (56 bytes): single PT_LOAD, read+write+execute ---
+    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
+    push_u32_le(&mut out, 7);   // p_flags: PF_R | PF_W | PF_X
+    push_u64_le(&mut out, 0);   // p_offset
+    push_u64_le(&mut out, base_vaddr); // p_vaddr
+    push_u64_le(&mut out, base_vaddr); // p_paddr
+    push_u64_le(&mut out, total_file_size as u64); // p_filesz
+    push_u64_le(&mut out, total_file_size as u64); // p_memsz
+    push_u64_le(&mut out, 0x200000); // p_align
+    debug_assert_eq!(out.len(), ehdr_size + phdr_size);
+
+    // --- .text section ---
+    out.extend_from_slice(text);
+    debug_assert_eq!(out.len(), total_file_size);
+
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // KRBO container format
 // ---------------------------------------------------------------------------
@@ -12755,7 +12813,7 @@ fn encode_aarch64_function(
 }
 
 // (text_bytes, [(name, offset, size)], [(patch_offset, target_symbol)])
-type AArch64ObjectInner = (Vec<u8>, Vec<(String, u32, u32)>, Vec<(u32, String)>);
+pub type AArch64ObjectInner = (Vec<u8>, Vec<(String, u32, u32)>, Vec<(u32, String)>);
 
 /// Shared inner lowering step for all three AArch64 object formats.
 ///
@@ -12764,7 +12822,7 @@ type AArch64ObjectInner = (Vec<u8>, Vec<(String, u32, u32)>, Vec<(u32, String)>)
 /// - `symbol_table` is a list of `(name, offset, size)` for defined functions,
 /// - `relocs` is a list of `(patch_offset_in_text, target_symbol)` for external
 ///   BL/B targets that need linker fixup.
-fn lower_executable_krir_to_aarch64_object_inner(
+pub fn lower_executable_krir_to_aarch64_object_inner(
     module: &ExecutableKrirModule,
     target: &BackendTargetContract,
 ) -> Result<AArch64ObjectInner, String> {
@@ -13512,10 +13570,13 @@ pub struct PeImport {
 /// - `text_bytes`: raw machine code for the `.text` section.
 /// - `entry_offset`: byte offset within `text_bytes` of the entry point.
 /// - `imports`: DLL imports; when empty, a single-section executable is produced.
+/// - `writable_text`: when true, the `.text` section is marked read/write/execute
+///   so the runtime blob's embedded data area can be written at runtime.
 pub fn emit_pe_executable_x86_64(
     text_bytes: &[u8],
     entry_offset: u32,
     imports: &[PeImport],
+    writable_text: bool,
 ) -> Vec<u8> {
     const FILE_ALIGNMENT: u32 = 0x200;
     const SECTION_ALIGNMENT: u32 = 0x1000;
@@ -13781,7 +13842,8 @@ pub fn emit_pe_executable_x86_64(
     push_u32_le(&mut out, 0); // PointerToLinenumbers
     push_u16_le(&mut out, 0); // NumberOfRelocations
     push_u16_le(&mut out, 0); // NumberOfLinenumbers
-    push_u32_le(&mut out, 0x60000020); // Characteristics: CODE | EXECUTE | READ
+    let text_chars: u32 = if writable_text { 0xE0000020 } else { 0x60000020 };
+    push_u32_le(&mut out, text_chars); // Characteristics: CODE | EXECUTE | READ [| WRITE]
 
     // .idata section header (40 bytes, if imports present)
     if has_imports {
@@ -13833,10 +13895,13 @@ fn push_segname(out: &mut Vec<u8>, name: &str) {
 /// `text_bytes` -- resolved machine code (internal relocations already patched).
 /// `entry_offset` -- byte offset of entry function within text_bytes.
 /// `is_arm64` -- true for AArch64, false for x86_64.
+/// `writable_text` -- when true, the __TEXT segment is mapped RWX so the
+///   runtime blob's embedded data area (envp, heap_ptr, etc.) can be written.
 pub fn emit_macho_executable(
     text_bytes: &[u8],
     entry_offset: u32,
     is_arm64: bool,
+    writable_text: bool,
 ) -> Vec<u8> {
     let page_size: u64 = if is_arm64 { 0x4000 } else { 0x1000 };
     let base_vmaddr: u64 = 0x1_0000_0000;
@@ -13952,8 +14017,9 @@ pub fn emit_macho_executable(
     push_u64_le(&mut out, text_segment_vmsize); // vmsize (page-aligned)
     push_u64_le(&mut out, 0); // fileoff
     push_u64_le(&mut out, text_segment_filesize); // filesize
-    push_u32_le(&mut out, 5); // maxprot: VM_PROT_READ|VM_PROT_EXECUTE
-    push_u32_le(&mut out, 5); // initprot
+    let text_prot: u32 = if writable_text { 7 } else { 5 }; // RWX or R-X
+    push_u32_le(&mut out, text_prot); // maxprot
+    push_u32_le(&mut out, text_prot); // initprot
     push_u32_le(&mut out, 1); // nsects
     push_u32_le(&mut out, 0); // flags
 

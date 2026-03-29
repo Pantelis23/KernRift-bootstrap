@@ -54,6 +54,7 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
     // The linker computes imm26 = ((target - bl_offset) >> 2) & 0x03FFFFFF
     // and writes (0x94000000 | imm26) at this offset.
     main_call_fixup: OFF_BL_MAIN,
+    iat_base_data_offset: None,
 };
 
 // We define offsets as u32 constants so we can reference them in the symbol table.

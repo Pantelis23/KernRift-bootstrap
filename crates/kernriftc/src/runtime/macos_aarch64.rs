@@ -35,6 +35,7 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
     ],
     // BL main at offset 0x18 (same layout as Linux AArch64, but envp comes from x2).
     main_call_fixup: 0x18,
+    iat_base_data_offset: None,
 };
 
 // macOS AArch64 differences from Linux AArch64:
