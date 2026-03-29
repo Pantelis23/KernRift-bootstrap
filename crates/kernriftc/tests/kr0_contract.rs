@@ -1312,3 +1312,49 @@ fn entry() {}
         "#lang 1.0 should compile"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn elfexe_produces_valid_elf_executable() {
+    let fixture = repo_root()
+        .join("examples")
+        .join("uart_console_executable.kr");
+    let bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::ElfExecutable)
+        .expect("elfexe emit should succeed");
+    // ELF magic
+    assert_eq!(&bytes[0..4], &[0x7F, b'E', b'L', b'F'], "ELF magic");
+    // ELFCLASS64
+    assert_eq!(bytes[4], 2, "ELFCLASS64");
+    // ELFDATA2LSB
+    assert_eq!(bytes[5], 1, "little-endian");
+    // ET_EXEC
+    let e_type = u16::from_le_bytes([bytes[16], bytes[17]]);
+    assert_eq!(e_type, 2, "ET_EXEC");
+    // EM_X86_64
+    let e_machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+    assert_eq!(e_machine, 0x3E, "EM_X86_64");
+    // e_entry should be >= 0x400000 (base vaddr)
+    let e_entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    assert!(
+        e_entry >= 0x400000,
+        "entry point {:#x} should be >= 0x400000",
+        e_entry
+    );
+    // e_phnum should be 1 (one PT_LOAD)
+    let e_phnum = u16::from_le_bytes([bytes[56], bytes[57]]);
+    assert_eq!(e_phnum, 1, "one program header");
+}
+
+#[test]
+#[cfg(unix)]
+fn staticlib_produces_valid_ar_archive() {
+    let fixture = repo_root().join("tests").join("must_pass").join("basic.kr");
+    let bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::StaticLib)
+        .expect("staticlib emit should succeed");
+    // ar magic
+    assert_eq!(&bytes[0..8], b"!<arch>\n", "ar magic");
+    // First member should be symbol table "/"
+    assert_eq!(bytes[8], b'/', "first member is symbol table");
+    // The archive should contain at least the symbol table header + some data
+    assert!(bytes.len() > 68, "archive should be larger than just header");
+}
