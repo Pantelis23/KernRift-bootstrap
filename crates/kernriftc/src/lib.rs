@@ -1380,6 +1380,9 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::InlineAsm(_) => "inline_asm",
         KrirOp::LoadStaticCstrAddr { .. } => "load_static_cstr_addr",
         KrirOp::PrintStdout { .. } => "print_stdout",
+        KrirOp::PortIn { .. } => "port_in",
+        KrirOp::PortOut { .. } => "port_out",
+        KrirOp::Syscall { .. } => "syscall",
     }
     .to_string()
 }

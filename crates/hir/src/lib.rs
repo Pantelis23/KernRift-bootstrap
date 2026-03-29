@@ -9,7 +9,7 @@ use krir::{
     MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
     MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
-    PercpuDecl as KrirPercpuDecl, SchedHook,
+    PercpuDecl as KrirPercpuDecl, PortIoWidth, SchedHook,
 };
 use parser::{
     ArithOp as ParserArithOp, AssignTarget as ParserAssignTarget, BinOpKind as ParserBinOpKind,
@@ -21,6 +21,51 @@ use parser::{
     split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
+
+// ---------------------------------------------------------------------------
+// Built-in name tables: port I/O intrinsics and host helper functions
+// ---------------------------------------------------------------------------
+
+const PORT_IO_IN: &[(&str, PortIoWidth)] = &[
+    ("inb", PortIoWidth::Byte),
+    ("inw", PortIoWidth::Word),
+    ("ind", PortIoWidth::Dword),
+];
+const PORT_IO_OUT: &[(&str, PortIoWidth)] = &[
+    ("outb", PortIoWidth::Byte),
+    ("outw", PortIoWidth::Word),
+    ("outd", PortIoWidth::Dword),
+];
+const HOST_BUILTINS: &[(&str, &str)] = &[
+    ("write", "__kr_write"),
+    ("alloc", "__kr_alloc"),
+    ("dealloc", "__kr_dealloc"),
+    ("getenv", "__kr_getenv"),
+    ("exec", "__kr_exec"),
+    ("exit", "__kr_exit"),
+    ("str_copy", "__kr_str_copy"),
+    ("str_cat", "__kr_str_cat"),
+    ("str_len", "__kr_str_len"),
+];
+
+fn is_port_in(name: &str) -> Option<PortIoWidth> {
+    PORT_IO_IN
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, w)| *w)
+}
+fn is_port_out(name: &str) -> Option<PortIoWidth> {
+    PORT_IO_OUT
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, w)| *w)
+}
+fn host_builtin_symbol(name: &str) -> Option<&'static str> {
+    HOST_BUILTINS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+}
 
 /// The language version supported by this compiler.
 /// Source files declaring a higher version via `#lang major.minor` are rejected.
@@ -1349,6 +1394,14 @@ pub fn lower_to_krir_with_surface(
                 item.name, item.source.line, item.source.column
             ));
         }
+    }
+
+    // Register built-in names so they bypass the "undefined symbol" check.
+    // Port I/O names (inb/outb/...) lower to PortIn/PortOut ops, not Call ops,
+    // so they don't need to be in `names`.  Host builtins are rewritten to
+    // __kr_* Call ops, so we add those rewritten callee names.
+    for (_, rewritten) in HOST_BUILTINS {
+        names.insert(rewritten.to_string());
     }
 
     // Build enum_addr_keys: the set of "ENUM::VARIANT" strings that are valid as raw addresses.
@@ -2747,6 +2800,13 @@ fn lower_stmts_to_canonical_executable(
                     function_name
                 ));
             }
+            Stmt::SyscallStmt { args } => {
+                errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported @syscall(...{} args)",
+                    function_name,
+                    args.len()
+                ));
+            }
             Stmt::VarDecl { .. }
             | Stmt::Assign { .. }
             | Stmt::CompoundAssign { .. }
@@ -2985,6 +3045,61 @@ fn lower_expr(
         // Allocates a fresh u64 slot, emits CallCapture/CallCaptureWithArgs into it, and
         // returns the slot so the caller can use the return value as an operand.
         ParserExpr::Call { callee, args } => {
+            // -- Port I/O read: inb/inw/ind(port) → PortIn --
+            if let Some(width) = is_port_in(callee) {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "{}() expects exactly 1 argument (port), got {}",
+                        callee,
+                        args.len()
+                    ));
+                }
+                let port_slot = lower_expr(
+                    &args[0], ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                )?;
+                let dst = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: dst.clone(),
+                });
+                ops.push(KrirOp::PortIn {
+                    width,
+                    port: KrirMmioValueExpr::Ident { name: port_slot },
+                    dst: dst.clone(),
+                });
+                return Ok(dst);
+            }
+            // -- Port I/O write used as expression: error --
+            if is_port_out(callee).is_some() {
+                return Err(format!(
+                    "{}() has no return value; use as a statement, not an expression",
+                    callee
+                ));
+            }
+            // -- Host builtins: rewrite callee to __kr_* --
+            if let Some(rewritten) = host_builtin_symbol(callee) {
+                let slot = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: slot.clone(),
+                });
+                let mut krir_args = Vec::new();
+                for arg in args {
+                    match lower_expr(
+                        arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                    ) {
+                        Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
+                        Err(e) => return Err(e),
+                    }
+                }
+                ops.push(KrirOp::CallCaptureWithArgs {
+                    callee: rewritten.to_string(),
+                    args: krir_args,
+                    capture_slot: slot.clone(),
+                });
+                return Ok(slot);
+            }
+            // -- Default call handling --
             let slot = fresh_slot(slot_counter);
             ops.push(KrirOp::StackCell {
                 ty: KrirMmioScalarType::U64,
@@ -3018,6 +3133,34 @@ fn lower_expr(
                 });
             }
             Ok(slot)
+        }
+        // @syscall(nr, a0, a1, ...) used as an expression — capture return value.
+        ParserExpr::Syscall { args } => {
+            if args.is_empty() {
+                return Err("@syscall requires at least 1 argument (syscall number)".to_string());
+            }
+            let mut lowered = Vec::new();
+            for arg in args {
+                lowered.push(lower_expr(
+                    arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                )?);
+            }
+            let nr_slot = lowered.remove(0);
+            let syscall_args: Vec<KrirMmioValueExpr> = lowered
+                .into_iter()
+                .map(|s| KrirMmioValueExpr::Ident { name: s })
+                .collect();
+            let dst = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: dst.clone(),
+            });
+            ops.push(KrirOp::Syscall {
+                nr: KrirMmioValueExpr::Ident { name: nr_slot },
+                args: syscall_args,
+                dst: Some(dst.clone()),
+            });
+            Ok(dst)
         }
         _ => Err(format!(
             "expression type not yet supported in HIR lowering: {:?}",
@@ -3309,11 +3452,118 @@ fn lower_stmt(
         }
         Stmt::ExprStmt(expr) => match expr {
             ParserExpr::Call { callee, args } if args.is_empty() => {
-                ops.push(KrirOp::Call {
-                    callee: callee.clone(),
-                });
+                // Even zero-arg calls need builtin checks (e.g. `exit()` with no args).
+                if let Some(rewritten) = host_builtin_symbol(callee) {
+                    ops.push(KrirOp::CallWithArgs {
+                        callee: rewritten.to_string(),
+                        args: vec![],
+                    });
+                } else {
+                    ops.push(KrirOp::Call {
+                        callee: callee.clone(),
+                    });
+                }
             }
             ParserExpr::Call { callee, args } => {
+                // -- Port I/O write: outb/outw/outd(port, val) → PortOut --
+                if let Some(width) = is_port_out(callee) {
+                    if args.len() != 2 {
+                        errors.push(format!(
+                            "{}() expects exactly 2 arguments (port, value), got {}",
+                            callee,
+                            args.len()
+                        ));
+                        return;
+                    }
+                    let mut lowered_args = Vec::new();
+                    let mut ok = true;
+                    for arg in args {
+                        match lower_expr(
+                            arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                        ) {
+                            Ok(s) => lowered_args.push(s),
+                            Err(e) => {
+                                errors.push(e);
+                                ok = false;
+                            }
+                        }
+                    }
+                    if ok {
+                        ops.push(KrirOp::PortOut {
+                            width,
+                            port: KrirMmioValueExpr::Ident {
+                                name: lowered_args[0].clone(),
+                            },
+                            src: KrirMmioValueExpr::Ident {
+                                name: lowered_args[1].clone(),
+                            },
+                        });
+                    }
+                    return;
+                }
+                // -- Port I/O read as statement (side-effect read, result discarded) --
+                if let Some(width) = is_port_in(callee) {
+                    if args.len() != 1 {
+                        errors.push(format!(
+                            "{}() expects exactly 1 argument (port), got {}",
+                            callee,
+                            args.len()
+                        ));
+                        return;
+                    }
+                    match lower_expr(
+                        &args[0], ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                    ) {
+                        Ok(port_slot) => {
+                            let dst = fresh_slot(slot_counter);
+                            ops.push(KrirOp::StackCell {
+                                ty: KrirMmioScalarType::U64,
+                                cell: dst.clone(),
+                            });
+                            ops.push(KrirOp::PortIn {
+                                width,
+                                port: KrirMmioValueExpr::Ident { name: port_slot },
+                                dst,
+                            });
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                    return;
+                }
+                // -- Host builtins: rewrite callee to __kr_* --
+                if let Some(rewritten) = host_builtin_symbol(callee) {
+                    let mut krir_args = Vec::new();
+                    let mut ok = true;
+                    for arg in args {
+                        if let ParserExpr::Ident(name) = arg
+                            && let Some(literal) = const_map.get(name.as_str())
+                        {
+                            krir_args.push(KrirMmioValueExpr::IntLiteral {
+                                value: literal.clone(),
+                            });
+                            continue;
+                        }
+                        match lower_expr(
+                            arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                        ) {
+                            Ok(slot) => {
+                                krir_args.push(KrirMmioValueExpr::Ident { name: slot })
+                            }
+                            Err(e) => {
+                                errors.push(e);
+                                ok = false;
+                            }
+                        }
+                    }
+                    if ok {
+                        ops.push(KrirOp::CallWithArgs {
+                            callee: rewritten.to_string(),
+                            args: krir_args,
+                        });
+                    }
+                    return;
+                }
+                // -- Default call handling --
                 let mut krir_args = Vec::new();
                 let mut ok = true;
                 for arg in args {
@@ -3388,39 +3638,101 @@ fn lower_stmt(
                 // Special case: fn call as rvalue captures the return value
                 // directly into the named stack cell via CallCaptureWithArgs.
                 } else if let ParserExpr::Call { callee, args } = init_expr {
-                    let mut krir_args = Vec::new();
-                    let mut ok = true;
-                    for arg in args {
-                        if let ParserExpr::Ident(arg_name) = arg
-                            && let Some(literal) = const_map.get(arg_name.as_str())
-                        {
-                            krir_args.push(KrirMmioValueExpr::IntLiteral {
-                                value: literal.clone(),
-                            });
-                            continue;
-                        }
-                        match lower_expr(
-                            arg,
-                            ops,
-                            slot_counter,
-                            device_regs,
-                            eff_used,
-                            slot_types,
-                            const_map,
-                        ) {
-                            Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
-                            Err(e) => {
-                                errors.push(e);
-                                ok = false;
+                    // -- Port I/O read: let x = inb(port) → PortIn --
+                    if let Some(width) = is_port_in(callee) {
+                        if args.len() != 1 {
+                            errors.push(format!(
+                                "{}() expects exactly 1 argument (port), got {}",
+                                callee,
+                                args.len()
+                            ));
+                        } else {
+                            match lower_expr(
+                                &args[0], ops, slot_counter, device_regs, eff_used, slot_types,
+                                const_map,
+                            ) {
+                                Ok(port_slot) => {
+                                    ops.push(KrirOp::PortIn {
+                                        width,
+                                        port: KrirMmioValueExpr::Ident { name: port_slot },
+                                        dst: name.clone(),
+                                    });
+                                }
+                                Err(e) => errors.push(e),
                             }
                         }
-                    }
-                    if ok {
-                        ops.push(KrirOp::CallCaptureWithArgs {
-                            callee: callee.clone(),
-                            args: krir_args,
-                            capture_slot: name.clone(),
-                        });
+                    // -- Port I/O write used as init: error --
+                    } else if is_port_out(callee).is_some() {
+                        errors.push(format!(
+                            "{}() has no return value; cannot use as variable initializer",
+                            callee
+                        ));
+                    // -- Host builtins: rewrite callee to __kr_* --
+                    } else if let Some(rewritten) = host_builtin_symbol(callee) {
+                        let mut krir_args = Vec::new();
+                        let mut ok = true;
+                        for arg in args {
+                            if let ParserExpr::Ident(arg_name) = arg
+                                && let Some(literal) = const_map.get(arg_name.as_str())
+                            {
+                                krir_args.push(KrirMmioValueExpr::IntLiteral {
+                                    value: literal.clone(),
+                                });
+                                continue;
+                            }
+                            match lower_expr(
+                                arg, ops, slot_counter, device_regs, eff_used, slot_types,
+                                const_map,
+                            ) {
+                                Ok(slot) => {
+                                    krir_args.push(KrirMmioValueExpr::Ident { name: slot })
+                                }
+                                Err(e) => {
+                                    errors.push(e);
+                                    ok = false;
+                                }
+                            }
+                        }
+                        if ok {
+                            ops.push(KrirOp::CallCaptureWithArgs {
+                                callee: rewritten.to_string(),
+                                args: krir_args,
+                                capture_slot: name.clone(),
+                            });
+                        }
+                    // -- Default call handling --
+                    } else {
+                        let mut krir_args = Vec::new();
+                        let mut ok = true;
+                        for arg in args {
+                            if let ParserExpr::Ident(arg_name) = arg
+                                && let Some(literal) = const_map.get(arg_name.as_str())
+                            {
+                                krir_args.push(KrirMmioValueExpr::IntLiteral {
+                                    value: literal.clone(),
+                                });
+                                continue;
+                            }
+                            match lower_expr(
+                                arg, ops, slot_counter, device_regs, eff_used, slot_types,
+                                const_map,
+                            ) {
+                                Ok(slot) => {
+                                    krir_args.push(KrirMmioValueExpr::Ident { name: slot })
+                                }
+                                Err(e) => {
+                                    errors.push(e);
+                                    ok = false;
+                                }
+                            }
+                        }
+                        if ok {
+                            ops.push(KrirOp::CallCaptureWithArgs {
+                                callee: callee.clone(),
+                                args: krir_args,
+                                capture_slot: name.clone(),
+                            });
+                        }
                     }
                 } else if let ParserExpr::IntLiteral(n) = init_expr {
                     ops.push(KrirOp::StackStore {
@@ -3836,6 +4148,39 @@ fn lower_stmt(
         }
         Stmt::InlineAsm(intr) => {
             ops.push(KrirOp::InlineAsm(lower_kernel_intrinsic(intr)));
+        }
+        Stmt::SyscallStmt { args } => {
+            if args.is_empty() {
+                errors.push(
+                    "@syscall requires at least 1 argument (syscall number)".to_string(),
+                );
+                return;
+            }
+            let mut lowered = Vec::new();
+            let mut ok = true;
+            for arg in args {
+                match lower_expr(
+                    arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                ) {
+                    Ok(s) => lowered.push(s),
+                    Err(e) => {
+                        errors.push(e);
+                        ok = false;
+                    }
+                }
+            }
+            if ok {
+                let nr_slot = lowered.remove(0);
+                let syscall_args: Vec<KrirMmioValueExpr> = lowered
+                    .into_iter()
+                    .map(|s| KrirMmioValueExpr::Ident { name: s })
+                    .collect();
+                ops.push(KrirOp::Syscall {
+                    nr: KrirMmioValueExpr::Ident { name: nr_slot },
+                    args: syscall_args,
+                    dst: None,
+                });
+            }
         }
     }
 }
