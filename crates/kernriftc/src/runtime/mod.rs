@@ -4,12 +4,12 @@
 //! code that implements `_start` and the nine `__kr_*` host functions for a
 //! specific OS + architecture combination.
 
-pub mod linux_x86_64;
 pub mod linux_aarch64;
-pub mod macos_x86_64;
+pub mod linux_x86_64;
 pub mod macos_aarch64;
-pub mod windows_x86_64;
+pub mod macos_x86_64;
 pub mod windows_aarch64;
+pub mod windows_x86_64;
 
 /// A pre-assembled runtime blob for a specific OS+arch combination.
 pub struct RuntimeBlob {

@@ -11608,7 +11608,9 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
     let mut symtab = Vec::new();
     push_elf64_sym(&mut symtab, 0, 0, 0, 0, 0, 0); // null entry
     for sym in &object.function_symbols {
-        let name_off = *strtab_offsets.get(&sym.name).expect("strtab offset must exist");
+        let name_off = *strtab_offsets
+            .get(&sym.name)
+            .expect("strtab offset must exist");
         let sym_vaddr = base_vaddr + text_file_offset as u64 + sym.offset;
         push_elf64_sym(&mut symtab, name_off, 0x12, 0, 1, sym_vaddr, sym.size);
     }
@@ -11726,13 +11728,16 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
         base_vaddr + text_file_offset as u64,
         text_file_offset as u64,
         text_len as u64,
-        0, 0, 16, 0,
+        0,
+        0,
+        16,
+        0,
     );
     // .symtab (index 2): SHT_SYMTAB, sh_link=.strtab(3), sh_info=first_global(1), entsize=24
     push_shdr(
         &mut out,
         symtab_name_off,
-        2,  // SHT_SYMTAB
+        2, // SHT_SYMTAB
         0,
         0,
         symtab_offset as u64,
@@ -11746,21 +11751,29 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
     push_shdr(
         &mut out,
         strtab_name_off,
-        3,  // SHT_STRTAB
-        0, 0,
+        3, // SHT_STRTAB
+        0,
+        0,
         strtab_offset as u64,
         strtab.len() as u64,
-        0, 0, 1, 0,
+        0,
+        0,
+        1,
+        0,
     );
     // .shstrtab (index 4): SHT_STRTAB
     push_shdr(
         &mut out,
         shstrtab_name_off,
-        3,  // SHT_STRTAB
-        0, 0,
+        3, // SHT_STRTAB
+        0,
+        0,
         shstrtab_offset as u64,
         shstrtab.len() as u64,
-        0, 0, 1, 0,
+        0,
+        0,
+        1,
+        0,
     );
 
     Ok(out)
@@ -11904,39 +11917,52 @@ pub fn emit_x86_64_elf_executable_for_hostexe(
         base_vaddr + text_file_offset as u64,
         text_file_offset as u64,
         text_len as u64,
-        0, 0, 16, 0,
+        0,
+        0,
+        16,
+        0,
     );
     // .symtab
     push_shdr(
         &mut out,
         symtab_name_off,
-        2,  // SHT_SYMTAB
-        0, 0,
+        2, // SHT_SYMTAB
+        0,
+        0,
         symtab_offset as u64,
         symtab.len() as u64,
         3, // sh_link: .strtab index
         1, // sh_info: first global symbol index
-        8, 24,
+        8,
+        24,
     );
     // .strtab
     push_shdr(
         &mut out,
         strtab_name_off,
-        3,  // SHT_STRTAB
-        0, 0,
+        3, // SHT_STRTAB
+        0,
+        0,
         strtab_offset as u64,
         strtab.len() as u64,
-        0, 0, 1, 0,
+        0,
+        0,
+        1,
+        0,
     );
     // .shstrtab
     push_shdr(
         &mut out,
         shstrtab_name_off,
-        3,  // SHT_STRTAB
-        0, 0,
+        3, // SHT_STRTAB
+        0,
+        0,
         shstrtab_offset as u64,
         shstrtab.len() as u64,
-        0, 0, 1, 0,
+        0,
+        0,
+        1,
+        0,
     );
 
     Ok(out)

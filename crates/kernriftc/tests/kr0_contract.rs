@@ -1356,7 +1356,10 @@ fn staticlib_produces_valid_ar_archive() {
     // First member should be symbol table "/"
     assert_eq!(bytes[8], b'/', "first member is symbol table");
     // The archive should contain at least the symbol table header + some data
-    assert!(bytes.len() > 68, "archive should be larger than just header");
+    assert!(
+        bytes.len() > 68,
+        "archive should be larger than just header"
+    );
 }
 
 #[test]
@@ -1401,14 +1404,24 @@ fn pe_executable_aarch64_has_valid_header() {
     assert_eq!(magic, 0x020B);
     // DllCharacteristics at offset 0x9E has DYNAMIC_BASE bit (0x0040) set
     let dll_chars = u16::from_le_bytes(bytes[0x9E..0xA0].try_into().unwrap());
-    assert_eq!(dll_chars & 0x0040, 0x0040, "DYNAMIC_BASE must be set for ARM64 PE");
+    assert_eq!(
+        dll_chars & 0x0040,
+        0x0040,
+        "DYNAMIC_BASE must be set for ARM64 PE"
+    );
     // Data directory [5] (Base Relocation Table) should be non-zero
     // Data directories start at offset 0xC8 (0x58 + 112), each is 8 bytes
     // [5] is at 0xC8 + 5*8 = 0xF0
     let reloc_rva = u32::from_le_bytes(bytes[0xF0..0xF4].try_into().unwrap());
     let reloc_size = u32::from_le_bytes(bytes[0xF4..0xF8].try_into().unwrap());
-    assert!(reloc_rva > 0, "Base Relocation Table RVA should be non-zero");
-    assert_eq!(reloc_size, 8, "Base Relocation Table size should be 8 (minimal block)");
+    assert!(
+        reloc_rva > 0,
+        "Base Relocation Table RVA should be non-zero"
+    );
+    assert_eq!(
+        reloc_size, 8,
+        "Base Relocation Table size should be 8 (minimal block)"
+    );
 }
 
 #[test]
@@ -1446,7 +1459,10 @@ fn macho_executable_has_valid_header_arm64() {
 #[test]
 #[cfg(all(unix, target_os = "linux", target_arch = "x86_64"))]
 fn e2e_hostexe_runtime_smoke_test() {
-    let fixture = repo_root().join("tests").join("e2e").join("runtime_smoke.kr");
+    let fixture = repo_root()
+        .join("tests")
+        .join("e2e")
+        .join("runtime_smoke.kr");
     let bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::HostExecutable)
         .expect("hostexe emit");
 
@@ -1466,9 +1482,14 @@ fn e2e_hostexe_runtime_smoke_test() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("PASS: runtime smoke test"),
-        "expected 'PASS: runtime smoke test' in stdout, got: {}", stdout
+        "expected 'PASS: runtime smoke test' in stdout, got: {}",
+        stdout
     );
-    assert!(output.status.success(), "hostexe exited with non-zero: {:?}", output.status);
+    assert!(
+        output.status.success(),
+        "hostexe exited with non-zero: {:?}",
+        output.status
+    );
 }
 
 #[test]
@@ -1493,7 +1514,12 @@ fn e2e_hostexe_exec_runs_shell_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("e2e_exec_ok"),
-        "expected 'e2e_exec_ok' in stdout, got: {}", stdout
+        "expected 'e2e_exec_ok' in stdout, got: {}",
+        stdout
     );
-    assert!(output.status.success(), "hostexe exited with non-zero: {:?}", output.status);
+    assert!(
+        output.status.success(),
+        "hostexe exited with non-zero: {:?}",
+        output.status
+    );
 }

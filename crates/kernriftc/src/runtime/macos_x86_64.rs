@@ -29,67 +29,46 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         // mov [rip+0x189], rdx           ; save envp -> 0x190
         0x48, 0x89, 0x15, 0x89, 0x01, 0x00, 0x00,
         // call main (rel32 placeholder)  ; FIXUP at offset 0x08
-        0xe8, 0x00, 0x00, 0x00, 0x00,
-        // mov edi, eax                   ; exit code
+        0xe8, 0x00, 0x00, 0x00, 0x00, // mov edi, eax                   ; exit code
         0x89, 0xc7,
-
         // === __kr_exit (offset 0x0e) ===
         // mov eax, 0x2000001             ; SYS_exit
-        0xb8, 0x01, 0x00, 0x00, 0x02,
-        // syscall
+        0xb8, 0x01, 0x00, 0x00, 0x02, // syscall
         0x0f, 0x05,
-
         // === __kr_write (offset 0x15) ===
         // mov eax, 0x2000004             ; SYS_write
-        0xb8, 0x04, 0x00, 0x00, 0x02,
-        // syscall
-        0x0f, 0x05,
-        // ret
+        0xb8, 0x04, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // ret
         0xc3,
-
         // === __kr_mmap_alloc (offset 0x1d) ===
         // mov rsi, rdi                   ; len = size
-        0x48, 0x89, 0xfe,
-        // xor edi, edi                   ; addr = NULL
-        0x31, 0xff,
-        // mov edx, 3                     ; PROT_READ|PROT_WRITE
+        0x48, 0x89, 0xfe, // xor edi, edi                   ; addr = NULL
+        0x31, 0xff, // mov edx, 3                     ; PROT_READ|PROT_WRITE
         0xba, 0x03, 0x00, 0x00, 0x00,
         // mov r10d, 0x1002               ; MAP_PRIVATE|MAP_ANON (macOS)
-        0x41, 0xba, 0x02, 0x10, 0x00, 0x00,
-        // mov r8, -1                     ; fd = -1
+        0x41, 0xba, 0x02, 0x10, 0x00, 0x00, // mov r8, -1                     ; fd = -1
         0x49, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff,
         // xor r9d, r9d                   ; offset = 0
-        0x45, 0x31, 0xc9,
-        // mov eax, 0x20000C5             ; SYS_mmap
-        0xb8, 0xc5, 0x00, 0x00, 0x02,
-        // syscall
-        0x0f, 0x05,
-        // ret
+        0x45, 0x31, 0xc9, // mov eax, 0x20000C5             ; SYS_mmap
+        0xb8, 0xc5, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // ret
         0xc3,
-
         // === __kr_alloc (offset 0x3f) ===
         // add rdi, 15                    ; align to 16
-        0x48, 0x83, 0xc7, 0x0f,
-        // and rdi, -16
+        0x48, 0x83, 0xc7, 0x0f, // and rdi, -16
         0x48, 0x83, 0xe7, 0xf0,
         // mov rax, [rip+0x152]           ; heap_remaining (0x1a0 - 0x4e)
-        0x48, 0x8b, 0x05, 0x52, 0x01, 0x00, 0x00,
-        // cmp rdi, rax
-        0x48, 0x39, 0xc7,
-        // jbe .have_space (+0x1e)
-        0x76, 0x1e,
-        // push rdi                       ; save aligned size
-        0x57,
-        // mov edi, 0x400000              ; 4MB
+        0x48, 0x8b, 0x05, 0x52, 0x01, 0x00, 0x00, // cmp rdi, rax
+        0x48, 0x39, 0xc7, // jbe .have_space (+0x1e)
+        0x76, 0x1e, // push rdi                       ; save aligned size
+        0x57, // mov edi, 0x400000              ; 4MB
         0xbf, 0x00, 0x00, 0x40, 0x00,
         // call __kr_mmap_alloc (rel32)   ; 0x1d - 0x5e = -0x41
         0xe8, 0xbf, 0xff, 0xff, 0xff,
         // mov [rip+0x133], rax           ; heap_ptr (0x198 - 0x65)
         0x48, 0x89, 0x05, 0x33, 0x01, 0x00, 0x00,
         // mov qword [rip+0x130], 0x400000 ; heap_remaining (0x1a0 - 0x70)
-        0x48, 0xc7, 0x05, 0x30, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x40, 0x00,
-        // pop rdi
+        0x48, 0xc7, 0x05, 0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, // pop rdi
         0x5f,
         // .have_space:
         // mov rax, [rip+0x120]           ; heap_ptr (0x198 - 0x78)
@@ -97,250 +76,147 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         // add [rip+0x119], rdi           ; heap_ptr (0x198 - 0x7f)
         0x48, 0x01, 0x3d, 0x19, 0x01, 0x00, 0x00,
         // sub [rip+0x11a], rdi           ; heap_remaining (0x1a0 - 0x86)
-        0x48, 0x29, 0x3d, 0x1a, 0x01, 0x00, 0x00,
+        0x48, 0x29, 0x3d, 0x1a, 0x01, 0x00, 0x00, // ret
+        0xc3, // === __kr_dealloc (offset 0x87) ===
         // ret
         0xc3,
-
-        // === __kr_dealloc (offset 0x87) ===
-        // ret
-        0xc3,
-
         // === __kr_getenv (offset 0x88) ===
         // mov rsi, [rip+0x101]           ; envp (0x190 - 0x8f)
-        0x48, 0x8b, 0x35, 0x01, 0x01, 0x00, 0x00,
-        // .env_loop:
+        0x48, 0x8b, 0x35, 0x01, 0x01, 0x00, 0x00, // .env_loop:
         // mov rdx, [rsi]
-        0x48, 0x8b, 0x16,
-        // test rdx, rdx
-        0x48, 0x85, 0xd2,
-        // je .env_not_found (+0x2b)
-        0x74, 0x2b,
-        // mov rcx, rdi
-        0x48, 0x89, 0xf9,
-        // mov r8, rdx
-        0x49, 0x89, 0xd0,
-        // .env_cmp:
+        0x48, 0x8b, 0x16, // test rdx, rdx
+        0x48, 0x85, 0xd2, // je .env_not_found (+0x2b)
+        0x74, 0x2b, // mov rcx, rdi
+        0x48, 0x89, 0xf9, // mov r8, rdx
+        0x49, 0x89, 0xd0, // .env_cmp:
         // movzx eax, byte [rcx]
-        0x0f, 0xb6, 0x01,
-        // test al, al
-        0x84, 0xc0,
-        // je .env_check_eq (+0x0d)
-        0x74, 0x0d,
-        // cmp al, [r8]
-        0x41, 0x3a, 0x00,
-        // jne .env_next (+0x13)
-        0x75, 0x13,
-        // inc rcx
-        0x48, 0xff, 0xc1,
-        // inc r8
-        0x49, 0xff, 0xc0,
-        // jmp .env_cmp (-0x14)
-        0xeb, 0xec,
-        // .env_check_eq:
+        0x0f, 0xb6, 0x01, // test al, al
+        0x84, 0xc0, // je .env_check_eq (+0x0d)
+        0x74, 0x0d, // cmp al, [r8]
+        0x41, 0x3a, 0x00, // jne .env_next (+0x13)
+        0x75, 0x13, // inc rcx
+        0x48, 0xff, 0xc1, // inc r8
+        0x49, 0xff, 0xc0, // jmp .env_cmp (-0x14)
+        0xeb, 0xec, // .env_check_eq:
         // cmp byte [r8], 0x3d
-        0x41, 0x80, 0x38, 0x3d,
-        // jne .env_next (+0x05)
-        0x75, 0x05,
-        // lea rax, [r8+1]
-        0x49, 0x8d, 0x40, 0x01,
-        // ret
-        0xc3,
-        // .env_next:
+        0x41, 0x80, 0x38, 0x3d, // jne .env_next (+0x05)
+        0x75, 0x05, // lea rax, [r8+1]
+        0x49, 0x8d, 0x40, 0x01, // ret
+        0xc3, // .env_next:
         // add rsi, 8
-        0x48, 0x83, 0xc6, 0x08,
-        // jmp .env_loop (-0x33)
-        0xeb, 0xcd,
-        // .env_not_found:
+        0x48, 0x83, 0xc6, 0x08, // jmp .env_loop (-0x33)
+        0xeb, 0xcd, // .env_not_found:
         // xor eax, eax
-        0x31, 0xc0,
-        // ret
-        0xc3,
-
-        // === __kr_exec (offset 0xc5) ===
+        0x31, 0xc0, // ret
+        0xc3, // === __kr_exec (offset 0xc5) ===
         // push rbx
-        0x53,
-        // push r12
-        0x41, 0x54,
-        // mov rbx, rdi                   ; save cmd
-        0x48, 0x89, 0xfb,
-        // mov eax, 0x2000002             ; SYS_fork
-        0xb8, 0x02, 0x00, 0x00, 0x02,
-        // syscall
-        0x0f, 0x05,
-        // test eax, eax
-        0x85, 0xc0,
-        // je .child (+0x38)
-        0x74, 0x38,
-        // mov r12d, eax                  ; save pid
-        0x41, 0x89, 0xc4,
-        // sub rsp, 8                     ; status on stack
-        0x48, 0x83, 0xec, 0x08,
-        // mov edi, r12d                  ; pid
-        0x44, 0x89, 0xe7,
-        // lea rsi, [rsp]                 ; &status
-        0x48, 0x8d, 0x34, 0x24,
-        // xor edx, edx                   ; options = 0
-        0x31, 0xd2,
-        // xor r10d, r10d                 ; rusage = NULL
-        0x45, 0x31, 0xd2,
-        // mov eax, 0x2000007             ; SYS_wait4
-        0xb8, 0x07, 0x00, 0x00, 0x02,
-        // syscall
-        0x0f, 0x05,
-        // mov eax, [rsp]                 ; status
-        0x8b, 0x04, 0x24,
-        // add rsp, 8
-        0x48, 0x83, 0xc4, 0x08,
-        // test al, al
-        0x84, 0xc0,
-        // jne .signal_death (+0x0a)
-        0x75, 0x0a,
-        // shr eax, 8
-        0xc1, 0xe8, 0x08,
-        // and eax, 0xff
-        0x25, 0xff, 0x00, 0x00, 0x00,
-        // jmp .exec_done (+0x05)
-        0xeb, 0x05,
-        // .signal_death:
+        0x53, // push r12
+        0x41, 0x54, // mov rbx, rdi                   ; save cmd
+        0x48, 0x89, 0xfb, // mov eax, 0x2000002             ; SYS_fork
+        0xb8, 0x02, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // test eax, eax
+        0x85, 0xc0, // je .child (+0x38)
+        0x74, 0x38, // mov r12d, eax                  ; save pid
+        0x41, 0x89, 0xc4, // sub rsp, 8                     ; status on stack
+        0x48, 0x83, 0xec, 0x08, // mov edi, r12d                  ; pid
+        0x44, 0x89, 0xe7, // lea rsi, [rsp]                 ; &status
+        0x48, 0x8d, 0x34, 0x24, // xor edx, edx                   ; options = 0
+        0x31, 0xd2, // xor r10d, r10d                 ; rusage = NULL
+        0x45, 0x31, 0xd2, // mov eax, 0x2000007             ; SYS_wait4
+        0xb8, 0x07, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // mov eax, [rsp]                 ; status
+        0x8b, 0x04, 0x24, // add rsp, 8
+        0x48, 0x83, 0xc4, 0x08, // test al, al
+        0x84, 0xc0, // jne .signal_death (+0x0a)
+        0x75, 0x0a, // shr eax, 8
+        0xc1, 0xe8, 0x08, // and eax, 0xff
+        0x25, 0xff, 0x00, 0x00, 0x00, // jmp .exec_done (+0x05)
+        0xeb, 0x05, // .signal_death:
         // mov eax, 1
-        0xb8, 0x01, 0x00, 0x00, 0x00,
-        // .exec_done:
+        0xb8, 0x01, 0x00, 0x00, 0x00, // .exec_done:
         // pop r12
-        0x41, 0x5c,
-        // pop rbx
-        0x5b,
-        // ret
+        0x41, 0x5c, // pop rbx
+        0x5b, // ret
         0xc3,
         // .child:
         // lea rdi, [rip+0x6e]            ; "/bin/sh" (0x183 - 0x115)
-        0x48, 0x8d, 0x3d, 0x6e, 0x00, 0x00, 0x00,
-        // xor eax, eax
-        0x31, 0xc0,
-        // push rax                       ; NULL
-        0x50,
-        // push rbx                       ; cmd
-        0x53,
-        // lea rax, [rip+0x6b]            ; "-c" (0x18b - 0x120)
-        0x48, 0x8d, 0x05, 0x6b, 0x00, 0x00, 0x00,
-        // push rax
-        0x50,
-        // push rdi                       ; "/bin/sh"
-        0x57,
-        // mov rsi, rsp                   ; argv
-        0x48, 0x89, 0xe6,
-        // mov rdx, [rip+0x64]            ; envp (0x190 - 0x12c)
+        0x48, 0x8d, 0x3d, 0x6e, 0x00, 0x00, 0x00, // xor eax, eax
+        0x31, 0xc0, // push rax                       ; NULL
+        0x50, // push rbx                       ; cmd
+        0x53, // lea rax, [rip+0x6b]            ; "-c" (0x18b - 0x120)
+        0x48, 0x8d, 0x05, 0x6b, 0x00, 0x00, 0x00, // push rax
+        0x50, // push rdi                       ; "/bin/sh"
+        0x57, // mov rsi, rsp                   ; argv
+        0x48, 0x89, 0xe6, // mov rdx, [rip+0x64]            ; envp (0x190 - 0x12c)
         0x48, 0x8b, 0x15, 0x64, 0x00, 0x00, 0x00,
         // mov eax, 0x200003B             ; SYS_execve
-        0xb8, 0x3b, 0x00, 0x00, 0x02,
-        // syscall
-        0x0f, 0x05,
-        // mov edi, 127                   ; exit 127 on failure
-        0xbf, 0x7f, 0x00, 0x00, 0x00,
-        // mov eax, 0x2000001             ; SYS_exit
-        0xb8, 0x01, 0x00, 0x00, 0x02,
-        // syscall
-        0x0f, 0x05,
-
-        // === __kr_str_copy (offset 0x13f) ===
+        0xb8, 0x3b, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // mov edi, 127                   ; exit 127 on failure
+        0xbf, 0x7f, 0x00, 0x00, 0x00, // mov eax, 0x2000001             ; SYS_exit
+        0xb8, 0x01, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // === __kr_str_copy (offset 0x13f) ===
         // mov rax, rdi
-        0x48, 0x89, 0xf8,
-        // .copy_loop:
+        0x48, 0x89, 0xf8, // .copy_loop:
         // movzx ecx, byte [rsi]
-        0x0f, 0xb6, 0x0e,
-        // mov [rdi], cl
-        0x88, 0x0f,
-        // test cl, cl
-        0x84, 0xc9,
-        // je .copy_done (+0x08)
-        0x74, 0x08,
-        // inc rdi
-        0x48, 0xff, 0xc7,
-        // inc rsi
-        0x48, 0xff, 0xc6,
-        // jmp .copy_loop (-0x11)
-        0xeb, 0xef,
-        // .copy_done:
+        0x0f, 0xb6, 0x0e, // mov [rdi], cl
+        0x88, 0x0f, // test cl, cl
+        0x84, 0xc9, // je .copy_done (+0x08)
+        0x74, 0x08, // inc rdi
+        0x48, 0xff, 0xc7, // inc rsi
+        0x48, 0xff, 0xc6, // jmp .copy_loop (-0x11)
+        0xeb, 0xef, // .copy_done:
         // ret
-        0xc3,
-
-        // === __kr_str_cat (offset 0x154) ===
+        0xc3, // === __kr_str_cat (offset 0x154) ===
         // mov rax, rdi
-        0x48, 0x89, 0xf8,
-        // .cat_find_end:
+        0x48, 0x89, 0xf8, // .cat_find_end:
         // cmp byte [rdi], 0
-        0x80, 0x3f, 0x00,
-        // je .cat_copy (+0x05)
-        0x74, 0x05,
-        // inc rdi
-        0x48, 0xff, 0xc7,
-        // jmp .cat_find_end (-0x0a)
-        0xeb, 0xf6,
-        // .cat_copy:
+        0x80, 0x3f, 0x00, // je .cat_copy (+0x05)
+        0x74, 0x05, // inc rdi
+        0x48, 0xff, 0xc7, // jmp .cat_find_end (-0x0a)
+        0xeb, 0xf6, // .cat_copy:
         // movzx ecx, byte [rsi]
-        0x0f, 0xb6, 0x0e,
-        // mov [rdi], cl
-        0x88, 0x0f,
-        // test cl, cl
-        0x84, 0xc9,
-        // je .cat_done (+0x08)
-        0x74, 0x08,
-        // inc rdi
-        0x48, 0xff, 0xc7,
-        // inc rsi
-        0x48, 0xff, 0xc6,
-        // jmp .cat_copy (-0x11)
-        0xeb, 0xef,
-        // .cat_done:
+        0x0f, 0xb6, 0x0e, // mov [rdi], cl
+        0x88, 0x0f, // test cl, cl
+        0x84, 0xc9, // je .cat_done (+0x08)
+        0x74, 0x08, // inc rdi
+        0x48, 0xff, 0xc7, // inc rsi
+        0x48, 0xff, 0xc6, // jmp .cat_copy (-0x11)
+        0xeb, 0xef, // .cat_done:
         // ret
-        0xc3,
-
-        // === __kr_str_len (offset 0x173) ===
+        0xc3, // === __kr_str_len (offset 0x173) ===
         // xor eax, eax
-        0x31, 0xc0,
-        // .len_loop:
+        0x31, 0xc0, // .len_loop:
         // cmp byte [rdi], 0
-        0x80, 0x3f, 0x00,
-        // je .len_done (+0x08)
-        0x74, 0x08,
-        // inc rdi
-        0x48, 0xff, 0xc7,
-        // inc rax
-        0x48, 0xff, 0xc0,
-        // jmp .len_loop (-0x0d)
-        0xeb, 0xf3,
-        // .len_done:
+        0x80, 0x3f, 0x00, // je .len_done (+0x08)
+        0x74, 0x08, // inc rdi
+        0x48, 0xff, 0xc7, // inc rax
+        0x48, 0xff, 0xc0, // jmp .len_loop (-0x0d)
+        0xeb, 0xf3, // .len_done:
         // ret
         0xc3,
-
         // === Inline string data ===
         // .sh_path (offset 0x183): "/bin/sh\0"
-        0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00,
-        // .dash_c (offset 0x18b): "-c\0"
-        0x2d, 0x63, 0x00,
-
-        // === Padding (offset 0x18e, 2 bytes) ===
+        0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, // .dash_c (offset 0x18b): "-c\0"
+        0x2d, 0x63, 0x00, // === Padding (offset 0x18e, 2 bytes) ===
         0x90, 0x90,
-
         // === Data area (offset 0x190, 24 bytes) ===
         // envp (8 bytes)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // heap_ptr (8 bytes)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // heap_remaining (8 bytes)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // heap_ptr (8 bytes)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // heap_remaining (8 bytes)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ],
     symbols: &[
-        ("_start",          0x00),
-        ("__kr_exit",       0x0e),
-        ("__kr_write",      0x15),
+        ("_start", 0x00),
+        ("__kr_exit", 0x0e),
+        ("__kr_write", 0x15),
         ("__kr_mmap_alloc", 0x1d),
-        ("__kr_alloc",      0x3f),
-        ("__kr_dealloc",    0x87),
-        ("__kr_getenv",     0x88),
-        ("__kr_exec",       0xc5),
-        ("__kr_str_copy",   0x13f),
-        ("__kr_str_cat",    0x154),
-        ("__kr_str_len",    0x173),
+        ("__kr_alloc", 0x3f),
+        ("__kr_dealloc", 0x87),
+        ("__kr_getenv", 0x88),
+        ("__kr_exec", 0xc5),
+        ("__kr_str_copy", 0x13f),
+        ("__kr_str_cat", 0x154),
+        ("__kr_str_len", 0x173),
     ],
     // `call main` at offset 0x07, rel32 at offset 0x08.
     main_call_fixup: 0x08,
@@ -383,9 +259,11 @@ mod tests {
         let fixup = BLOB.main_call_fixup as usize;
         assert!(fixup >= 1);
         assert_eq!(
-            BLOB.code[fixup - 1], 0xE8,
+            BLOB.code[fixup - 1],
+            0xE8,
             "expected 0xE8 at offset {}, found 0x{:02X}",
-            fixup - 1, BLOB.code[fixup - 1]
+            fixup - 1,
+            BLOB.code[fixup - 1]
         );
     }
 
@@ -421,9 +299,17 @@ mod tests {
     #[test]
     fn symbol_names_complete() {
         let expected = [
-            "_start", "__kr_exit", "__kr_write", "__kr_mmap_alloc",
-            "__kr_alloc", "__kr_dealloc", "__kr_getenv", "__kr_exec",
-            "__kr_str_copy", "__kr_str_cat", "__kr_str_len",
+            "_start",
+            "__kr_exit",
+            "__kr_write",
+            "__kr_mmap_alloc",
+            "__kr_alloc",
+            "__kr_dealloc",
+            "__kr_getenv",
+            "__kr_exec",
+            "__kr_str_copy",
+            "__kr_str_cat",
+            "__kr_str_len",
         ];
         for name in &expected {
             assert!(BLOB.symbol_offset(name).is_some(), "missing symbol: {name}");
@@ -436,8 +322,10 @@ mod tests {
         assert_eq!(BLOB.code[exit_off], 0xB8);
         assert_eq!(
             u32::from_le_bytes([
-                BLOB.code[exit_off+1], BLOB.code[exit_off+2],
-                BLOB.code[exit_off+3], BLOB.code[exit_off+4],
+                BLOB.code[exit_off + 1],
+                BLOB.code[exit_off + 2],
+                BLOB.code[exit_off + 3],
+                BLOB.code[exit_off + 4],
             ]),
             0x2000001
         );
@@ -452,8 +340,10 @@ mod tests {
         assert_eq!(BLOB.code[mmap_off + 11], 0xBA);
         assert_eq!(
             u32::from_le_bytes([
-                BLOB.code[mmap_off+12], BLOB.code[mmap_off+13],
-                BLOB.code[mmap_off+14], BLOB.code[mmap_off+15],
+                BLOB.code[mmap_off + 12],
+                BLOB.code[mmap_off + 13],
+                BLOB.code[mmap_off + 14],
+                BLOB.code[mmap_off + 15],
             ]),
             0x1002
         );

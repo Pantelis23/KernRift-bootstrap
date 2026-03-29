@@ -40,6 +40,7 @@ pub(crate) fn inspect_elf_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
 
     let e_type = read_u16_at(bytes, 16, little, "ELF e_type")?;
     let e_machine = read_u16_at(bytes, 18, little, "ELF e_machine")?;
+    let e_entry = read_u64_at(bytes, 24, little, "ELF e_entry")?;
     let e_shoff = read_u64_at(bytes, 40, little, "ELF e_shoff")? as usize;
     let e_shentsize = read_u16_at(bytes, 58, little, "ELF e_shentsize")? as usize;
     let e_shnum = read_u16_at(bytes, 60, little, "ELF e_shnum")? as usize;
@@ -342,7 +343,8 @@ pub(crate) fn inspect_elf_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
         relocations,
         asm: None,
         flags: ArtifactInspectionFlags {
-            has_entry_symbol: defined_symbols.iter().any(|name| name == "entry"),
+            has_entry_symbol: defined_symbols.iter().any(|name| name == "entry")
+                || (e_type == 2 /* ET_EXEC */ && e_entry != 0),
             has_undefined_symbols: !undefined_symbols.is_empty(),
             has_text_relocations,
         },

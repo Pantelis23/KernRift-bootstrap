@@ -27,9 +27,8 @@ use krir::{
     emit_aarch64_elf_object_bytes, emit_aarch64_executable_bytes, emit_compiler_owned_object_bytes,
     emit_krbo_bytes, emit_krbofat_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
     lower_current_krir_to_executable_krir, lower_executable_krir_to_aarch64_asm,
-    lower_executable_krir_to_aarch64_object_inner,
-    lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
-    lower_executable_krir_to_x86_64_object,
+    lower_executable_krir_to_aarch64_object_inner, lower_executable_krir_to_compiler_owned_object,
+    lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
 };
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
@@ -630,8 +629,7 @@ fn emit_x86_64_host_executable_bytes(
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
-            "hostexe emit requires a C compiler driver (cc, gcc, or clang)"
-                .to_string()
+            "hostexe emit requires a C compiler driver (cc, gcc, or clang)".to_string()
         })?;
 
         let asm_module = lower_executable_krir_to_x86_64_asm(executable, target)?;
@@ -744,7 +742,10 @@ fn emit_native_hostexe_linux_x86_64(
             // User calls user function
             user_off as i64
         } else {
-            return Err(format!("hostexe: unresolved symbol '{}'", reloc.target_symbol));
+            return Err(format!(
+                "hostexe: unresolved symbol '{}'",
+                reloc.target_symbol
+            ));
         };
 
         let value = target_offset - reloc.offset as i64 + reloc.addend;
@@ -756,7 +757,8 @@ fn emit_native_hostexe_linux_x86_64(
     }
 
     // 5. Patch runtime's "call main" to reach user's main/entry
-    let main_offset = user_syms.get("main")
+    let main_offset = user_syms
+        .get("main")
         .or_else(|| user_syms.get("entry"))
         .copied()
         .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
@@ -767,7 +769,8 @@ fn emit_native_hostexe_linux_x86_64(
     text[fixup_off..fixup_off + 4].copy_from_slice(&displacement.to_le_bytes());
 
     // 6. Entry point = _start in runtime
-    let start_offset = RT.symbol_offset("_start")
+    let start_offset = RT
+        .symbol_offset("_start")
         .ok_or_else(|| "runtime blob missing _start".to_string())?;
     let entry_in_text = user_len as u32 + start_offset;
 
@@ -819,13 +822,15 @@ fn emit_native_hostexe_linux_aarch64(
         let disp = target_offset - patch_pc;
         if disp % 4 != 0 {
             return Err(format!(
-                "hostexe aarch64: displacement to '{}' not 4-byte aligned", target_sym
+                "hostexe aarch64: displacement to '{}' not 4-byte aligned",
+                target_sym
             ));
         }
         let imm26 = (disp / 4) as i32;
         if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
             return Err(format!(
-                "hostexe aarch64: displacement to '{}' exceeds imm26 range", target_sym
+                "hostexe aarch64: displacement to '{}' exceeds imm26 range",
+                target_sym
             ));
         }
         let idx = patch_offset as usize;
@@ -835,7 +840,8 @@ fn emit_native_hostexe_linux_aarch64(
     }
 
     // 5. Patch runtime's BL main to reach user's main/entry
-    let main_offset = user_syms.get("main")
+    let main_offset = user_syms
+        .get("main")
         .or_else(|| user_syms.get("entry"))
         .copied()
         .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
@@ -848,7 +854,8 @@ fn emit_native_hostexe_linux_aarch64(
     text[fixup_off..fixup_off + 4].copy_from_slice(&bl_instr.to_le_bytes());
 
     // 6. Entry point = _start in runtime
-    let start_offset = RT.symbol_offset("_start")
+    let start_offset = RT
+        .symbol_offset("_start")
         .ok_or_else(|| "runtime blob missing _start".to_string())?;
     let entry_in_text = user_len as u32 + start_offset;
 
@@ -890,7 +897,10 @@ fn emit_native_hostexe_macos_x86_64(
         } else if let Some(&user_off) = user_syms.get(reloc.target_symbol.as_str()) {
             user_off as i64
         } else {
-            return Err(format!("hostexe: unresolved symbol '{}'", reloc.target_symbol));
+            return Err(format!(
+                "hostexe: unresolved symbol '{}'",
+                reloc.target_symbol
+            ));
         };
 
         let value = target_offset - reloc.offset as i64 + reloc.addend;
@@ -902,7 +912,8 @@ fn emit_native_hostexe_macos_x86_64(
     }
 
     // 5. Patch runtime's "call main"
-    let main_offset = user_syms.get("main")
+    let main_offset = user_syms
+        .get("main")
         .or_else(|| user_syms.get("entry"))
         .copied()
         .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
@@ -913,12 +924,18 @@ fn emit_native_hostexe_macos_x86_64(
     text[fixup_off..fixup_off + 4].copy_from_slice(&displacement.to_le_bytes());
 
     // 6. Entry point = _start in runtime
-    let start_offset = RT.symbol_offset("_start")
+    let start_offset = RT
+        .symbol_offset("_start")
         .ok_or_else(|| "runtime blob missing _start".to_string())?;
     let entry_in_text = user_len as u32 + start_offset;
 
     // 7. Produce Mach-O executable (writable text for runtime data area)
-    Ok(krir::emit_macho_executable(&text, entry_in_text, false, true))
+    Ok(krir::emit_macho_executable(
+        &text,
+        entry_in_text,
+        false,
+        true,
+    ))
 }
 
 /// Native hostexe emitter for macOS AArch64.
@@ -962,13 +979,15 @@ fn emit_native_hostexe_macos_aarch64(
         let disp = target_offset - patch_pc;
         if disp % 4 != 0 {
             return Err(format!(
-                "hostexe aarch64: displacement to '{}' not 4-byte aligned", target_sym
+                "hostexe aarch64: displacement to '{}' not 4-byte aligned",
+                target_sym
             ));
         }
         let imm26 = (disp / 4) as i32;
         if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
             return Err(format!(
-                "hostexe aarch64: displacement to '{}' exceeds imm26 range", target_sym
+                "hostexe aarch64: displacement to '{}' exceeds imm26 range",
+                target_sym
             ));
         }
         let idx = patch_offset as usize;
@@ -978,7 +997,8 @@ fn emit_native_hostexe_macos_aarch64(
     }
 
     // 5. Patch runtime's BL main
-    let main_offset = user_syms.get("main")
+    let main_offset = user_syms
+        .get("main")
         .or_else(|| user_syms.get("entry"))
         .copied()
         .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
@@ -991,12 +1011,18 @@ fn emit_native_hostexe_macos_aarch64(
     text[fixup_off..fixup_off + 4].copy_from_slice(&bl_instr.to_le_bytes());
 
     // 6. Entry point = _start in runtime
-    let start_offset = RT.symbol_offset("_start")
+    let start_offset = RT
+        .symbol_offset("_start")
         .ok_or_else(|| "runtime blob missing _start".to_string())?;
     let entry_in_text = user_len as u32 + start_offset;
 
     // 7. Produce Mach-O executable (arm64, writable text for runtime data area)
-    Ok(krir::emit_macho_executable(&text, entry_in_text, true, true))
+    Ok(krir::emit_macho_executable(
+        &text,
+        entry_in_text,
+        true,
+        true,
+    ))
 }
 
 /// Native hostexe emitter for Windows x86_64.
@@ -1037,7 +1063,10 @@ fn emit_native_hostexe_windows_x86_64(
         } else if let Some(&user_off) = user_syms.get(reloc.target_symbol.as_str()) {
             user_off as i64
         } else {
-            return Err(format!("hostexe: unresolved symbol '{}'", reloc.target_symbol));
+            return Err(format!(
+                "hostexe: unresolved symbol '{}'",
+                reloc.target_symbol
+            ));
         };
 
         let value = target_offset - reloc.offset as i64 + reloc.addend;
@@ -1049,7 +1078,8 @@ fn emit_native_hostexe_windows_x86_64(
     }
 
     // 5. Patch runtime's "call main"
-    let main_offset = user_syms.get("main")
+    let main_offset = user_syms
+        .get("main")
         .or_else(|| user_syms.get("entry"))
         .copied()
         .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
@@ -1060,7 +1090,8 @@ fn emit_native_hostexe_windows_x86_64(
     text[fixup_off..fixup_off + 4].copy_from_slice(&displacement.to_le_bytes());
 
     // 6. Entry point = _start in runtime
-    let start_offset = RT.symbol_offset("_start")
+    let start_offset = RT
+        .symbol_offset("_start")
         .ok_or_else(|| "runtime blob missing _start".to_string())?;
     let entry_in_text = user_len as u32 + start_offset;
 
@@ -1088,7 +1119,8 @@ fn emit_native_hostexe_windows_x86_64(
     //    Within .idata: IDT, then ILT, then IAT.
     //    IAT offset = IDT_size + ILT_size.
     //    IDT = (num_dlls + 1) * 20.  ILT = (num_funcs + 1) * 8 per DLL.
-    let iat_base_off = RT.iat_base_data_offset
+    let iat_base_off = RT
+        .iat_base_data_offset
         .ok_or_else(|| "windows runtime blob missing iat_base_data_offset".to_string())?;
     let abs_iat_base_off = user_len as u32 + iat_base_off;
 
@@ -1110,7 +1142,12 @@ fn emit_native_hostexe_windows_x86_64(
     text[slot..slot + 8].copy_from_slice(&iat_va.to_le_bytes());
 
     // 9. Produce PE executable (writable text for runtime data area)
-    Ok(krir::emit_pe_executable_x86_64(&text, entry_in_text, &imports, true))
+    Ok(krir::emit_pe_executable_x86_64(
+        &text,
+        entry_in_text,
+        &imports,
+        true,
+    ))
 }
 
 /// Native hostexe emitter for Windows AArch64.
@@ -1161,13 +1198,15 @@ fn emit_native_hostexe_windows_aarch64(
         let disp = target_offset - patch_pc;
         if disp % 4 != 0 {
             return Err(format!(
-                "hostexe aarch64: displacement to '{}' not 4-byte aligned", target_sym
+                "hostexe aarch64: displacement to '{}' not 4-byte aligned",
+                target_sym
             ));
         }
         let imm26 = (disp / 4) as i32;
         if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
             return Err(format!(
-                "hostexe aarch64: displacement to '{}' exceeds imm26 range", target_sym
+                "hostexe aarch64: displacement to '{}' exceeds imm26 range",
+                target_sym
             ));
         }
         let idx = patch_offset as usize;
@@ -1177,7 +1216,8 @@ fn emit_native_hostexe_windows_aarch64(
     }
 
     // 5. Patch runtime's BL main to reach user's main/entry
-    let main_offset = user_syms.get("main")
+    let main_offset = user_syms
+        .get("main")
         .or_else(|| user_syms.get("entry"))
         .copied()
         .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
@@ -1190,7 +1230,8 @@ fn emit_native_hostexe_windows_aarch64(
     text[fixup_off..fixup_off + 4].copy_from_slice(&bl_instr.to_le_bytes());
 
     // 6. Entry point = _start in runtime
-    let start_offset = RT.symbol_offset("_start")
+    let start_offset = RT
+        .symbol_offset("_start")
         .ok_or_else(|| "runtime blob missing _start".to_string())?;
     let entry_in_text = user_len as u32 + start_offset;
 
@@ -1212,7 +1253,8 @@ fn emit_native_hostexe_windows_aarch64(
     //    Within .idata: IDT, then ILT, then IAT.
     //    IAT offset = IDT_size + ILT_size.
     //    IDT = (num_dlls + 1) * 20.  ILT = (num_funcs + 1) * 8 per DLL.
-    let iat_base_off = RT.iat_base_data_offset
+    let iat_base_off = RT
+        .iat_base_data_offset
         .ok_or_else(|| "windows runtime blob missing iat_base_data_offset".to_string())?;
     let abs_iat_base_off = user_len as u32 + iat_base_off;
 
@@ -1234,7 +1276,12 @@ fn emit_native_hostexe_windows_aarch64(
     text[slot..slot + 8].copy_from_slice(&iat_va.to_le_bytes());
 
     // 9. Produce PE executable (writable text for runtime data area)
-    Ok(krir::emit_pe_executable_aarch64(&text, entry_in_text, &imports, true))
+    Ok(krir::emit_pe_executable_aarch64(
+        &text,
+        entry_in_text,
+        &imports,
+        true,
+    ))
 }
 
 fn emit_x86_64_static_library(
@@ -1243,8 +1290,16 @@ fn emit_x86_64_static_library(
 ) -> Result<Vec<u8>, String> {
     let object = lower_executable_krir_to_x86_64_object(executable, target)?;
     let object_bytes = emit_x86_64_object_bytes(&object);
-    let symbols: Vec<&str> = object.function_symbols.iter().map(|s| s.name.as_str()).collect();
-    Ok(krir::emit_native_ar_archive("input.o", &object_bytes, &symbols))
+    let symbols: Vec<&str> = object
+        .function_symbols
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    Ok(krir::emit_native_ar_archive(
+        "input.o",
+        &object_bytes,
+        &symbols,
+    ))
 }
 
 fn emit_aarch64_elf_executable_bytes(
@@ -1259,8 +1314,16 @@ fn emit_aarch64_static_library(
     target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
     let object_bytes = emit_aarch64_elf_object_bytes(executable, target)?;
-    let symbols: Vec<&str> = executable.functions.iter().map(|f| f.name.as_str()).collect();
-    Ok(krir::emit_native_ar_archive("input.o", &object_bytes, &symbols))
+    let symbols: Vec<&str> = executable
+        .functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    Ok(krir::emit_native_ar_archive(
+        "input.o",
+        &object_bytes,
+        &symbols,
+    ))
 }
 
 /// On Linux/macOS/Windows, uses the native hostexe path for AArch64: lower to

@@ -49,10 +49,7 @@ const HOST_BUILTINS: &[(&str, &str)] = &[
 ];
 
 fn is_port_in(name: &str) -> Option<PortIoWidth> {
-    PORT_IO_IN
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, w)| *w)
+    PORT_IO_IN.iter().find(|(n, _)| *n == name).map(|(_, w)| *w)
 }
 fn is_port_out(name: &str) -> Option<PortIoWidth> {
     PORT_IO_OUT
@@ -3097,7 +3094,13 @@ fn lower_expr(
                     ));
                 }
                 let port_slot = lower_expr(
-                    &args[0], ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                    &args[0],
+                    ops,
+                    slot_counter,
+                    device_regs,
+                    eff_used,
+                    slot_types,
+                    const_map,
                 )?;
                 let dst = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3128,7 +3131,13 @@ fn lower_expr(
                 let mut krir_args = Vec::new();
                 for arg in args {
                     match lower_expr(
-                        arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                        arg,
+                        ops,
+                        slot_counter,
+                        device_regs,
+                        eff_used,
+                        slot_types,
+                        const_map,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3184,7 +3193,13 @@ fn lower_expr(
             let mut lowered = Vec::new();
             for arg in args {
                 lowered.push(lower_expr(
-                    arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                    arg,
+                    ops,
+                    slot_counter,
+                    device_regs,
+                    eff_used,
+                    slot_types,
+                    const_map,
                 )?);
             }
             let nr_slot = lowered.remove(0);
@@ -3521,7 +3536,13 @@ fn lower_stmt(
                     let mut ok = true;
                     for arg in args {
                         match lower_expr(
-                            arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                            arg,
+                            ops,
+                            slot_counter,
+                            device_regs,
+                            eff_used,
+                            slot_types,
+                            const_map,
                         ) {
                             Ok(s) => lowered_args.push(s),
                             Err(e) => {
@@ -3554,7 +3575,13 @@ fn lower_stmt(
                         return;
                     }
                     match lower_expr(
-                        &args[0], ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                        &args[0],
+                        ops,
+                        slot_counter,
+                        device_regs,
+                        eff_used,
+                        slot_types,
+                        const_map,
                     ) {
                         Ok(port_slot) => {
                             let dst = fresh_slot(slot_counter);
@@ -3586,11 +3613,15 @@ fn lower_stmt(
                             continue;
                         }
                         match lower_expr(
-                            arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                            arg,
+                            ops,
+                            slot_counter,
+                            device_regs,
+                            eff_used,
+                            slot_types,
+                            const_map,
                         ) {
-                            Ok(slot) => {
-                                krir_args.push(KrirMmioValueExpr::Ident { name: slot })
-                            }
+                            Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
                                 errors.push(e);
                                 ok = false;
@@ -3690,7 +3721,12 @@ fn lower_stmt(
                             ));
                         } else {
                             match lower_expr(
-                                &args[0], ops, slot_counter, device_regs, eff_used, slot_types,
+                                &args[0],
+                                ops,
+                                slot_counter,
+                                device_regs,
+                                eff_used,
+                                slot_types,
                                 const_map,
                             ) {
                                 Ok(port_slot) => {
@@ -3723,12 +3759,15 @@ fn lower_stmt(
                                 continue;
                             }
                             match lower_expr(
-                                arg, ops, slot_counter, device_regs, eff_used, slot_types,
+                                arg,
+                                ops,
+                                slot_counter,
+                                device_regs,
+                                eff_used,
+                                slot_types,
                                 const_map,
                             ) {
-                                Ok(slot) => {
-                                    krir_args.push(KrirMmioValueExpr::Ident { name: slot })
-                                }
+                                Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
                                     errors.push(e);
                                     ok = false;
@@ -3756,12 +3795,15 @@ fn lower_stmt(
                                 continue;
                             }
                             match lower_expr(
-                                arg, ops, slot_counter, device_regs, eff_used, slot_types,
+                                arg,
+                                ops,
+                                slot_counter,
+                                device_regs,
+                                eff_used,
+                                slot_types,
                                 const_map,
                             ) {
-                                Ok(slot) => {
-                                    krir_args.push(KrirMmioValueExpr::Ident { name: slot })
-                                }
+                                Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
                                     errors.push(e);
                                     ok = false;
@@ -4193,16 +4235,20 @@ fn lower_stmt(
         }
         Stmt::SyscallStmt { args } => {
             if args.is_empty() {
-                errors.push(
-                    "@syscall requires at least 1 argument (syscall number)".to_string(),
-                );
+                errors.push("@syscall requires at least 1 argument (syscall number)".to_string());
                 return;
             }
             let mut lowered = Vec::new();
             let mut ok = true;
             for arg in args {
                 match lower_expr(
-                    arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map,
+                    arg,
+                    ops,
+                    slot_counter,
+                    device_regs,
+                    eff_used,
+                    slot_types,
+                    const_map,
                 ) {
                     Ok(s) => lowered.push(s),
                     Err(e) => {
