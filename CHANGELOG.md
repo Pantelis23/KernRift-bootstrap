@@ -2,6 +2,27 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## Unreleased
+
+### Added
+- **Self-contained toolchain**: `kernriftc` now produces native executables for all major platforms without any external tools.
+  - Native ELF executable writer (`--emit=elfexe`) — no longer needs `ld`.
+  - Native `.a` archive writer (`--emit=staticlib`) — no longer needs `ar`.
+  - PE32+ executable writer for Windows x86_64 and AArch64 (with import directories).
+  - Mach-O executable writer for macOS x86_64 and AArch64 (with dyld/libSystem linkage).
+  - Native host executable emitter (`--emit=hostexe`) — no longer needs `cc`/`gcc`/`clang` on any platform.
+- **6 platform runtime blobs**: hand-assembled machine code for Linux/macOS/Windows x86_64 and AArch64. Implements `_start`, `__kr_exit`, `__kr_write`, `__kr_mmap_alloc`, `__kr_alloc`, `__kr_dealloc`, `__kr_getenv`, `__kr_exec`, `__kr_str_copy`, `__kr_str_cat`, `__kr_str_len`.
+- **Port I/O intrinsics**: `inb(port)`, `outb(port, val)`, `inw`, `outw`, `ind`, `outd` — x86_64 built-in intrinsics that emit native `IN`/`OUT` instructions. AArch64 produces a clear compile-time error (ARM has no port-mapped I/O).
+- **`@syscall(nr, args...)` intrinsic**: generic syscall for Linux/macOS on both x86_64 and AArch64.
+- **9 built-in host functions**: `write`, `alloc`, `dealloc`, `getenv`, `exec`, `exit`, `str_copy`, `str_cat`, `str_len` — available in `@ctx(host)` code without `extern fn` declarations, mapped to `__kr_*` runtime symbols.
+- **Slice indexing**: `buf[i]` read and `buf[i] = val` write syntax for array element access.
+- **KrboFat v2**: format version bumped with `runtime_offset`/`runtime_len` fields per entry.
+
+### Changed
+- **ApexRift drivers migrated**: all 7 driver `.kr` files now use built-in `inb`/`outb` intrinsics instead of `extern fn aos_inb/outb`.
+- **`build.kr` migrated**: build script uses built-in host functions (`write`, `getenv`, `exec`, `str_len`, `exit`) instead of libc externs (`puts`, `system`, `getenv`, `exit`).
+- Relaxed canonical-exec validation: general-purpose code with multiple variables and computed returns now compiles without rejection.
+
 ## v1.0.0 - 2026-03-24
 
 ### Added

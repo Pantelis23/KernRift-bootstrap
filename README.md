@@ -12,6 +12,10 @@ Generic systems languages don't model kernel reality. KernRift bakes interrupt c
 - **Capability gating** — privileged operations require explicit module capability declarations
 - **Effect tracking** — allocation, blocking, and yield in disallowed paths are compile errors
 - **Signed artifacts** — contracts can be hashed and signed with Ed25519 for supply-chain verification
+- **Self-contained toolchain** — produces native ELF, PE, and Mach-O executables without `cc`, `ld`, or `ar`
+- **Port I/O intrinsics** — `inb`/`outb`/`inw`/`outw`/`ind`/`outd` built into the language for x86_64 hardware access
+- **Built-in host functions** — `write`, `alloc`, `dealloc`, `getenv`, `exec`, `exit`, `str_copy`, `str_cat`, `str_len` available without `extern fn` declarations
+- **Slice indexing** — `buf[i]` syntax for array element read and write
 
 ## Install
 
@@ -72,7 +76,7 @@ bash tools/validation/full_serial.sh
 
 ## Status
 
-KR0–KR3 (facts-only pipeline + artifact emission, driver subset, kernel module, real OS integration) are complete. See [KR0_KR3_PLAN.md](docs/KR0_KR3_PLAN.md) for the roadmap.
+KR0–KR3 (facts-only pipeline + artifact emission, driver subset, kernel module, real OS integration) are complete. The compiler is now **fully self-contained** — it produces native executables for Linux, macOS, and Windows (x86_64 + AArch64) without any external compiler, assembler, linker, or archiver. See [KR0_KR3_PLAN.md](docs/KR0_KR3_PLAN.md) for the roadmap.
 
 ## License
 

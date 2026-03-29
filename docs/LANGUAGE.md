@@ -28,9 +28,13 @@ instructions; there are no hidden costs.
 15. [Tail Calls](#15-tail-calls)
 16. [Critical Blocks](#16-critical-blocks)
 17. [Unsafe Blocks](#17-unsafe-blocks)
-18. [Compiler CLI Reference](#18-compiler-cli-reference)
-19. [Adaptive Surface & Living Compiler](#19-adaptive-surface--living-compiler)
-20. [Binary Artifact Formats](#20-binary-artifact-formats)
+18. [Port I/O Intrinsics](#18-port-io-intrinsics)
+19. [Syscall Intrinsic](#19-syscall-intrinsic)
+20. [Built-in Host Functions](#20-built-in-host-functions)
+21. [Slice Indexing](#21-slice-indexing)
+22. [Compiler CLI Reference](#22-compiler-cli-reference)
+23. [Adaptive Surface & Living Compiler](#23-adaptive-surface--living-compiler)
+24. [Binary Artifact Formats](#24-binary-artifact-formats)
 
 ---
 
@@ -836,7 +840,200 @@ unsafe block.
 
 ---
 
-## 18. Compiler CLI Reference
+## 18. Port I/O Intrinsics
+
+KernRift provides built-in intrinsics for x86 port-mapped I/O.  These emit
+native `IN` and `OUT` instructions directly — no `extern fn` declarations,
+no C FFI, and no runtime overhead.
+
+### Available intrinsics
+
+| Intrinsic             | Width | x86 instruction        |
+|-----------------------|-------|------------------------|
+| `inb(port) -> uint8`  | 8-bit | `IN AL, DX`           |
+| `outb(port, val)`     | 8-bit | `OUT DX, AL`          |
+| `inw(port) -> uint16` | 16-bit | `IN AX, DX`          |
+| `outw(port, val)`     | 16-bit | `OUT DX, AX`         |
+| `ind(port) -> uint32` | 32-bit | `IN EAX, DX`         |
+| `outd(port, val)`     | 32-bit | `OUT DX, EAX`        |
+
+The `port` argument is a `uint16`.  The `val` argument must match the
+intrinsic width.
+
+### Example
+
+```kr
+@module_caps(Ioport)
+
+@ctx(thread, boot) @eff(ioport)
+fn serial_write(uint8 b) {
+    // Wait for transmit-holding register empty
+    uint8 lsr = inb(0x3FD)
+    while (lsr & 0x20) == 0 {
+        lsr = inb(0x3FD)
+    }
+    outb(0x3F8, b)
+}
+```
+
+### Platform restriction
+
+Port I/O intrinsics are **x86_64 only**.  Compiling a file that uses `inb`,
+`outb`, `inw`, `outw`, `ind`, or `outd` with `--arch arm64` produces a
+compile-time error:
+
+```
+error: port I/O intrinsics are x86_64-only (ARM has no port-mapped I/O)
+```
+
+---
+
+## 19. Syscall Intrinsic
+
+The `@syscall` intrinsic issues a raw system call to the host kernel.  It is
+available in `@ctx(host)` functions and maps to the platform-appropriate
+instruction (`syscall` on Linux/macOS x86_64, `svc #0` on AArch64).
+
+### Syntax
+
+```kr
+@syscall(nr, arg0, arg1, ...) -> uint64
+```
+
+`nr` is the syscall number.  Up to 6 arguments are supported (matching the
+SysV and AArch64 calling conventions).
+
+### Platform differences
+
+| Platform          | Instruction | Syscall number source |
+|-------------------|-------------|----------------------|
+| Linux x86_64      | `syscall`   | `nr` in RAX          |
+| Linux AArch64     | `svc #0`    | `nr` in X8           |
+| macOS x86_64      | `syscall`   | `nr + 0x2000000`     |
+| macOS AArch64     | `svc #0x80` | `nr` in X16          |
+
+### Example
+
+```kr
+@ctx(host)
+fn host_write(uint32 fd, uint64 buf, uint64 len) -> uint64 {
+    // Linux x86_64: write = syscall 1
+    uint64 result = @syscall(1, fd, buf, len)
+    return result
+}
+```
+
+In practice, prefer the built-in host functions (`write`, `exec`, etc.)
+over raw `@syscall` unless you need a syscall not covered by the built-in
+set.
+
+---
+
+## 20. Built-in Host Functions
+
+When a function is annotated with `@ctx(host)`, nine built-in functions are
+available without any `extern fn` declaration.  The compiler maps these to
+`__kr_*` symbols provided by the KernRift host runtime.
+
+### Available functions
+
+| Function                                     | Description                                        |
+|----------------------------------------------|----------------------------------------------------|
+| `write(fd, buf, len)`                        | Write `len` bytes from `buf` to file descriptor `fd`. |
+| `alloc(size) -> uint64`                      | Allocate `size` bytes of memory. Returns a pointer. |
+| `dealloc(ptr, size)`                         | Free memory at `ptr` of `size` bytes.              |
+| `getenv(name) -> uint64`                     | Look up an environment variable. Returns pointer or 0. |
+| `exec(cmd) -> uint32`                        | Execute a shell command. Returns the exit code.    |
+| `exit(code)`                                 | Terminate the process with exit code `code`.       |
+| `str_copy(dst, src)`                         | Copy a null-terminated string from `src` to `dst`. |
+| `str_cat(dst, src)`                          | Append `src` to the end of `dst`.                  |
+| `str_len(s) -> uint64`                       | Return the length of null-terminated string `s`.   |
+
+### Example
+
+```kr
+@module_caps(Env, Process, Stdout)
+
+@export
+@ctx(host) @eff(env, process, stdout)
+fn main() {
+    uint64 msg = "Hello from KernRift host mode\n"
+    write(1, msg, str_len(msg))
+
+    uint64 home = getenv("HOME")
+    if home != 0 {
+        write(1, home, str_len(home))
+    }
+
+    uint32 rc = exec("ls -la")
+    exit(rc)
+}
+```
+
+These functions are only available in `@ctx(host)` code.  Using them in
+kernel contexts (`boot`, `thread`, `irq`, `nmi`) is a compile-time error.
+
+### Module capabilities
+
+Host functions require the appropriate module capabilities:
+
+| Capability | Required for                        |
+|------------|-------------------------------------|
+| `Stdout`   | `write`                             |
+| `Env`      | `getenv`                            |
+| `Process`  | `exec`, `exit`                      |
+
+`alloc`, `dealloc`, `str_copy`, `str_cat`, and `str_len` do not require
+additional capabilities beyond `@ctx(host)`.
+
+---
+
+## 21. Slice Indexing
+
+Slices support element access via bracket notation.  Both reads and writes
+are supported.
+
+### Read
+
+```kr
+fn first_byte([uint8] data) -> uint8 {
+    uint8 b = data[0]
+    return b
+}
+```
+
+`data[i]` loads the element at byte offset `i * sizeof(T)` from the slice
+base pointer.  No bounds check is performed at runtime (freestanding
+environment — the caller is responsible for ensuring `i < data.len`).
+
+### Write
+
+```kr
+fn zero_first([uint8] buf) {
+    buf[0] = 0
+}
+```
+
+`buf[i] = val` stores `val` at the computed offset.  The slice must refer
+to writable memory.
+
+### Indexing with variables
+
+The index expression can be any integer expression:
+
+```kr
+fn fill([uint8] buf, uint64 n, uint8 val) {
+    uint64 i = 0
+    while i < n {
+        buf[i] = val
+        i += 1
+    }
+}
+```
+
+---
+
+## 22. Compiler CLI Reference
 
 ### Default compilation
 
@@ -874,7 +1071,9 @@ kernriftc --emit=elfobj  -o out.o    <file.kr>        # ELF relocatable object
 kernriftc --emit=elfobj  --arch arm64 -o out.o <file.kr>
 kernriftc --emit=asm     -o out.s    <file.kr>        # textual assembly
 kernriftc --emit=asm     --arch arm64 -o out.s <file.kr>
-kernriftc --emit=staticlib -o out.a  <file.kr>        # static library archive
+kernriftc --emit=staticlib -o out.a  <file.kr>        # static library archive (no ar needed)
+kernriftc --emit=elfexe  -o out     <file.kr>        # native ELF executable (no ld needed)
+kernriftc --emit=hostexe -o build   <file.kr>        # native host executable (no cc needed)
 ```
 
 Optionally emit a sidecar metadata JSON alongside the binary:
@@ -941,7 +1140,7 @@ memory, runs the entry function, and flushes `print()` output to stdout.
 
 ---
 
-## 19. Adaptive Surface & Living Compiler
+## 23. Adaptive Surface & Living Compiler
 
 KernRift's compiler has a built-in mechanism for evolving the language without
 breaking existing code.  Every attribute alias or shorthand goes through a
@@ -1066,7 +1265,7 @@ is idiomatic and no suggestions are available.
 
 ---
 
-## 20. Binary Artifact Formats
+## 24. Binary Artifact Formats
 
 ### `.krbo` — KernRift binary object
 
