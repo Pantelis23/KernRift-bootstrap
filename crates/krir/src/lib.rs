@@ -14760,7 +14760,10 @@ pub fn emit_macho_executable(
     out.extend_from_slice(dylinker_path);
     // Pad to lc_dylinker_size total (we wrote 12 + 14 = 26 bytes so far in this LC)
     let dylinker_written = 12 + dylinker_path.len() as u32;
-    out.extend(std::iter::repeat_n(0u8, (lc_dylinker_size - dylinker_written) as usize));
+    out.extend(std::iter::repeat_n(
+        0u8,
+        (lc_dylinker_size - dylinker_written) as usize,
+    ));
 
     // ===== LC_LOAD_DYLIB (padded to 8) =====
     push_u32_le(&mut out, 0x0C); // cmd: LC_LOAD_DYLIB
@@ -14772,7 +14775,10 @@ pub fn emit_macho_executable(
     out.extend_from_slice(dylib_path);
     // Pad to lc_dylib_size total (we wrote 24 + 26 = 50 bytes so far in this LC)
     let dylib_written = 24 + dylib_path.len() as u32;
-    out.extend(std::iter::repeat_n(0u8, (lc_dylib_size - dylib_written) as usize));
+    out.extend(std::iter::repeat_n(
+        0u8,
+        (lc_dylib_size - dylib_written) as usize,
+    ));
 
     // ===== LC_MAIN (24 bytes) =====
     push_u32_le(&mut out, 0x8000_0028); // cmd: LC_MAIN
