@@ -11664,7 +11664,7 @@ pub const KRBO_ARCH_X86_64: u8 = 0x01;
 pub const KRBO_ARCH_AARCH64: u8 = 0x02;
 
 pub const KRBO_FAT_MAGIC: [u8; 8] = *b"KRBOFAT\0";
-pub const KRBO_FAT_VERSION: u32 = 1;
+pub const KRBO_FAT_VERSION: u32 = 2;
 pub const KRBO_FAT_ARCH_X86_64: u32 = 0x01;
 pub const KRBO_FAT_ARCH_AARCH64: u32 = 0x02;
 pub const KRBO_FAT_COMPRESSION_NONE: u32 = 0;
@@ -11767,35 +11767,61 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
     })
 }
 
-/// Emit a KRBOFAT fat binary from (arch_id, raw_krbo_bytes) slices.
-/// Each slice is LZ4-compressed.
-pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> {
+/// Emit a KRBOFAT v2 fat binary from `(arch_id, krbo_bytes, optional_runtime_bytes)` entries.
+///
+/// Format v2 per-arch entry (48 bytes):
+/// ```text
+/// +0:  arch_id          (u32 LE)
+/// +4:  compression      (u32 LE)
+/// +8:  offset           (u64 LE)  — byte offset to compressed krbo blob
+/// +16: compressed_size  (u64 LE)
+/// +24: uncompressed_size(u64 LE)
+/// +32: runtime_offset   (u64 LE)  — byte offset to runtime blob (0 if none)
+/// +40: runtime_len      (u64 LE)  — byte length of runtime blob (0 if none)
+/// ```
+pub fn emit_krbofat_bytes_v2(
+    entries: &[(u32, Vec<u8>, Option<&[u8]>)],
+) -> Result<Vec<u8>, String> {
     use lz4_flex::frame::FrameEncoder;
     use std::io::Write as IoWrite;
 
-    let arch_count = slices.len() as u32;
+    let arch_count = entries.len() as u32;
     // Header: 8 (magic) + 4 (version) + 4 (arch_count) = 16 bytes
-    // Entries: arch_count * 32 bytes each
-    let header_region = 16 + arch_count as usize * 32;
+    // Entries: arch_count * 48 bytes each (v2)
+    let header_region = 16 + arch_count as usize * 48;
     // Pad to next 16-byte boundary
     let padding = (16 - (header_region % 16)) % 16;
     let data_start = header_region + padding;
 
-    // Compress all slices
-    let mut compressed: Vec<Vec<u8>> = Vec::with_capacity(slices.len());
-    for (_, raw) in slices {
+    // Compress all krbo slices
+    let mut compressed: Vec<Vec<u8>> = Vec::with_capacity(entries.len());
+    for (_, raw, _) in entries {
         let mut enc = FrameEncoder::new(Vec::new());
         enc.write_all(raw)
             .map_err(|e| format!("lz4 compress: {e}"))?;
         compressed.push(enc.finish().map_err(|e| format!("lz4 finish: {e}"))?);
     }
 
-    // Calculate offsets
-    let mut offsets: Vec<u64> = Vec::with_capacity(slices.len());
+    // Calculate krbo offsets (written first), then runtime offsets (written after)
+    let mut krbo_offsets: Vec<u64> = Vec::with_capacity(entries.len());
     let mut cursor = data_start as u64;
     for c in &compressed {
-        offsets.push(cursor);
+        krbo_offsets.push(cursor);
         cursor += c.len() as u64;
+    }
+
+    // Runtime blobs follow the compressed krbo blobs
+    let mut runtime_offsets: Vec<u64> = Vec::with_capacity(entries.len());
+    let mut runtime_lens: Vec<u64> = Vec::with_capacity(entries.len());
+    for (_, _, rt) in entries {
+        if let Some(blob) = rt {
+            runtime_offsets.push(cursor);
+            runtime_lens.push(blob.len() as u64);
+            cursor += blob.len() as u64;
+        } else {
+            runtime_offsets.push(0u64);
+            runtime_lens.push(0u64);
+        }
     }
 
     let mut out = Vec::with_capacity(cursor as usize);
@@ -11803,20 +11829,37 @@ pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> 
     out.extend_from_slice(&KRBO_FAT_VERSION.to_le_bytes());
     out.extend_from_slice(&arch_count.to_le_bytes());
 
-    for (i, (arch_id, raw)) in slices.iter().enumerate() {
-        out.extend_from_slice(&arch_id.to_le_bytes());
-        out.extend_from_slice(&KRBO_FAT_COMPRESSION_LZ4.to_le_bytes());
-        out.extend_from_slice(&offsets[i].to_le_bytes());
-        out.extend_from_slice(&(compressed[i].len() as u64).to_le_bytes());
-        out.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+    for (i, (arch_id, raw, _)) in entries.iter().enumerate() {
+        out.extend_from_slice(&arch_id.to_le_bytes());             // +0
+        out.extend_from_slice(&KRBO_FAT_COMPRESSION_LZ4.to_le_bytes()); // +4
+        out.extend_from_slice(&krbo_offsets[i].to_le_bytes());     // +8
+        out.extend_from_slice(&(compressed[i].len() as u64).to_le_bytes()); // +16
+        out.extend_from_slice(&(raw.len() as u64).to_le_bytes());  // +24
+        out.extend_from_slice(&runtime_offsets[i].to_le_bytes());  // +32
+        out.extend_from_slice(&runtime_lens[i].to_le_bytes());     // +40
     }
 
     out.extend(std::iter::repeat_n(0u8, padding));
     for c in &compressed {
         out.extend_from_slice(c);
     }
+    for (_, _, rt) in entries {
+        if let Some(blob) = rt {
+            out.extend_from_slice(blob);
+        }
+    }
 
     Ok(out)
+}
+
+/// Emit a KRBOFAT fat binary from (arch_id, raw_krbo_bytes) slices.
+/// Each slice is LZ4-compressed. Emits format version 2 with no runtime blobs.
+pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    let entries: Vec<(u32, Vec<u8>, Option<&[u8]>)> = slices
+        .iter()
+        .map(|(arch_id, raw)| (*arch_id, raw.clone(), None))
+        .collect();
+    emit_krbofat_bytes_v2(&entries)
 }
 
 /// Extract and decompress one arch's krbo slice from a KRBOFAT fat binary.
@@ -11838,17 +11881,21 @@ pub fn parse_krbofat_slice(
         return Err(format!("{}: not a KRBOFAT: wrong magic", fname));
     }
     let fat_version = u32::from_le_bytes(fat[8..12].try_into().unwrap());
-    if fat_version != KRBO_FAT_VERSION {
-        return Err(format!(
-            "{}: unsupported KRBOFAT version {} (expected {})",
-            fname, fat_version, KRBO_FAT_VERSION
-        ));
-    }
+    let entry_size = match fat_version {
+        1 => 32usize,
+        2 => 48usize,
+        other => {
+            return Err(format!(
+                "{}: unsupported KRBOFAT version {} (expected 1 or 2)",
+                fname, other
+            ));
+        }
+    };
     let arch_count = u32::from_le_bytes(fat[12..16].try_into().unwrap()) as usize;
 
     for i in 0..arch_count {
-        let e = 16 + i * 32;
-        if fat.len() < e + 32 {
+        let e = 16 + i * entry_size;
+        if fat.len() < e + entry_size {
             return Err(format!("{}: KRBOFAT: truncated entries", fname));
         }
         let entry_arch = u32::from_le_bytes(fat[e..e + 4].try_into().unwrap());
@@ -11856,6 +11903,7 @@ pub fn parse_krbofat_slice(
         let offset = u64::from_le_bytes(fat[e + 8..e + 16].try_into().unwrap()) as usize;
         let comp_size = u64::from_le_bytes(fat[e + 16..e + 24].try_into().unwrap()) as usize;
         let uncomp_size = u64::from_le_bytes(fat[e + 24..e + 32].try_into().unwrap()) as usize;
+        // v2 fields (runtime_offset and runtime_len at +32/+40) are present but not used here
 
         if entry_arch != arch_id {
             continue;
