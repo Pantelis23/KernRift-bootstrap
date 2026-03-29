@@ -3266,7 +3266,9 @@ pub enum TargetArch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TargetAbi {
+    #[default]
     Sysv,
     Win64,
     Aapcs64,
@@ -3888,6 +3890,10 @@ pub struct X86_64AsmModule {
     /// Each entry is `(label, value)` where value has no NUL terminator (`.asciz` adds it).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub string_data: Vec<(String, String)>,
+    /// Calling convention used for this module.  Determines which registers
+    /// are used for integer arguments and whether caller shadow-space is emitted.
+    #[serde(default)]
+    pub abi: TargetAbi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4668,6 +4674,7 @@ pub fn export_compiler_owned_object_to_x86_64_asm(
         section: target.sections.text,
         functions,
         string_data: vec![],
+        abi: target.abi,
     })
 }
 
@@ -5056,6 +5063,7 @@ pub fn lower_executable_krir_to_x86_64_asm(
         section: target.sections.text,
         functions,
         string_data,
+        abi: target.abi,
     })
 }
 
@@ -5567,7 +5575,7 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 let offset = sc_bytes + 8u32 * i as u32;
                 out.push_str(&format!(
                     "    movq {}, {}(%rsp)\n",
-                    asm_param_register(i as u8),
+                    abi_param_register(module.abi, i as u8),
                     offset
                 ));
             }
@@ -5597,20 +5605,30 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     ty,
                     slot_idx,
                 } => {
-                    // Load args into SysV parameter registers.
+                    // On Win64, allocate 32-byte shadow space before the call.
+                    let win64 = module.abi == TargetAbi::Win64;
+                    if win64 {
+                        out.push_str("    sub $32, %rsp\n");
+                    }
+                    // Load args into parameter registers (SysV: rdi/rsi/rdx/rcx; Win64: rcx/rdx/r8/r9).
                     for (i, arg) in args.iter().enumerate() {
-                        let reg = asm_param_register(i as u8);
+                        let reg = abi_param_register(module.abi, i as u8);
                         match arg {
                             ExecutableCallArg::Imm { value } => {
                                 out.push_str(&format!("    movq ${}, {}\n", value, reg));
                             }
                             ExecutableCallArg::Slot { byte_offset } => {
-                                if *byte_offset == 0 {
+                                let adjusted = if win64 {
+                                    byte_offset + 32
+                                } else {
+                                    *byte_offset
+                                };
+                                if adjusted == 0 {
                                     out.push_str(&format!("    movq (%rsp), {}\n", reg));
                                 } else {
                                     out.push_str(&format!(
                                         "    movq {}(%rsp), {}\n",
-                                        byte_offset, reg
+                                        adjusted, reg
                                     ));
                                 }
                             }
@@ -5622,6 +5640,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    call ");
                     out.push_str(symbol);
                     out.push('\n');
+                    if win64 {
+                        out.push_str("    add $32, %rsp\n");
+                    }
                     // Store the return value from the accumulator to the stack slot.
                     let offset = 8u32 * u32::from(*slot_idx);
                     let mnem = mmio_store_mnemonic(*ty);
@@ -5668,9 +5689,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 } => {
                     let else_label = format!(".L{}_branch_{}_else", function.symbol, branch_index);
                     let end_label = format!(".L{}_branch_{}_end", function.symbol, branch_index);
-                    // Load args into SysV parameter registers before the conditional call.
+                    // Load args into parameter registers before the conditional call.
                     for (i, arg) in args.iter().enumerate() {
-                        let reg = asm_param_register(i as u8);
+                        let reg = abi_param_register(module.abi, i as u8);
                         match arg {
                             ExecutableCallArg::Imm { value } => {
                                 out.push_str(&format!("    movq ${}, {}\n", value, reg));
@@ -6067,19 +6088,28 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     }
                 }
                 X86_64AsmInstruction::CallWithArgs { symbol, args } => {
+                    let win64 = module.abi == TargetAbi::Win64;
+                    if win64 {
+                        out.push_str("    sub $32, %rsp\n");
+                    }
                     for (i, arg) in args.iter().enumerate() {
-                        let reg = asm_param_register(i as u8);
+                        let reg = abi_param_register(module.abi, i as u8);
                         match arg {
                             ExecutableCallArg::Imm { value } => {
                                 out.push_str(&format!("    movq ${}, {}\n", value, reg));
                             }
                             ExecutableCallArg::Slot { byte_offset } => {
-                                if *byte_offset == 0 {
+                                let adjusted = if win64 {
+                                    byte_offset + 32
+                                } else {
+                                    *byte_offset
+                                };
+                                if adjusted == 0 {
                                     out.push_str(&format!("    movq (%rsp), {}\n", reg));
                                 } else {
                                     out.push_str(&format!(
                                         "    movq {}(%rsp), {}\n",
-                                        byte_offset, reg
+                                        adjusted, reg
                                     ));
                                 }
                             }
@@ -6091,6 +6121,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    call ");
                     out.push_str(symbol);
                     out.push('\n');
+                    if win64 {
+                        out.push_str("    add $32, %rsp\n");
+                    }
                 }
                 X86_64AsmInstruction::ParamLoad { param_idx, ty } => {
                     let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
@@ -6154,7 +6187,7 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 X86_64AsmInstruction::TailCall { symbol, args } => {
                     // Load args BEFORE frame teardown so stack slots are still valid.
                     for (i, arg) in args.iter().enumerate() {
-                        let reg = asm_param_register(i as u8);
+                        let reg = abi_param_register(module.abi, i as u8);
                         match arg {
                             ExecutableCallArg::Imm { value } => {
                                 out.push_str(&format!("    movq ${}, {}\n", value, reg));
@@ -8288,6 +8321,23 @@ fn asm_param_register(param_idx: u8) -> &'static str {
         4 => "%r8",
         5 => "%r9",
         _ => panic!("SysV ABI supports at most 6 integer register params"),
+    }
+}
+
+fn win64_param_register(param_idx: u8) -> &'static str {
+    match param_idx {
+        0 => "%rcx",
+        1 => "%rdx",
+        2 => "%r8",
+        3 => "%r9",
+        _ => panic!("Win64 ABI supports at most 4 integer register params"),
+    }
+}
+
+fn abi_param_register(abi: TargetAbi, param_idx: u8) -> &'static str {
+    match abi {
+        TargetAbi::Win64 => win64_param_register(param_idx),
+        _ => asm_param_register(param_idx),
     }
 }
 
