@@ -11290,6 +11290,93 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
     bytes
 }
 
+/// Emit a GNU ar archive containing a single ELF object file.
+///
+/// `member_name` is the filename stored in the archive header (e.g. "input.o").
+/// `object_bytes` is the raw ELF object file content.
+/// `symbols` is the list of global symbol names for the archive symbol table.
+///
+/// The archive contains:
+/// 1. A `/` (symbol table) member with big-endian offsets
+/// 2. The object member itself
+pub fn emit_native_ar_archive(
+    member_name: &str,
+    object_bytes: &[u8],
+    symbols: &[&str],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    // Archive magic
+    out.extend_from_slice(b"!<arch>\n");
+
+    // Build symbol table content: 4-byte BE count + count*4-byte BE offsets + NUL-terminated names
+    let mut symtab_content = Vec::new();
+    let sym_count = symbols.len() as u32;
+    symtab_content.extend_from_slice(&sym_count.to_be_bytes());
+
+    // Build name bytes to calculate total symtab size
+    let mut name_bytes = Vec::new();
+    for name in symbols {
+        name_bytes.extend_from_slice(name.as_bytes());
+        name_bytes.push(0);
+    }
+    let symtab_data_len = 4 + sym_count as usize * 4 + name_bytes.len();
+    let symtab_padded = symtab_data_len + (symtab_data_len % 2); // pad to even boundary
+
+    // All symbols point to the single object member, which starts at:
+    // 8 (archive magic) + 60 (symtab header) + symtab_padded + 60 (object member header)
+    // But the offset points to the member HEADER, not the content. So:
+    let member_offset: u32 = (8 + 60 + symtab_padded) as u32;
+    for _ in 0..sym_count {
+        symtab_content.extend_from_slice(&member_offset.to_be_bytes());
+    }
+    symtab_content.extend_from_slice(&name_bytes);
+
+    // Write symbol table member
+    emit_ar_member_header(&mut out, "/", symtab_content.len());
+    out.extend_from_slice(&symtab_content);
+    if symtab_content.len() % 2 != 0 {
+        out.push(b'\n');
+    }
+
+    // Write object member
+    emit_ar_member_header(&mut out, member_name, object_bytes.len());
+    out.extend_from_slice(object_bytes);
+    if object_bytes.len() % 2 != 0 {
+        out.push(b'\n');
+    }
+
+    out
+}
+
+fn emit_ar_member_header(out: &mut Vec<u8>, name: &str, size: usize) {
+    // name[16] — "name/" padded with spaces (symbol table uses "/" alone)
+    let mut name_field = [b' '; 16];
+    let name_with_slash = if name == "/" {
+        "/".to_string()
+    } else {
+        format!("{}/", name)
+    };
+    let name_bytes = name_with_slash.as_bytes();
+    let copy_len = name_bytes.len().min(16);
+    name_field[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+    out.extend_from_slice(&name_field);
+
+    // date[12] — "0" padded with spaces (deterministic/reproducible output)
+    out.extend_from_slice(b"0           ");
+    // uid[6]
+    out.extend_from_slice(b"0     ");
+    // gid[6]
+    out.extend_from_slice(b"0     ");
+    // mode[8]
+    out.extend_from_slice(b"100644  ");
+    // size[10] — decimal, left-justified, space-padded
+    let size_str = format!("{:<10}", size);
+    out.extend_from_slice(size_str.as_bytes());
+    // fmag[2]
+    out.extend_from_slice(b"`\n");
+}
+
 pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8> {
     object
         .validate()
