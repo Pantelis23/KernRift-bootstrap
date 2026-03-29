@@ -1358,3 +1358,52 @@ fn staticlib_produces_valid_ar_archive() {
     // The archive should contain at least the symbol table header + some data
     assert!(bytes.len() > 68, "archive should be larger than just header");
 }
+
+#[test]
+fn pe_executable_has_valid_header() {
+    // Minimal x86 code: xor eax,eax; ret (entry returns 0)
+    let text = vec![0x31, 0xC0, 0xC3];
+    let bytes = krir::emit_pe_executable_x86_64(&text, 0, &[]);
+    // DOS magic "MZ"
+    assert_eq!(bytes[0], b'M');
+    assert_eq!(bytes[1], b'Z');
+    // e_lfanew at offset 0x3C points to PE sig at 0x40
+    let lfanew = u32::from_le_bytes(bytes[0x3C..0x40].try_into().unwrap());
+    assert_eq!(lfanew, 0x40);
+    // PE signature "PE\0\0"
+    assert_eq!(&bytes[0x40..0x44], b"PE\0\0");
+    // Machine = 0x8664 (AMD64)
+    let machine = u16::from_le_bytes(bytes[0x44..0x46].try_into().unwrap());
+    assert_eq!(machine, 0x8664);
+    // Optional header magic = 0x020B (PE32+)
+    let magic = u16::from_le_bytes(bytes[0x58..0x5A].try_into().unwrap());
+    assert_eq!(magic, 0x020B);
+}
+
+#[test]
+fn macho_executable_has_valid_header_x86_64() {
+    let text = vec![0x31, 0xC0, 0xC3]; // xor eax,eax; ret
+    let bytes = krir::emit_macho_executable(&text, 0, false);
+    // MH_MAGIC_64
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    assert_eq!(magic, 0xFEED_FACF);
+    // cputype = CPU_TYPE_X86_64
+    let cputype = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    assert_eq!(cputype, 0x0100_0007);
+    // filetype = MH_EXECUTE
+    let filetype = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    assert_eq!(filetype, 2);
+}
+
+#[test]
+fn macho_executable_has_valid_header_arm64() {
+    // Minimal AArch64 code: mov x0, #0; ret
+    let text = vec![0x00, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6];
+    let bytes = krir::emit_macho_executable(&text, 0, true);
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    assert_eq!(magic, 0xFEED_FACF);
+    let cputype = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    assert_eq!(cputype, 0x0100_000C); // CPU_TYPE_ARM64
+    let filetype = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    assert_eq!(filetype, 2);
+}
