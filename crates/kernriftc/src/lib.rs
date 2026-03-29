@@ -598,115 +598,190 @@ fn emit_x86_64_elf_executable_bytes(
     krir::emit_x86_64_elf_executable(&object)
 }
 
-/// Link a host-native executable via `cc`/`gcc`, allowing extern libc symbols.
-/// Unlike `elfexe`, this does not reject extern declarations — the C compiler
-/// driver resolves them against libc and adds CRT startup code automatically.
-/// The KernRift module must expose a `main` function that acts as the C entry point.
-/// Link a host-native executable via `cc`/`gcc`, allowing extern libc symbols.
-/// Unlike `elfexe`, this does not reject extern declarations — the C compiler
-/// driver resolves them against libc and adds CRT startup code automatically.
-/// The KernRift module must expose a `main` function that acts as the C entry point.
+/// Produce a host-native executable.
 ///
-/// Implementation: lower to x86_64 AT&T assembly text (which supports the full
-/// instruction set including `CompareIntoSlot` / `BranchIfZero` / loops), write
-/// it to a temp `.s` file, then use `cc -c` to assemble and `cc` to link.
+/// On Linux x86_64 this uses the native hostexe path: lower to an x86_64 object,
+/// concatenate the pre-assembled runtime blob, resolve relocations, and emit a
+/// minimal static ELF — no external compiler, assembler, or linker needed.
+///
+/// On other platforms, fall back to the cc-based path that shells out to a C
+/// compiler driver.
 fn emit_x86_64_host_executable_bytes(
     executable: &krir::ExecutableKrirModule,
     #[cfg_attr(windows, allow(unused_variables))] target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
-    let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
-        "hostexe emit requires a C compiler driver (cc, gcc, or clang); \
-         on Windows install Visual Studio 2019/2022 with 'C++ Clang tools for Windows'"
-            .to_string()
-    })?;
-
-    // On Windows use the Win64 calling convention so generated ASM passes
-    // arguments in %rcx/%rdx/%r8/%r9 (MS x64 ABI) rather than %rdi/%rsi/%rdx/%rcx
-    // (SysV ABI).  No external bridge needed — the codegen is fully ABI-aware.
-    #[cfg(not(windows))]
-    let effective_target = target.clone();
-    #[cfg(windows)]
-    let effective_target = krir::BackendTargetContract::x86_64_win64();
-
-    // Lower to ASM text (supports CompareIntoSlot / if-else / loops).
-    let asm_module = lower_executable_krir_to_x86_64_asm(executable, &effective_target)?;
-    let asm_text = emit_x86_64_asm_text(&asm_module);
-
-    let temp_dir = unique_temp_dir("hostexe");
-    fs::create_dir_all(&temp_dir).map_err(|err| {
-        format!(
-            "failed to create temp dir '{}': {}",
-            temp_dir.display(),
-            err
-        )
-    })?;
-
-    let cleanup = TempArtifactDir {
-        path: temp_dir.clone(),
-    };
-    let asm_path = temp_dir.join("input.s");
-    let object_path = temp_dir.join("input.o");
-    let output_path = temp_dir.join("output");
-
-    // The C runtime startup calls `main`.  If the module doesn't already
-    // define a `main` symbol (e.g. it uses `fn entry()`), append a thin
-    // trampoline so the CRT can locate the entry point.
-    let asm_final = if !asm_text.contains("\nmain:\n") {
-        format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text)
-    } else {
-        asm_text
-    };
-
-    fs::write(&asm_path, asm_final.as_bytes())
-        .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
-
-    // Assemble: cc -c input.s -o input.o
-    let as_output = Command::new(&cc)
-        .arg("-c")
-        .arg(&asm_path)
-        .arg("-o")
-        .arg(&object_path)
-        .output()
-        .map_err(|err| format!("failed to assemble with '{}': {}", cc, err))?;
-
-    if !as_output.status.success() {
-        return Err(format!(
-            "hostexe assemble failed with '{}':\nstdout:\n{}\nstderr:\n{}",
-            cc,
-            String::from_utf8_lossy(&as_output.stdout),
-            String::from_utf8_lossy(&as_output.stderr)
-        ));
+    // On Linux, use native hostexe (no cc dependency)
+    #[cfg(target_os = "linux")]
+    {
+        return emit_native_hostexe_linux_x86_64(executable, target);
     }
 
-    // Link: cc input.o -o output  (adds CRT _start, resolves libc).
-    // On Windows the PE format needs an explicit subsystem flag so the MSVC
-    // linker (invoked by VS-bundled clang) doesn't reject the image.
-    let mut link_cmd = Command::new(&cc);
-    link_cmd.arg(&object_path).arg("-o").arg(&output_path);
-    #[cfg(windows)]
-    link_cmd.arg("-Wl,/SUBSYSTEM:CONSOLE");
-    let cc_output = link_cmd
-        .output()
-        .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
+    // On other OSes, fall back to cc-based path
+    #[cfg(not(target_os = "linux"))]
+    {
+        let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
+            "hostexe emit requires a C compiler driver (cc, gcc, or clang); \
+             on Windows install Visual Studio 2019/2022 with 'C++ Clang tools for Windows'"
+                .to_string()
+        })?;
 
-    if !cc_output.status.success() {
-        return Err(format!(
-            "hostexe link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
-            cc,
-            String::from_utf8_lossy(&cc_output.stdout),
-            String::from_utf8_lossy(&cc_output.stderr)
-        ));
+        // On Windows use the Win64 calling convention so generated ASM passes
+        // arguments in %rcx/%rdx/%r8/%r9 (MS x64 ABI) rather than %rdi/%rsi/%rdx/%rcx
+        // (SysV ABI).  No external bridge needed — the codegen is fully ABI-aware.
+        #[cfg(not(windows))]
+        let effective_target = target.clone();
+        #[cfg(windows)]
+        let effective_target = krir::BackendTargetContract::x86_64_win64();
+
+        // Lower to ASM text (supports CompareIntoSlot / if-else / loops).
+        let asm_module = lower_executable_krir_to_x86_64_asm(executable, &effective_target)?;
+        let asm_text = emit_x86_64_asm_text(&asm_module);
+
+        let temp_dir = unique_temp_dir("hostexe");
+        fs::create_dir_all(&temp_dir).map_err(|err| {
+            format!(
+                "failed to create temp dir '{}': {}",
+                temp_dir.display(),
+                err
+            )
+        })?;
+
+        let cleanup = TempArtifactDir {
+            path: temp_dir.clone(),
+        };
+        let asm_path = temp_dir.join("input.s");
+        let object_path = temp_dir.join("input.o");
+        let output_path = temp_dir.join("output");
+
+        // The C runtime startup calls `main`.  If the module doesn't already
+        // define a `main` symbol (e.g. it uses `fn entry()`), append a thin
+        // trampoline so the CRT can locate the entry point.
+        let asm_final = if !asm_text.contains("\nmain:\n") {
+            format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text)
+        } else {
+            asm_text
+        };
+
+        fs::write(&asm_path, asm_final.as_bytes())
+            .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
+
+        // Assemble: cc -c input.s -o input.o
+        let as_output = Command::new(&cc)
+            .arg("-c")
+            .arg(&asm_path)
+            .arg("-o")
+            .arg(&object_path)
+            .output()
+            .map_err(|err| format!("failed to assemble with '{}': {}", cc, err))?;
+
+        if !as_output.status.success() {
+            return Err(format!(
+                "hostexe assemble failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+                cc,
+                String::from_utf8_lossy(&as_output.stdout),
+                String::from_utf8_lossy(&as_output.stderr)
+            ));
+        }
+
+        // Link: cc input.o -o output  (adds CRT _start, resolves libc).
+        // On Windows the PE format needs an explicit subsystem flag so the MSVC
+        // linker (invoked by VS-bundled clang) doesn't reject the image.
+        let mut link_cmd = Command::new(&cc);
+        link_cmd.arg(&object_path).arg("-o").arg(&output_path);
+        #[cfg(windows)]
+        link_cmd.arg("-Wl,/SUBSYSTEM:CONSOLE");
+        let cc_output = link_cmd
+            .output()
+            .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
+
+        if !cc_output.status.success() {
+            return Err(format!(
+                "hostexe link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+                cc,
+                String::from_utf8_lossy(&cc_output.stdout),
+                String::from_utf8_lossy(&cc_output.stderr)
+            ));
+        }
+
+        let bytes = fs::read(&output_path).map_err(|err| {
+            format!(
+                "failed to read linked output '{}': {}",
+                output_path.display(),
+                err
+            )
+        })?;
+        drop(cleanup);
+        Ok(bytes)
+    }
+}
+
+/// Native hostexe emitter for Linux x86_64.
+///
+/// Lowers the KRIR module to an x86_64 relocatable object, concatenates the
+/// pre-assembled runtime blob, resolves all relocations (user-to-user and
+/// user-to-runtime), patches the runtime's `call main` fixup, and emits a
+/// minimal static ELF executable.
+#[cfg(target_os = "linux")]
+fn emit_native_hostexe_linux_x86_64(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    use crate::runtime::linux_x86_64::BLOB as RT;
+
+    // 1. Lower user code to x86_64 object
+    let object = lower_executable_krir_to_x86_64_object(executable, target)?;
+    let user_len = object.text_bytes.len();
+    let rt_len = RT.code.len();
+
+    // 2. Combine user code + runtime blob
+    let mut text = Vec::with_capacity(user_len + rt_len);
+    text.extend_from_slice(&object.text_bytes);
+    text.extend_from_slice(RT.code);
+
+    // 3. Build symbol offset maps
+    let mut user_syms: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for sym in &object.function_symbols {
+        user_syms.insert(&sym.name, sym.offset);
     }
 
-    let bytes = fs::read(&output_path).map_err(|err| {
-        format!(
-            "failed to read linked output '{}': {}",
-            output_path.display(),
-            err
-        )
-    })?;
-    drop(cleanup);
-    Ok(bytes)
+    // 4. Resolve relocations
+    for reloc in &object.relocations {
+        let target_offset = if let Some(rt_off) = RT.symbol_offset(&reloc.target_symbol) {
+            // User calls runtime function
+            user_len as i64 + rt_off as i64
+        } else if let Some(&user_off) = user_syms.get(reloc.target_symbol.as_str()) {
+            // User calls user function
+            user_off as i64
+        } else {
+            return Err(format!("hostexe: unresolved symbol '{}'", reloc.target_symbol));
+        };
+
+        let value = target_offset - reloc.offset as i64 + reloc.addend;
+        let off = reloc.offset as usize;
+        if off + 4 > text.len() {
+            return Err(format!("hostexe: relocation at {} out of bounds", off));
+        }
+        text[off..off + 4].copy_from_slice(&(value as i32).to_le_bytes());
+    }
+
+    // 5. Patch runtime's "call main" to reach user's main/entry
+    let main_offset = user_syms.get("main")
+        .or_else(|| user_syms.get("entry"))
+        .copied()
+        .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
+
+    let fixup_abs = user_len as u32 + RT.main_call_fixup;
+    let displacement = main_offset as i32 - (fixup_abs as i32 + 4);
+    let fixup_off = fixup_abs as usize;
+    text[fixup_off..fixup_off + 4].copy_from_slice(&displacement.to_le_bytes());
+
+    // 6. Entry point = _start in runtime
+    let start_offset = RT.symbol_offset("_start")
+        .ok_or_else(|| "runtime blob missing _start".to_string())?;
+    let entry_in_text = user_len as u32 + start_offset;
+
+    // 7. Produce ELF executable
+    krir::emit_x86_64_elf_executable_for_hostexe(&text, entry_in_text)
 }
 
 fn emit_x86_64_static_library(

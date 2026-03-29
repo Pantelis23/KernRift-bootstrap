@@ -11593,6 +11593,67 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
     Ok(out)
 }
 
+/// Produce a minimal static x86_64 ELF executable from raw text bytes and an
+/// entry offset.  This is the hostexe variant: it uses `PF_R|PF_W|PF_X`
+/// (flags=7) because the runtime blob contains writable data (envp, heap state).
+///
+/// Layout (mirrors `emit_x86_64_elf_executable`):
+///   [0x00 .. 0x40)  ELF header  (64 bytes)
+///   [0x40 .. 0x78)  PT_LOAD phdr (56 bytes)
+///   [0x78 .. EOF)   text bytes
+pub fn emit_x86_64_elf_executable_for_hostexe(
+    text: &[u8],
+    entry_offset: u32,
+) -> Result<Vec<u8>, String> {
+    let base_vaddr: u64 = 0x400000;
+    let ehdr_size: usize = 64;
+    let phdr_size: usize = 56;
+    let text_file_offset = ehdr_size + phdr_size;
+    let total_file_size = text_file_offset + text.len();
+    let entry_vaddr = base_vaddr + text_file_offset as u64 + entry_offset as u64;
+
+    let mut out = Vec::with_capacity(total_file_size);
+
+    // --- ELF header (64 bytes) ---
+    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
+    out.push(2);                // EI_CLASS: ELFCLASS64
+    out.push(1);                // EI_DATA: ELFDATA2LSB
+    out.push(1);                // EI_VERSION: EV_CURRENT
+    out.push(0);                // EI_OSABI: ELFOSABI_NONE
+    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
+    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    push_u16_le(&mut out, 0x3E); // e_machine: EM_X86_64
+    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u64_le(&mut out, entry_vaddr); // e_entry
+    push_u64_le(&mut out, ehdr_size as u64); // e_phoff
+    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
+    push_u32_le(&mut out, 0);   // e_flags
+    push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
+    push_u16_le(&mut out, phdr_size as u16); // e_phentsize
+    push_u16_le(&mut out, 1);   // e_phnum
+    push_u16_le(&mut out, 64);  // e_shentsize
+    push_u16_le(&mut out, 0);   // e_shnum
+    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    debug_assert_eq!(out.len(), ehdr_size);
+
+    // --- Program header (56 bytes): single PT_LOAD, read+write+execute ---
+    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
+    push_u32_le(&mut out, 7);   // p_flags: PF_R | PF_W | PF_X
+    push_u64_le(&mut out, 0);   // p_offset
+    push_u64_le(&mut out, base_vaddr); // p_vaddr
+    push_u64_le(&mut out, base_vaddr); // p_paddr
+    push_u64_le(&mut out, total_file_size as u64); // p_filesz
+    push_u64_le(&mut out, total_file_size as u64); // p_memsz
+    push_u64_le(&mut out, 0x200000); // p_align
+    debug_assert_eq!(out.len(), ehdr_size + phdr_size);
+
+    // --- .text section ---
+    out.extend_from_slice(text);
+    debug_assert_eq!(out.len(), total_file_size);
+
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // KRBO container format
 // ---------------------------------------------------------------------------
