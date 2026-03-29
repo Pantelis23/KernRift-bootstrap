@@ -1706,9 +1706,17 @@ fn lower_function(
     // Pre-populate slot_types with parameter types so that comparisons and
     // arithmetic involving params use the correct KRIR type.
     let mut initial_slot_types: BTreeMap<String, KrirMmioScalarType> = BTreeMap::new();
+    // Build a map of slice parameter names to their element types for
+    // slice indexing (buf[i]) lowering.
+    let mut slice_elem_types: BTreeMap<String, KrirMmioScalarType> = BTreeMap::new();
     for (pname, pty) in &item.params {
-        if let ParserParamTy::Scalar(s) = pty {
-            initial_slot_types.insert(pname.clone(), lower_mmio_scalar_type(*s));
+        match pty {
+            ParserParamTy::Scalar(s) => {
+                initial_slot_types.insert(pname.clone(), lower_mmio_scalar_type(*s));
+            }
+            ParserParamTy::Slice(elem) => {
+                slice_elem_types.insert(pname.clone(), lower_mmio_scalar_type(*elem));
+            }
         }
     }
     let mut queue: Vec<PendingFn> = vec![PendingFn {
@@ -1787,6 +1795,7 @@ fn lower_function(
                 fn_counter,
                 &mut pending_fns,
                 &mut slot_types,
+                &slice_elem_types,
             );
         }
         // Append continuation call (for synthesized branches).
@@ -2846,6 +2855,10 @@ fn lower_stmts_to_canonical_executable(
                     args.len()
                 ));
             }
+            Stmt::SliceIndexWrite { slice, .. } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported slice index write ({}[..] = ..)",
+                function_name, slice
+            )),
             Stmt::VarDecl { .. }
             | Stmt::Assign { .. }
             | Stmt::CompoundAssign { .. }
@@ -2868,6 +2881,7 @@ fn lower_stmts_to_canonical_executable(
 
 /// Lower a surface `Expr` to a KRIR slot, emitting operations into `ops`.
 /// Returns the name of the slot holding the result.
+#[allow(clippy::too_many_arguments)]
 fn lower_expr(
     expr: &ParserExpr,
     ops: &mut Vec<KrirOp>,
@@ -2876,6 +2890,7 @@ fn lower_expr(
     eff_used: &mut BTreeSet<Eff>,
     slot_types: &BTreeMap<String, KrirMmioScalarType>,
     const_map: &std::collections::BTreeMap<String, String>,
+    slice_elem_types: &BTreeMap<String, KrirMmioScalarType>,
 ) -> Result<String, String> {
     match expr {
         ParserExpr::IntLiteral(n) => {
@@ -2979,6 +2994,7 @@ fn lower_expr(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             )?;
             if is_float {
                 let r = lower_expr(
@@ -2989,6 +3005,7 @@ fn lower_expr(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 )?;
                 let fop = binop_to_krir_farith(*op)
                     .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
@@ -3018,6 +3035,7 @@ fn lower_expr(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 )?;
                 let out = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3057,6 +3075,7 @@ fn lower_expr(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             )?;
             ops.push(KrirOp::SlotArith {
                 ty: arith_ty,
@@ -3101,6 +3120,7 @@ fn lower_expr(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 )?;
                 let dst = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3138,6 +3158,7 @@ fn lower_expr(
                         eff_used,
                         slot_types,
                         const_map,
+                        slice_elem_types,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3172,6 +3193,7 @@ fn lower_expr(
                         eff_used,
                         slot_types,
                         const_map,
+                        slice_elem_types,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3200,6 +3222,7 @@ fn lower_expr(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 )?);
             }
             let nr_slot = lowered.remove(0);
@@ -3218,6 +3241,105 @@ fn lower_expr(
                 dst: Some(dst.clone()),
             });
             Ok(dst)
+        }
+        // `buf.len` — load the length of a slice parameter into a fresh slot.
+        ParserExpr::SliceLen(name) => {
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: slot.clone(),
+            });
+            ops.push(KrirOp::SliceLen {
+                slice: name.clone(),
+                slot: slot.clone(),
+            });
+            Ok(slot)
+        }
+        // `buf[index]` — read element from a slice parameter.
+        ParserExpr::SliceIndex { slice, index } => {
+            let elem_ty = slice_elem_types
+                .get(slice.as_str())
+                .copied()
+                .ok_or_else(|| format!("'{}' is not a slice parameter", slice))?;
+
+            // 1. Get base pointer
+            let ptr_slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: ptr_slot.clone(),
+            });
+            ops.push(KrirOp::SlicePtr {
+                slice: slice.clone(),
+                slot: ptr_slot.clone(),
+            });
+
+            // 2. Lower index expression
+            let idx_slot = lower_expr(
+                index,
+                ops,
+                slot_counter,
+                device_regs,
+                eff_used,
+                slot_types,
+                const_map,
+                slice_elem_types,
+            )?;
+
+            // 3. Compute byte address: ptr + index * byte_width
+            let bw = elem_ty.byte_width();
+            let addr_slot = if bw == 1 {
+                // addr = ptr + index (no multiply needed)
+                ops.push(KrirOp::SlotArith {
+                    ty: KrirMmioScalarType::U64,
+                    dst: ptr_slot.clone(),
+                    src: idx_slot,
+                    arith_op: KrirArithOp::Add,
+                });
+                ptr_slot
+            } else {
+                // offset = index * byte_width
+                let offset_slot = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: offset_slot.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: KrirMmioScalarType::U64,
+                    cell: offset_slot.clone(),
+                    value: KrirMmioValueExpr::Ident {
+                        name: idx_slot.clone(),
+                    },
+                });
+                ops.push(KrirOp::CellArithImm {
+                    ty: KrirMmioScalarType::U64,
+                    cell: offset_slot.clone(),
+                    arith_op: KrirArithOp::Mul,
+                    imm: bw as u64,
+                });
+                // addr = ptr + offset
+                ops.push(KrirOp::SlotArith {
+                    ty: KrirMmioScalarType::U64,
+                    dst: ptr_slot.clone(),
+                    src: offset_slot,
+                    arith_op: KrirArithOp::Add,
+                });
+                ptr_slot
+            };
+
+            // 4. Load element from computed address (implicit unsafe for slice access)
+            let result_slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: elem_ty,
+                cell: result_slot.clone(),
+            });
+            ops.push(KrirOp::UnsafeEnter);
+            ops.push(KrirOp::RawPtrLoad {
+                ty: elem_ty,
+                addr_slot,
+                out_slot: result_slot.clone(),
+            });
+            ops.push(KrirOp::UnsafeExit);
+            Ok(result_slot)
         }
         _ => Err(format!(
             "expression type not yet supported in HIR lowering: {:?}",
@@ -3286,6 +3408,7 @@ fn lower_stmt(
     fn_counter: &mut u32,
     pending_fns: &mut Vec<PendingFn>,
     slot_types: &mut BTreeMap<String, KrirMmioScalarType>,
+    slice_elem_types: &BTreeMap<String, KrirMmioScalarType>,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -3310,6 +3433,7 @@ fn lower_stmt(
                     fn_counter,
                     pending_fns,
                     slot_types,
+                    slice_elem_types,
                 );
             }
             ops.push(KrirOp::CriticalExit);
@@ -3329,6 +3453,7 @@ fn lower_stmt(
                     fn_counter,
                     pending_fns,
                     slot_types,
+                    slice_elem_types,
                 );
             }
             ops.push(KrirOp::UnsafeExit);
@@ -3543,6 +3668,7 @@ fn lower_stmt(
                             eff_used,
                             slot_types,
                             const_map,
+                            slice_elem_types,
                         ) {
                             Ok(s) => lowered_args.push(s),
                             Err(e) => {
@@ -3582,6 +3708,7 @@ fn lower_stmt(
                         eff_used,
                         slot_types,
                         const_map,
+                        slice_elem_types,
                     ) {
                         Ok(port_slot) => {
                             let dst = fresh_slot(slot_counter);
@@ -3620,6 +3747,7 @@ fn lower_stmt(
                             eff_used,
                             slot_types,
                             const_map,
+                            slice_elem_types,
                         ) {
                             Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
@@ -3658,6 +3786,7 @@ fn lower_stmt(
                         eff_used,
                         slot_types,
                         const_map,
+                        slice_elem_types,
                     ) {
                         Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                         Err(e) => {
@@ -3682,6 +3811,7 @@ fn lower_stmt(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 ) {
                     errors.push(e);
                 }
@@ -3728,6 +3858,7 @@ fn lower_stmt(
                                 eff_used,
                                 slot_types,
                                 const_map,
+                                slice_elem_types,
                             ) {
                                 Ok(port_slot) => {
                                     ops.push(KrirOp::PortIn {
@@ -3766,6 +3897,7 @@ fn lower_stmt(
                                 eff_used,
                                 slot_types,
                                 const_map,
+                                slice_elem_types,
                             ) {
                                 Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
@@ -3802,6 +3934,7 @@ fn lower_stmt(
                                 eff_used,
                                 slot_types,
                                 const_map,
+                                slice_elem_types,
                             ) {
                                 Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
@@ -3835,6 +3968,7 @@ fn lower_stmt(
                         eff_used,
                         slot_types,
                         const_map,
+                        slice_elem_types,
                     ) {
                         Ok(src) => ops.push(KrirOp::StackStore {
                             ty: lower_mmio_scalar_type(ty.storage_type()),
@@ -3879,6 +4013,7 @@ fn lower_stmt(
                         eff_used,
                         slot_types,
                         const_map,
+                        slice_elem_types,
                     ) {
                         Ok(src) => {
                             // If src == name, the value was already updated in place
@@ -3915,6 +4050,7 @@ fn lower_stmt(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 ) {
                     Ok(src) => {
                         ops.push(KrirOp::MmioWrite {
@@ -3945,6 +4081,7 @@ fn lower_stmt(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 ) {
                     Ok(rhs) => match binop_to_krir_arith(*op) {
                         Some(arith_op) => ops.push(KrirOp::SlotArith {
@@ -3982,6 +4119,7 @@ fn lower_stmt(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4054,6 +4192,7 @@ fn lower_stmt(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             ) {
                 Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
                 Err(e) => {
@@ -4074,6 +4213,7 @@ fn lower_stmt(
                     fn_counter,
                     pending_fns,
                     slot_types,
+                    slice_elem_types,
                 );
             }
             ops.push(KrirOp::LoopEnd);
@@ -4098,6 +4238,7 @@ fn lower_stmt(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             ) {
                 Ok(start_slot) => ops.push(KrirOp::StackStore {
                     ty: KrirMmioScalarType::U32,
@@ -4119,6 +4260,7 @@ fn lower_stmt(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4157,6 +4299,7 @@ fn lower_stmt(
                     fn_counter,
                     pending_fns,
                     slot_types,
+                    slice_elem_types,
                 );
             }
             // Increment: var += 1.
@@ -4203,6 +4346,7 @@ fn lower_stmt(
             eff_used,
             slot_types,
             const_map,
+            slice_elem_types,
         ) {
             Ok(src) => ops.push(KrirOp::RawPtrStore {
                 ty: lower_mmio_scalar_type(*ty),
@@ -4222,6 +4366,7 @@ fn lower_stmt(
                 eff_used,
                 slot_types,
                 const_map,
+                slice_elem_types,
             ) {
                 Ok(slot) => ops.push(KrirOp::ReturnSlot { slot }),
                 Err(e) => errors.push(e),
@@ -4249,6 +4394,7 @@ fn lower_stmt(
                     eff_used,
                     slot_types,
                     const_map,
+                    slice_elem_types,
                 ) {
                     Ok(s) => lowered.push(s),
                     Err(e) => {
@@ -4269,6 +4415,112 @@ fn lower_stmt(
                     dst: None,
                 });
             }
+        }
+        // `buf[index] = value` — write element to a slice parameter.
+        Stmt::SliceIndexWrite {
+            slice,
+            index,
+            value,
+        } => {
+            let elem_ty = match slice_elem_types.get(slice.as_str()) {
+                Some(ty) => *ty,
+                None => {
+                    errors.push(format!("'{}' is not a slice parameter", slice));
+                    return;
+                }
+            };
+
+            // 1. Get base pointer
+            let ptr_slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: ptr_slot.clone(),
+            });
+            ops.push(KrirOp::SlicePtr {
+                slice: slice.clone(),
+                slot: ptr_slot.clone(),
+            });
+
+            // 2. Lower index expression
+            let idx_slot = match lower_expr(
+                index,
+                ops,
+                slot_counter,
+                device_regs,
+                eff_used,
+                slot_types,
+                const_map,
+                slice_elem_types,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(e);
+                    return;
+                }
+            };
+
+            // 3. Compute byte address: ptr + index * byte_width
+            let bw = elem_ty.byte_width();
+            if bw == 1 {
+                ops.push(KrirOp::SlotArith {
+                    ty: KrirMmioScalarType::U64,
+                    dst: ptr_slot.clone(),
+                    src: idx_slot,
+                    arith_op: KrirArithOp::Add,
+                });
+            } else {
+                let offset_slot = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: offset_slot.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: KrirMmioScalarType::U64,
+                    cell: offset_slot.clone(),
+                    value: KrirMmioValueExpr::Ident {
+                        name: idx_slot.clone(),
+                    },
+                });
+                ops.push(KrirOp::CellArithImm {
+                    ty: KrirMmioScalarType::U64,
+                    cell: offset_slot.clone(),
+                    arith_op: KrirArithOp::Mul,
+                    imm: bw as u64,
+                });
+                ops.push(KrirOp::SlotArith {
+                    ty: KrirMmioScalarType::U64,
+                    dst: ptr_slot.clone(),
+                    src: offset_slot,
+                    arith_op: KrirArithOp::Add,
+                });
+            }
+
+            // 4. Lower value expression
+            let val_slot = match lower_expr(
+                value,
+                ops,
+                slot_counter,
+                device_regs,
+                eff_used,
+                slot_types,
+                const_map,
+                slice_elem_types,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(e);
+                    return;
+                }
+            };
+
+            // 5. Store value at computed address (implicit unsafe for slice access)
+            ops.push(KrirOp::UnsafeEnter);
+            ops.push(KrirOp::RawPtrStore {
+                ty: elem_ty,
+                addr_slot: ptr_slot,
+                value: KrirMmioValueExpr::Ident { name: val_slot },
+            });
+            ops.push(KrirOp::UnsafeExit);
         }
     }
 }

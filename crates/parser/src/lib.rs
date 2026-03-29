@@ -200,6 +200,11 @@ pub enum Expr {
     Syscall {
         args: Vec<Expr>, // first element is nr, rest are syscall args (up to 6)
     },
+    /// `buf[index]` — read element from a slice parameter.
+    SliceIndex {
+        slice: String,
+        index: Box<Expr>,
+    },
 }
 
 /// A register inside a `device` block.
@@ -471,6 +476,12 @@ pub enum Stmt {
     /// `@syscall(nr, arg0, arg1, ...)` used as a statement (return value discarded).
     SyscallStmt {
         args: Vec<Expr>,
+    },
+    /// `buf[index] = value` — write element to a slice parameter.
+    SliceIndexWrite {
+        slice: String,
+        index: Box<Expr>,
+        value: Expr,
     },
 }
 
@@ -1385,6 +1396,13 @@ impl TokParser {
                     }
                     self.expect_kind(&TokenKind::RParen)?;
                     Expr::Call { callee: name, args }
+                } else if self.eat(&TokenKind::LBracket) {
+                    let index = self.parse_expr(0)?;
+                    self.expect_kind(&TokenKind::RBracket)?;
+                    Expr::SliceIndex {
+                        slice: name,
+                        index: Box::new(index),
+                    }
                 } else {
                     Expr::Ident(name)
                 }
@@ -2084,6 +2102,20 @@ impl TokParser {
                 }
                 // Check next token for assignment variants
                 match self.peek().kind.clone() {
+                    // name[expr] = expr — slice index write
+                    TokenKind::LBracket => {
+                        self.advance(); // consume [
+                        let index = self.parse_expr(0)?;
+                        self.expect_kind(&TokenKind::RBracket)?;
+                        // Must be followed by = (assignment)
+                        self.expect_kind(&TokenKind::Eq)?;
+                        let value = self.parse_expr(0)?;
+                        Ok(Stmt::SliceIndexWrite {
+                            slice: name,
+                            index: Box::new(index),
+                            value,
+                        })
+                    }
                     // name = expr
                     TokenKind::Eq => {
                         self.advance();
