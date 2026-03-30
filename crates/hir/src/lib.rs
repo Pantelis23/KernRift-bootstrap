@@ -51,6 +51,9 @@ const HOST_BUILTINS: &[(&str, &str)] = &[
     ("file_write", "__kr_file_write"),
     ("file_close", "__kr_file_close"),
     ("file_size", "__kr_file_size"),
+    ("fmt_uint", "__kr_fmt_uint"),
+    ("fmt_int", "__kr_fmt_int"),
+    ("fmt_hex", "__kr_fmt_hex"),
 ];
 
 fn is_port_in(name: &str) -> Option<PortIoWidth> {
