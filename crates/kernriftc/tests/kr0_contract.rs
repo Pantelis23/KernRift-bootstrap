@@ -1523,3 +1523,39 @@ fn e2e_hostexe_exec_runs_shell_command() {
         output.status
     );
 }
+
+#[test]
+#[cfg(all(unix, target_os = "linux", target_arch = "x86_64"))]
+fn e2e_hostexe_file_io() {
+    let fixture = repo_root()
+        .join("tests")
+        .join("e2e")
+        .join("file_io_test.kr");
+    let bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::HostExecutable)
+        .expect("hostexe emit");
+
+    let tmp = std::env::temp_dir().join("kr_e2e_file_io");
+    std::fs::write(&tmp, &bytes).expect("write temp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let output = std::process::Command::new(&tmp)
+        .output()
+        .expect("run hostexe");
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file("/tmp/kr_fileio_test.txt");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("hello from kernrift"),
+        "expected 'hello from kernrift' in stdout, got: {}",
+        stdout
+    );
+    assert!(
+        output.status.success(),
+        "hostexe exited with non-zero: {:?}",
+        output.status
+    );
+}

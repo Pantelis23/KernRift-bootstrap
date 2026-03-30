@@ -1,11 +1,12 @@
 //! Linux x86_64 runtime blob — hand-assembled machine code.
 //! Implements `_start` and all `__kr_*` functions using Linux syscalls.
 //!
-//! Layout (464 bytes total):
-//!   0x000 .. 0x1a6  executable code (11 functions)
+//! Layout (541 bytes total):
+//!   0x000 .. 0x1a6  executable code (11 original functions)
 //!   0x1a7 .. 0x1b1  inline string data ("/bin/sh\0", "-c\0")
 //!   0x1b2 .. 0x1b7  padding (6 bytes, never executed)
 //!   0x1b8 .. 0x1cf  data area: envp(8) + heap_ptr(8) + heap_remaining(8)
+//!   0x1d0 .. 0x21c  executable code (5 file I/O functions)
 //!
 //! Assembled with GNU as (AT&T syntax, .intel_syntax noprefix), linked with
 //! ld, then extracted via objcopy -O binary.  All RIP-relative displacements
@@ -208,6 +209,47 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // heap_ptr (8 bytes)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // heap_remaining (8 bytes)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // === __kr_file_open (offset 0x1d0) ===
+        // args: rdi=path, rsi=flags (0=rdonly, 1=wronly+creat+trunc, 2=rdwr)
+        // cmp esi, 1
+        0x83, 0xfe, 0x01, // jne .do_open (+5)
+        0x75, 0x05, // mov esi, 0x241               ; O_WRONLY|O_CREAT|O_TRUNC
+        0xbe, 0x41, 0x02, 0x00, 0x00,
+        // .do_open:
+        // mov edx, 0x1a4               ; mode = 0644
+        0xba, 0xa4, 0x01, 0x00, 0x00, // mov eax, 2                   ; __NR_open
+        0xb8, 0x02, 0x00, 0x00, 0x00, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_read (offset 0x1e7) ===
+        // args: rdi=fd, rsi=buf, rdx=count
+        // mov eax, 0                   ; __NR_read
+        0xb8, 0x00, 0x00, 0x00, 0x00, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_write (offset 0x1ef) ===
+        // args: rdi=fd, rsi=buf, rdx=count
+        // mov eax, 1                   ; __NR_write
+        0xb8, 0x01, 0x00, 0x00, 0x00, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_close (offset 0x1f7) ===
+        // args: rdi=fd
+        // mov eax, 3                   ; __NR_close
+        0xb8, 0x03, 0x00, 0x00, 0x00, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_size (offset 0x1ff) ===
+        // args: rdi=fd
+        // sub rsp, 144                 ; allocate struct stat on stack
+        0x48, 0x81, 0xec, 0x90, 0x00, 0x00, 0x00,
+        // mov rsi, rsp                 ; &stat_buf
+        0x48, 0x89, 0xe6, // mov eax, 5                   ; __NR_fstat
+        0xb8, 0x05, 0x00, 0x00, 0x00, // syscall
+        0x0f, 0x05, // mov rax, [rsp + 48]          ; st_size (offset 48 = 0x30)
+        0x48, 0x8b, 0x44, 0x24, 0x30, // add rsp, 144
+        0x48, 0x81, 0xc4, 0x90, 0x00, 0x00, 0x00, // ret
+        0xc3,
     ],
     symbols: &[
         ("_start", 0x00),
@@ -221,6 +263,11 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         ("__kr_str_copy", 0x163),
         ("__kr_str_cat", 0x178),
         ("__kr_str_len", 0x197),
+        ("__kr_file_open", 0x1d0),
+        ("__kr_file_read", 0x1e7),
+        ("__kr_file_write", 0x1ef),
+        ("__kr_file_close", 0x1f7),
+        ("__kr_file_size", 0x1ff),
     ],
     // The `call main` instruction is E8 xx xx xx xx at offset 0x1c.
     // The 4-byte rel32 displacement starts at offset 0x1d.
@@ -234,13 +281,13 @@ mod tests {
 
     #[test]
     fn blob_size_is_correct() {
-        // 464 bytes total: code + strings + padding + 24-byte data area
-        assert_eq!(BLOB.code.len(), 464);
+        // 541 bytes total: code + strings + padding + 24-byte data area + 5 file I/O functions
+        assert_eq!(BLOB.code.len(), 541);
     }
 
     #[test]
     fn all_symbols_within_bounds() {
-        assert_eq!(BLOB.symbols.len(), 11);
+        assert_eq!(BLOB.symbols.len(), 16);
         for &(name, offset) in BLOB.symbols {
             assert!(
                 (offset as usize) < BLOB.code.len(),
@@ -277,9 +324,9 @@ mod tests {
 
     #[test]
     fn data_area_is_zeroed() {
-        // The last 24 bytes should be all zeros (data area).
-        let data_start = BLOB.code.len() - 24;
-        for i in data_start..BLOB.code.len() {
+        // The 24-byte data area at offset 0x1b8 should be all zeros.
+        let data_start = 0x1b8;
+        for i in data_start..data_start + 24 {
             assert_eq!(
                 BLOB.code[i], 0x00,
                 "data area byte at offset {i} is 0x{:02X}, expected 0x00",
@@ -342,6 +389,11 @@ mod tests {
             "__kr_str_copy",
             "__kr_str_cat",
             "__kr_str_len",
+            "__kr_file_open",
+            "__kr_file_read",
+            "__kr_file_write",
+            "__kr_file_close",
+            "__kr_file_size",
         ];
         for name in &expected {
             assert!(BLOB.symbol_offset(name).is_some(), "missing symbol: {name}");

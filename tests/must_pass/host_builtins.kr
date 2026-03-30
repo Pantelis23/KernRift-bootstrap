@@ -42,3 +42,24 @@ fn append_string(uint64 dst, uint64 src) -> uint64 {
 fn quit(uint32 code) {
     exit(code)
 }
+
+fn open_and_close() {
+    uint64 fd = file_open("/tmp/test.txt", 1)
+    file_close(fd)
+}
+
+fn read_file(uint64 fd) -> uint64 {
+    uint64 buf = alloc(4096)
+    uint64 n = file_read(fd, buf, 4096)
+    return n
+}
+
+fn write_file(uint64 fd, uint64 buf, uint64 len) -> uint64 {
+    uint64 n = file_write(fd, buf, len)
+    return n
+}
+
+fn get_size(uint64 fd) -> uint64 {
+    uint64 sz = file_size(fd)
+    return sz
+}
