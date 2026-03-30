@@ -17,8 +17,8 @@ use parser::{
     MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
     MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
     MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    ParamTy as ParserParamTy, RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
-    split_csv_allow_trailing_comma,
+    ParamTy as ParserParamTy, RawAttr, Stmt, UnOpKind as ParserUnOpKind, format_source_diagnostic,
+    int_literal_numeric_value, split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -3490,6 +3490,99 @@ fn lower_expr(
                 slot: result_slot.clone(),
             });
             Ok(result_slot)
+        }
+        ParserExpr::UnOp { op, operand } => {
+            let operand_slot = lower_expr(
+                operand,
+                ops,
+                slot_counter,
+                device_regs,
+                eff_used,
+                slot_types,
+                const_map,
+                slice_elem_types,
+                static_var_map,
+                struct_decls,
+                struct_locals,
+                local_arrays,
+            )?;
+            let operand_ty = slot_types
+                .get(operand_slot.as_str())
+                .copied()
+                .unwrap_or(KrirMmioScalarType::U64);
+            match op {
+                ParserUnOpKind::Neg => {
+                    // -x  →  0 - x
+                    let zero_slot = fresh_slot(slot_counter);
+                    ops.push(KrirOp::StackCell {
+                        ty: operand_ty,
+                        cell: zero_slot.clone(),
+                    });
+                    ops.push(KrirOp::StackStore {
+                        ty: operand_ty,
+                        cell: zero_slot.clone(),
+                        value: KrirMmioValueExpr::IntLiteral {
+                            value: "0".to_string(),
+                        },
+                    });
+                    ops.push(KrirOp::SlotArith {
+                        ty: operand_ty,
+                        dst: zero_slot.clone(),
+                        src: operand_slot,
+                        arith_op: KrirArithOp::Sub,
+                    });
+                    Ok(zero_slot)
+                }
+                ParserUnOpKind::BitNot => {
+                    // ~x  →  x XOR 0xFFFFFFFFFFFFFFFF
+                    let mask_slot = fresh_slot(slot_counter);
+                    ops.push(KrirOp::StackCell {
+                        ty: operand_ty,
+                        cell: mask_slot.clone(),
+                    });
+                    ops.push(KrirOp::StackStore {
+                        ty: operand_ty,
+                        cell: mask_slot.clone(),
+                        value: KrirMmioValueExpr::IntLiteral {
+                            value: u64::MAX.to_string(),
+                        },
+                    });
+                    ops.push(KrirOp::SlotArith {
+                        ty: operand_ty,
+                        dst: operand_slot.clone(),
+                        src: mask_slot,
+                        arith_op: KrirArithOp::Xor,
+                    });
+                    Ok(operand_slot)
+                }
+                ParserUnOpKind::Not => {
+                    // !x  →  (x == 0) ? 1 : 0
+                    let result_slot = fresh_slot(slot_counter);
+                    ops.push(KrirOp::StackCell {
+                        ty: KrirMmioScalarType::U64,
+                        cell: result_slot.clone(),
+                    });
+                    let zero_slot = fresh_slot(slot_counter);
+                    ops.push(KrirOp::StackCell {
+                        ty: operand_ty,
+                        cell: zero_slot.clone(),
+                    });
+                    ops.push(KrirOp::StackStore {
+                        ty: operand_ty,
+                        cell: zero_slot.clone(),
+                        value: KrirMmioValueExpr::IntLiteral {
+                            value: "0".to_string(),
+                        },
+                    });
+                    ops.push(KrirOp::CompareIntoSlot {
+                        cmp_op: KrirCmpOp::Eq,
+                        lhs: operand_slot,
+                        rhs: zero_slot,
+                        out: result_slot.clone(),
+                    });
+                    Ok(result_slot)
+                }
+            }
         }
         _ => Err(format!(
             "expression type not yet supported in HIR lowering: {:?}",
