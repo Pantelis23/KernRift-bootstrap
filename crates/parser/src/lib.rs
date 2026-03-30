@@ -488,6 +488,12 @@ pub enum Stmt {
         struct_name: String,
         var_name: String,
     },
+    /// `TYPE[SIZE] NAME` — fixed-size local array declaration.
+    ArrayVarDecl {
+        elem_ty: MmioScalarType,
+        count: u64,
+        name: String,
+    },
 }
 
 /// Named no-argument x86-64 kernel instructions that can be emitted with `asm!(NAME)`.
@@ -1954,9 +1960,43 @@ impl TokParser {
     fn parse_stmt_tok(&mut self) -> Result<Stmt, String> {
         let note = self.peek().source.clone();
         match self.peek().kind.clone() {
-            // Variable declaration: `TypeKw name = expr` or `TypeKw name`
+            // Variable or array declaration: `TypeKw name = expr` or `TypeKw name`
+            // or `TypeKw[SIZE] name` (fixed-size local array).
             TokenKind::TypeKw(ty) => {
                 self.advance();
+                // Check for array syntax: TYPE[SIZE] NAME
+                if self.at(&TokenKind::LBracket) {
+                    self.advance(); // consume [
+                    let count = match self.advance().kind.clone() {
+                        TokenKind::IntLit(n) => {
+                            if n == 0 {
+                                return Err("array size must be greater than 0".to_string());
+                            }
+                            n
+                        }
+                        other => {
+                            return Err(format!(
+                                "expected integer literal for array size, got '{}'",
+                                token_kind_to_str(&other)
+                            ));
+                        }
+                    };
+                    self.expect_kind(&TokenKind::RBracket)?;
+                    let name = match self.advance().kind.clone() {
+                        TokenKind::Ident(n) => n,
+                        other => {
+                            return Err(format!(
+                                "expected array name after type[size], got '{}'",
+                                token_kind_to_str(&other)
+                            ));
+                        }
+                    };
+                    return Ok(Stmt::ArrayVarDecl {
+                        elem_ty: ty,
+                        count,
+                        name,
+                    });
+                }
                 let name = match self.advance().kind.clone() {
                     TokenKind::Ident(n) => n,
                     other => {
