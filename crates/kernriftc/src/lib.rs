@@ -1211,7 +1211,8 @@ fn emit_native_hostexe_windows_x86_64(
     //    IAT order must match the blob's expectations:
     //    [0] GetStdHandle, [1] WriteFile, [2] ExitProcess, [3] VirtualAlloc,
     //    [4] GetEnvironmentVariableA, [5] CreateProcessA,
-    //    [6] WaitForSingleObject, [7] GetExitCodeProcess
+    //    [6] WaitForSingleObject, [7] GetExitCodeProcess,
+    //    [8] CloseHandle, [9] CreateFileA, [10] ReadFile, [11] GetFileSize
     let imports = vec![krir::PeImport {
         dll_name: "kernel32.dll".to_string(),
         functions: vec![
@@ -1223,6 +1224,10 @@ fn emit_native_hostexe_windows_x86_64(
             "CreateProcessA".to_string(),
             "WaitForSingleObject".to_string(),
             "GetExitCodeProcess".to_string(),
+            "CloseHandle".to_string(),
+            "CreateFileA".to_string(),
+            "ReadFile".to_string(),
+            "GetFileSize".to_string(),
         ],
     }];
 
@@ -1349,7 +1354,8 @@ fn emit_native_hostexe_windows_aarch64(
 
     // 7. Build PE imports for kernel32.dll
     //    IAT order must match the blob's expectations:
-    //    [0] GetStdHandle, [1] WriteFile, [2] ExitProcess, [3] VirtualAlloc
+    //    [0] GetStdHandle, [1] WriteFile, [2] ExitProcess, [3] VirtualAlloc,
+    //    [4] CloseHandle, [5] CreateFileA, [6] ReadFile, [7] GetFileSize
     let imports = vec![krir::PeImport {
         dll_name: "kernel32.dll".to_string(),
         functions: vec![
@@ -1357,6 +1363,10 @@ fn emit_native_hostexe_windows_aarch64(
             "WriteFile".to_string(),
             "ExitProcess".to_string(),
             "VirtualAlloc".to_string(),
+            "CloseHandle".to_string(),
+            "CreateFileA".to_string(),
+            "ReadFile".to_string(),
+            "GetFileSize".to_string(),
         ],
     }];
 
