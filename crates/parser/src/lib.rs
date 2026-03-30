@@ -1301,11 +1301,18 @@ impl<'a> Lexer<'a> {
 pub struct TokParser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Enum declarations collected so far, used to resolve `EnumName.Variant`
+    /// in expressions at parse time.
+    enums: Vec<EnumDecl>,
 }
 
 impl TokParser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            enums: Vec::new(),
+        }
     }
 
     pub fn peek(&self) -> &Token {
@@ -1356,6 +1363,21 @@ impl TokParser {
         }
     }
 
+    /// Look up `enum_name.variant_name` in the collected enum declarations.
+    /// Returns the variant's integer value if found, `None` otherwise.
+    fn resolve_enum_variant(&self, enum_name: &str, variant_name: &str) -> Option<u64> {
+        for decl in &self.enums {
+            if decl.name == enum_name {
+                for v in &decl.variants {
+                    if v.name == variant_name {
+                        return v.value.parse::<u64>().ok();
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Pratt expression parser. `min_bp` is the minimum binding power (0 = parse all).
     pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, String> {
         // --- prefix ---
@@ -1398,7 +1420,7 @@ impl TokParser {
             }
             TokenKind::Ident(name) => {
                 if self.eat(&TokenKind::Dot) {
-                    // UART0.Status  or  buf.len
+                    // EnumName.Variant  or  UART0.Status  or  buf.len
                     let field = match self.advance().kind.clone() {
                         TokenKind::Ident(f) => f,
                         other => {
@@ -1410,6 +1432,8 @@ impl TokParser {
                     };
                     if field == "len" {
                         Expr::SliceLen(name)
+                    } else if let Some(val) = self.resolve_enum_variant(&name, &field) {
+                        Expr::IntLiteral(val)
                     } else {
                         Expr::DeviceField {
                             device: name,
@@ -1712,6 +1736,20 @@ impl TokParser {
                     self.advance();
                     match self.parse_struct_tok() {
                         Ok(s) => module.structs.push(s),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                // enum NAME { VARIANT = VALUE ... }
+                TokenKind::Enum => {
+                    self.advance();
+                    match self.parse_enum_tok() {
+                        Ok(e) => {
+                            self.enums.push(e.clone());
+                            module.enums.push(e);
+                        }
                         Err(e) => {
                             errors.push(e);
                             self.skip_to_next_item();
@@ -2775,6 +2813,62 @@ impl TokParser {
         })
     }
 
+    /// Parse `enum NAME { VARIANT = VALUE ... }` — `enum` keyword already consumed.
+    /// Enum values are uint32 by default. No `: type` annotation required.
+    fn parse_enum_tok(&mut self) -> Result<EnumDecl, String> {
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => {
+                return Err(format!(
+                    "expected enum name after 'enum', got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
+        };
+        self.expect_kind(&TokenKind::LBrace)?;
+        let mut variants = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let variant_name = match self.advance().kind.clone() {
+                TokenKind::Ident(v) => v,
+                other => {
+                    return Err(format!(
+                        "enum '{}': expected variant name, got '{}'",
+                        name,
+                        token_kind_to_str(&other)
+                    ));
+                }
+            };
+            self.expect_kind(&TokenKind::Eq)?;
+            let value = match self.advance().kind.clone() {
+                TokenKind::IntLit(n) => n.to_string(),
+                other => {
+                    return Err(format!(
+                        "enum '{}': variant '{}' expected integer literal, got '{}'",
+                        name,
+                        variant_name,
+                        token_kind_to_str(&other)
+                    ));
+                }
+            };
+            variants.push(EnumVariant {
+                name: variant_name,
+                value,
+            });
+            // Optional trailing comma or semicolon between variants
+            self.eat(&TokenKind::Comma);
+            self.eat(&TokenKind::Semicolon);
+        }
+        self.expect_kind(&TokenKind::RBrace)?;
+        if variants.is_empty() {
+            return Err(format!("enum '{}': must have at least one variant", name));
+        }
+        Ok(EnumDecl {
+            name,
+            ty: MmioScalarType::U32,
+            variants,
+        })
+    }
+
     /// Parse `struct NAME { TYPE field ... }` — `struct` keyword already consumed.
     /// New-syntax struct declarations use `TYPE field` (no colon), matching
     /// variable declaration style.
@@ -2840,6 +2934,7 @@ impl TokParser {
                 | TokenKind::Percpu
                 | TokenKind::Static
                 | TokenKind::Struct
+                | TokenKind::Enum
                 | TokenKind::Extern
                 | TokenKind::AtSign => break,
                 _ => {
@@ -3538,22 +3633,24 @@ impl<'a> Parser<'a> {
             return Err("expected enum name after 'enum'".to_string());
         };
         self.skip_ws_comments();
-        if !self.consume_char(':') {
-            return Err(format!("invalid enum declaration '{}': expected ':'", name));
-        }
-        self.skip_ws_comments();
-        let Some(ty_raw) = self.parse_ident() else {
-            return Err(format!(
-                "invalid enum declaration '{}': expected type",
-                name
-            ));
+        // Optional `: type` annotation (defaults to uint32)
+        let ty = if self.consume_char(':') {
+            self.skip_ws_comments();
+            let Some(ty_raw) = self.parse_ident() else {
+                return Err(format!(
+                    "invalid enum declaration '{}': expected type",
+                    name
+                ));
+            };
+            MmioScalarType::parse(&ty_raw).map_err(|_| {
+                format!(
+                    "invalid enum declaration '{}': unsupported type '{}'",
+                    name, ty_raw
+                )
+            })?
+        } else {
+            MmioScalarType::U32
         };
-        let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
-            format!(
-                "invalid enum declaration '{}': unsupported type '{}'",
-                name, ty_raw
-            )
-        })?;
         self.skip_ws_comments();
         if !self.consume_char('{') {
             return Err(format!(
