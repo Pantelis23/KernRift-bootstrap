@@ -5,8 +5,8 @@ use krir::{
     ExecutableExternDecl, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
     ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
     ExecutableValueType, FArithOp as KrirFArithOp, Function, FunctionAttrs,
-    KernelIntrinsic as KrirKernelIntrinsic, KrirModule, KrirOp, KrirParamTy,
-    MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
+    KernelIntrinsic as KrirKernelIntrinsic, KrirModule, KrirOp, KrirParamTy, KrirStructDecl,
+    KrirStructField, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
     MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
     PercpuDecl as KrirPercpuDecl, PortIoWidth, SchedHook, StaticVarDecl as KrirStaticVarDecl,
@@ -1467,6 +1467,7 @@ pub fn lower_to_krir_with_surface(
             &device_regs,
             &mut module_fn_counter,
             &static_var_map,
+            &ast.structs,
         ) {
             Ok(fns) => functions.extend(fns),
             Err(errs) => errors.extend(errs),
@@ -1682,11 +1683,34 @@ pub fn lower_to_krir_with_surface(
         })
         .collect();
 
+    // Lower struct declarations to KRIR format (with computed offsets and sizes).
+    let krir_struct_decls: Vec<KrirStructDecl> = ast
+        .structs
+        .iter()
+        .map(|s| {
+            let fields = s
+                .fields
+                .iter()
+                .map(|f| KrirStructField {
+                    name: f.name.clone(),
+                    ty: lower_mmio_scalar_type(f.ty),
+                    byte_offset: s.field_offset(&f.name).unwrap_or(0),
+                })
+                .collect();
+            KrirStructDecl {
+                name: s.name.clone(),
+                fields,
+                byte_size: s.byte_size(),
+            }
+        })
+        .collect();
+
     let mut module = KrirModule {
         module_caps: ast.module_caps.clone(),
         lock_classes,
         percpu_vars,
         static_vars: krir_static_vars,
+        struct_decls: krir_struct_decls,
         mmio_bases,
         mmio_registers,
         functions,
@@ -1714,6 +1738,7 @@ fn lower_function(
     device_regs: &DeviceRegMap,
     fn_counter: &mut u32,
     static_var_map: &BTreeMap<String, KrirMmioScalarType>,
+    struct_decls: &[parser::StructDecl],
 ) -> Result<Vec<Function>, Vec<String>> {
     let facts = normalize_function_facts(item, surface_profile)?;
 
@@ -1764,6 +1789,7 @@ fn lower_function(
         let mut eff_used = base_eff.clone();
         let mut stmt_errors: Vec<String> = Vec::new();
         let mut slot_types = work.slot_types;
+        let mut struct_locals: BTreeMap<String, String> = BTreeMap::new();
 
         // For the main function, spill each scalar parameter into a real
         // StackCell so that comparisons and arithmetic can access them as
@@ -1818,6 +1844,8 @@ fn lower_function(
                 &mut slot_types,
                 &slice_elem_types,
                 static_var_map,
+                struct_decls,
+                &mut struct_locals,
             );
         }
         // Append continuation call (for synthesized branches).
@@ -2891,7 +2919,8 @@ fn lower_stmts_to_canonical_executable(
             | Stmt::Break
             | Stmt::Continue
             | Stmt::Print(_)
-            | Stmt::ExprStmt(_) => {
+            | Stmt::ExprStmt(_)
+            | Stmt::StructVarDecl { .. } => {
                 errors.push(format!(
                     "surface syntax statement not yet lowered (Task 7-12): {:?}",
                     stmt
@@ -2914,6 +2943,8 @@ fn lower_expr(
     const_map: &std::collections::BTreeMap<String, String>,
     slice_elem_types: &BTreeMap<String, KrirMmioScalarType>,
     static_var_map: &BTreeMap<String, KrirMmioScalarType>,
+    struct_decls: &[parser::StructDecl],
+    struct_locals: &BTreeMap<String, String>,
 ) -> Result<String, String> {
     match expr {
         ParserExpr::IntLiteral(n) => {
@@ -3005,6 +3036,26 @@ fn lower_expr(
             }
         }
         ParserExpr::DeviceField { device, field } => {
+            // Check if this is a struct field read.
+            if let Some(stype) = struct_locals.get(device.as_str()) {
+                let sdecl = struct_decls
+                    .iter()
+                    .find(|s| s.name == *stype)
+                    .ok_or_else(|| format!("unknown struct type '{}'", stype))?;
+                let fty = sdecl
+                    .field_type(field)
+                    .ok_or_else(|| format!("struct '{}' has no field '{}'", stype, field))?;
+                let kty = lower_mmio_scalar_type(fty);
+                // The synthesized cell "device@field" was created by StructAlloc.
+                // Emit a StackLoad to put it in %rbx, then return the cell name.
+                let cell_name = format!("{}@{}", device, field);
+                ops.push(KrirOp::StackLoad {
+                    ty: kty,
+                    cell: cell_name.clone(),
+                    slot: cell_name.clone(),
+                });
+                return Ok(cell_name);
+            }
             let reg = device_regs
                 .get(&(device.clone(), field.clone()))
                 .ok_or_else(|| format!("unknown device register '{}.{}'", device, field))?;
@@ -3039,6 +3090,8 @@ fn lower_expr(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             )?;
             if is_float {
                 let r = lower_expr(
@@ -3051,6 +3104,8 @@ fn lower_expr(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 )?;
                 let fop = binop_to_krir_farith(*op)
                     .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
@@ -3082,6 +3137,8 @@ fn lower_expr(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 )?;
                 let out = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3123,6 +3180,8 @@ fn lower_expr(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             )?;
             ops.push(KrirOp::SlotArith {
                 ty: arith_ty,
@@ -3169,6 +3228,8 @@ fn lower_expr(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 )?;
                 let dst = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3208,6 +3269,8 @@ fn lower_expr(
                         const_map,
                         slice_elem_types,
                         static_var_map,
+                        struct_decls,
+                        struct_locals,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3244,6 +3307,8 @@ fn lower_expr(
                         const_map,
                         slice_elem_types,
                         static_var_map,
+                        struct_decls,
+                        struct_locals,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3274,6 +3339,8 @@ fn lower_expr(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 )?);
             }
             let nr_slot = lowered.remove(0);
@@ -3335,6 +3402,8 @@ fn lower_expr(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             )?;
 
             // 3. Compute byte address: ptr + index * byte_width
@@ -3462,6 +3531,8 @@ fn lower_stmt(
     slot_types: &mut BTreeMap<String, KrirMmioScalarType>,
     slice_elem_types: &BTreeMap<String, KrirMmioScalarType>,
     static_var_map: &BTreeMap<String, KrirMmioScalarType>,
+    struct_decls: &[parser::StructDecl],
+    struct_locals: &mut BTreeMap<String, String>,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -3488,6 +3559,8 @@ fn lower_stmt(
                     slot_types,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 );
             }
             ops.push(KrirOp::CriticalExit);
@@ -3509,6 +3582,8 @@ fn lower_stmt(
                     slot_types,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 );
             }
             ops.push(KrirOp::UnsafeExit);
@@ -3725,6 +3800,8 @@ fn lower_stmt(
                             const_map,
                             slice_elem_types,
                             static_var_map,
+                            struct_decls,
+                            struct_locals,
                         ) {
                             Ok(s) => lowered_args.push(s),
                             Err(e) => {
@@ -3766,6 +3843,8 @@ fn lower_stmt(
                         const_map,
                         slice_elem_types,
                         static_var_map,
+                        struct_decls,
+                        struct_locals,
                     ) {
                         Ok(port_slot) => {
                             let dst = fresh_slot(slot_counter);
@@ -3806,6 +3885,8 @@ fn lower_stmt(
                             const_map,
                             slice_elem_types,
                             static_var_map,
+                            struct_decls,
+                            struct_locals,
                         ) {
                             Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
@@ -3846,6 +3927,8 @@ fn lower_stmt(
                         const_map,
                         slice_elem_types,
                         static_var_map,
+                        struct_decls,
+                        struct_locals,
                     ) {
                         Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                         Err(e) => {
@@ -3872,6 +3955,8 @@ fn lower_stmt(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 ) {
                     errors.push(e);
                 }
@@ -3920,6 +4005,8 @@ fn lower_stmt(
                                 const_map,
                                 slice_elem_types,
                                 static_var_map,
+                                struct_decls,
+                                struct_locals,
                             ) {
                                 Ok(port_slot) => {
                                     ops.push(KrirOp::PortIn {
@@ -3960,6 +4047,8 @@ fn lower_stmt(
                                 const_map,
                                 slice_elem_types,
                                 static_var_map,
+                                struct_decls,
+                                struct_locals,
                             ) {
                                 Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
@@ -3998,6 +4087,8 @@ fn lower_stmt(
                                 const_map,
                                 slice_elem_types,
                                 static_var_map,
+                                struct_decls,
+                                struct_locals,
                             ) {
                                 Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
@@ -4033,6 +4124,8 @@ fn lower_stmt(
                         const_map,
                         slice_elem_types,
                         static_var_map,
+                        struct_decls,
+                        struct_locals,
                     ) {
                         Ok(src) => ops.push(KrirOp::StackStore {
                             ty: lower_mmio_scalar_type(*ty),
@@ -4067,6 +4160,8 @@ fn lower_stmt(
                             const_map,
                             slice_elem_types,
                             static_var_map,
+                            struct_decls,
+                            struct_locals,
                         ) {
                             Ok(src) => {
                                 ops.push(KrirOp::StaticStore {
@@ -4113,6 +4208,8 @@ fn lower_stmt(
                         const_map,
                         slice_elem_types,
                         static_var_map,
+                        struct_decls,
+                        struct_locals,
                     ) {
                         Ok(src) => {
                             // If src == name, the value was already updated in place
@@ -4130,6 +4227,59 @@ fn lower_stmt(
                 }
             }
             ParserAssignTarget::DeviceField { device, field } => {
+                // Check if this is a struct field write (device name is a struct local).
+                if let Some(stype) = struct_locals.get(device.as_str()) {
+                    let sdecl = struct_decls.iter().find(|s| s.name == *stype);
+                    let fty = match sdecl {
+                        Some(sd) => match sd.field_type(field) {
+                            Some(ty) => ty,
+                            None => {
+                                errors.push(format!("struct '{}' has no field '{}'", stype, field));
+                                return;
+                            }
+                        },
+                        None => {
+                            errors.push(format!("unknown struct type '{}'", stype));
+                            return;
+                        }
+                    };
+                    let kty = lower_mmio_scalar_type(fty);
+                    let cell_name = format!("{}@{}", device, field);
+                    // Lower the RHS value and emit a standard StackStore.
+                    if let ParserExpr::IntLiteral(n) = value {
+                        ops.push(KrirOp::StackStore {
+                            ty: kty,
+                            cell: cell_name,
+                            value: KrirMmioValueExpr::IntLiteral {
+                                value: n.to_string(),
+                            },
+                        });
+                    } else {
+                        match lower_expr(
+                            value,
+                            ops,
+                            slot_counter,
+                            device_regs,
+                            eff_used,
+                            slot_types,
+                            const_map,
+                            slice_elem_types,
+                            static_var_map,
+                            struct_decls,
+                            struct_locals,
+                        ) {
+                            Ok(src) => {
+                                ops.push(KrirOp::StackStore {
+                                    ty: kty,
+                                    cell: cell_name,
+                                    value: KrirMmioValueExpr::Ident { name: src },
+                                });
+                            }
+                            Err(e) => errors.push(e),
+                        }
+                    }
+                    return;
+                }
                 let reg = match device_regs.get(&(device.clone(), field.clone())) {
                     Some(r) => r.clone(),
                     None => {
@@ -4151,6 +4301,8 @@ fn lower_stmt(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 ) {
                     Ok(src) => {
                         ops.push(KrirOp::MmioWrite {
@@ -4183,6 +4335,8 @@ fn lower_stmt(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 ) {
                     Ok(rhs) => match binop_to_krir_arith(*op) {
                         Some(arith_op) => ops.push(KrirOp::SlotArith {
@@ -4222,6 +4376,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4296,6 +4452,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
                 Err(e) => {
@@ -4318,6 +4476,8 @@ fn lower_stmt(
                     slot_types,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 );
             }
             ops.push(KrirOp::LoopEnd);
@@ -4344,6 +4504,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(start_slot) => ops.push(KrirOp::StackStore {
                     ty: KrirMmioScalarType::U32,
@@ -4367,6 +4529,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4407,6 +4571,8 @@ fn lower_stmt(
                     slot_types,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 );
             }
             // Increment: var += 1.
@@ -4455,6 +4621,8 @@ fn lower_stmt(
             const_map,
             slice_elem_types,
             static_var_map,
+            struct_decls,
+            struct_locals,
         ) {
             Ok(src) => ops.push(KrirOp::RawPtrStore {
                 ty: lower_mmio_scalar_type(*ty),
@@ -4476,6 +4644,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(slot) => ops.push(KrirOp::ReturnSlot { slot }),
                 Err(e) => errors.push(e),
@@ -4505,6 +4675,8 @@ fn lower_stmt(
                     const_map,
                     slice_elem_types,
                     static_var_map,
+                    struct_decls,
+                    struct_locals,
                 ) {
                     Ok(s) => lowered.push(s),
                     Err(e) => {
@@ -4562,6 +4734,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4617,6 +4791,8 @@ fn lower_stmt(
                 const_map,
                 slice_elem_types,
                 static_var_map,
+                struct_decls,
+                struct_locals,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4633,6 +4809,36 @@ fn lower_stmt(
                 value: KrirMmioValueExpr::Ident { name: val_slot },
             });
             ops.push(KrirOp::UnsafeExit);
+        }
+        Stmt::StructVarDecl {
+            struct_name,
+            var_name,
+        } => {
+            // Find the struct declaration.
+            let sdecl = struct_decls.iter().find(|s| s.name == *struct_name);
+            match sdecl {
+                Some(sd) => {
+                    struct_locals.insert(var_name.clone(), struct_name.clone());
+                    // Emit one StackCell per field using the synthesized name
+                    // "var@field". This maps struct fields to regular scalar
+                    // stack slots, reusing the entire existing lowering pipeline.
+                    for field in &sd.fields {
+                        let kty = lower_mmio_scalar_type(field.ty);
+                        let cell_name = format!("{}@{}", var_name, field.name);
+                        ops.push(KrirOp::StackCell {
+                            ty: kty,
+                            cell: cell_name.clone(),
+                        });
+                        slot_types.insert(cell_name, kty);
+                    }
+                }
+                None => {
+                    errors.push(format!(
+                        "unknown struct type '{}' for variable '{}'",
+                        struct_name, var_name
+                    ));
+                }
+            }
         }
     }
 }

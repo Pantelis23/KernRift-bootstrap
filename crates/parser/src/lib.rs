@@ -483,6 +483,11 @@ pub enum Stmt {
         index: Box<Expr>,
         value: Expr,
     },
+    /// `StructName var_name` — allocate a struct variable on the stack.
+    StructVarDecl {
+        struct_name: String,
+        var_name: String,
+    },
 }
 
 /// Named no-argument x86-64 kernel instructions that can be emitted with `asm!(NAME)`.
@@ -598,11 +603,14 @@ pub struct StructDecl {
 
 impl StructDecl {
     /// Returns the byte offset of the named field within this struct, or `None`
-    /// if the field does not exist. Layout is C-style: fields are packed in
-    /// declaration order with no padding (explicit, deterministic).
+    /// if the field does not exist. Layout is C-style with natural alignment:
+    /// each field is aligned to its `byte_size()` boundary.
     pub fn field_offset(&self, field_name: &str) -> Option<u64> {
         let mut offset: u64 = 0;
         for field in &self.fields {
+            let align = field.ty.byte_size() as u64;
+            // Align offset to field's natural alignment
+            offset = (offset + align - 1) & !(align - 1);
             if field.name == field_name {
                 return Some(offset);
             }
@@ -611,9 +619,30 @@ impl StructDecl {
         None
     }
 
-    /// Total byte size of the struct (sum of all field sizes, no padding).
+    /// Returns the `MmioScalarType` of the named field, or `None` if not found.
+    pub fn field_type(&self, field_name: &str) -> Option<MmioScalarType> {
+        self.fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.ty)
+    }
+
+    /// Total byte size of the struct with natural alignment and tail padding.
+    /// Each field is aligned to its `byte_size()` boundary. The total size is
+    /// padded to the largest field's alignment.
     pub fn byte_size(&self) -> u64 {
-        self.fields.iter().map(|f| f.ty.byte_size() as u64).sum()
+        let mut offset: u64 = 0;
+        let mut max_align: u64 = 1;
+        for field in &self.fields {
+            let align = field.ty.byte_size() as u64;
+            if align > max_align {
+                max_align = align;
+            }
+            offset = (offset + align - 1) & !(align - 1);
+            offset += field.ty.byte_size() as u64;
+        }
+        // Pad to largest alignment
+        (offset + max_align - 1) & !(max_align - 1)
     }
 }
 
@@ -1678,6 +1707,17 @@ impl TokParser {
                         }
                     }
                 }
+                // struct NAME { TYPE field ... }
+                TokenKind::Struct => {
+                    self.advance();
+                    match self.parse_struct_tok() {
+                        Ok(s) => module.structs.push(s),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
                 other => {
                     errors.push(format!(
                         "unexpected '{}' at top level ({}:{})",
@@ -2079,6 +2119,49 @@ impl TokParser {
                             ));
                         }
                     }
+                }
+                // Check for struct variable declaration: `StructName varname`
+                // Detected when an Ident is followed by another Ident (not a
+                // keyword, type, or operator). The HIR validates that the first
+                // ident is a declared struct type.
+                // Exclude old-syntax intrinsic names that can also be followed
+                // by an Ident (e.g. `mmio UART0 = ...`).
+                if matches!(self.peek_at(1).kind, TokenKind::Ident(_))
+                    && !matches!(
+                        name.as_str(),
+                        "mmio"
+                            | "mmio_reg"
+                            | "tail_call"
+                            | "call_with_args"
+                            | "call_capture"
+                            | "return_slot"
+                            | "branch_if_zero"
+                            | "branch_if_eq"
+                            | "branch_if_mask_nonzero"
+                            | "mmio_read"
+                            | "mmio_write"
+                            | "raw_mmio_read"
+                            | "raw_mmio_write"
+                            | "stack_cell"
+                            | "cell_store"
+                            | "cell_load"
+                            | "percpu_read"
+                            | "percpu_write"
+                            | "slice_len"
+                            | "slice_ptr"
+                            | "raw_write"
+                            | "raw_read"
+                    )
+                {
+                    self.advance(); // consume struct name
+                    let var_name = match self.advance().kind.clone() {
+                        TokenKind::Ident(v) => v,
+                        _ => unreachable!(),
+                    };
+                    return Ok(Stmt::StructVarDecl {
+                        struct_name: name,
+                        var_name,
+                    });
                 }
                 // Check for raw_write<T>(addr, val) / raw_read<T>(addr, cap)
                 if name == "raw_write" || name == "raw_read" {
@@ -2692,6 +2775,60 @@ impl TokParser {
         })
     }
 
+    /// Parse `struct NAME { TYPE field ... }` — `struct` keyword already consumed.
+    /// New-syntax struct declarations use `TYPE field` (no colon), matching
+    /// variable declaration style.
+    fn parse_struct_tok(&mut self) -> Result<StructDecl, String> {
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => {
+                return Err(format!(
+                    "expected struct name after 'struct', got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
+        };
+        self.expect_kind(&TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let ty = match self.peek().kind.clone() {
+                TokenKind::TypeKw(t) => {
+                    self.advance();
+                    t
+                }
+                other => {
+                    return Err(format!(
+                        "struct '{}': expected field type, got '{}'",
+                        name,
+                        token_kind_to_str(&other)
+                    ));
+                }
+            };
+            let field_name = match self.advance().kind.clone() {
+                TokenKind::Ident(f) => f,
+                other => {
+                    return Err(format!(
+                        "struct '{}': expected field name, got '{}'",
+                        name,
+                        token_kind_to_str(&other)
+                    ));
+                }
+            };
+            fields.push(StructField {
+                name: field_name,
+                ty,
+            });
+            // Consume optional comma or semicolon between fields
+            self.eat(&TokenKind::Comma);
+            self.eat(&TokenKind::Semicolon);
+        }
+        self.expect_kind(&TokenKind::RBrace)?;
+        if fields.is_empty() {
+            return Err(format!("struct '{}': must have at least one field", name));
+        }
+        Ok(StructDecl { name, fields })
+    }
+
     /// Skip to the next top-level item on error.
     fn skip_to_next_item(&mut self) {
         while !self.at(&TokenKind::Eof) {
@@ -2702,6 +2839,7 @@ impl TokParser {
                 | TokenKind::Const
                 | TokenKind::Percpu
                 | TokenKind::Static
+                | TokenKind::Struct
                 | TokenKind::Extern
                 | TokenKind::AtSign => break,
                 _ => {

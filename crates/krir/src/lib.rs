@@ -125,6 +125,22 @@ pub struct StaticVarDecl {
     pub init_value: u64,
 }
 
+/// A field within a struct declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KrirStructField {
+    pub name: String,
+    pub ty: MmioScalarType,
+    pub byte_offset: u64,
+}
+
+/// A struct type declaration at module level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KrirStructDecl {
+    pub name: String,
+    pub fields: Vec<KrirStructField>,
+    pub byte_size: u64,
+}
+
 /// A resolved argument value for `CallWithArgs` — either an immediate, a
 /// stack-frame slot (by byte offset from %rsp), or the current saved-value
 /// register (%rbx).
@@ -637,6 +653,9 @@ pub struct KrirModule {
     /// Module-level mutable static variables: `static TYPE NAME = LITERAL`
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub static_vars: Vec<StaticVarDecl>,
+    /// Struct type declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub struct_decls: Vec<KrirStructDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mmio_bases: Vec<MmioBaseDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
