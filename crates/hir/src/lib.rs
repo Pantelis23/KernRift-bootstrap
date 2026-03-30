@@ -3091,8 +3091,11 @@ fn lower_expr(
                     },
                 });
                 Ok(slot)
-            } else if let Some(&sty) = static_var_map.get(name.as_str()) {
-                // Static variable read: emit StaticLoad into a fresh slot.
+            } else if static_var_map.contains_key(name.as_str())
+                && !slot_types.contains_key(name.as_str())
+            {
+                let sty = static_var_map[name.as_str()];
+                // Static variable read (only if no local shadows it).
                 let slot = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
                     ty: sty,
@@ -4409,8 +4412,12 @@ fn lower_stmt(
         }
         Stmt::Assign { target, value } => match target {
             ParserAssignTarget::Ident(name) => {
-                // Check if the assignment target is a static variable.
-                if let Some(&sty) = static_var_map.get(name.as_str()) {
+                // Check if the assignment target is a static variable
+                // (only if no local variable shadows it).
+                if static_var_map.contains_key(name.as_str())
+                    && !slot_types.contains_key(name.as_str())
+                {
+                    let sty = static_var_map[name.as_str()];
                     if let ParserExpr::IntLiteral(n) = value {
                         ops.push(KrirOp::StaticStore {
                             ty: sty,
