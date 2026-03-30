@@ -258,13 +258,16 @@ impl ArithOp {
     }
 }
 
-/// A function parameter type — either a scalar or a fat-pointer slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A function parameter type — either a scalar, a fat-pointer slice, or a struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamTy {
     /// Single integer value (u8 / u16 / u32 / u64).
     Scalar(MmioScalarType),
     /// Fat-pointer slice `[T]`: passed as (ptr: u64, len: u64) pair under SysV ABI.
     Slice(MmioScalarType),
+    /// Struct passed by flattened fields: `StructName param`.
+    /// The HIR flattens this into individual scalar params (`param@field`).
+    Struct(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1921,37 +1924,57 @@ impl TokParser {
     }
 
     /// Parse parameter list: `TYPE name, ...` — inside `(` and `)`.
+    /// Also accepts `StructName name` for struct parameters (flattened by HIR).
     fn parse_param_list_tok(&mut self) -> Result<Vec<(String, ParamTy)>, String> {
         let mut params = Vec::new();
         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
             let is_slice = self.eat(&TokenKind::LBracket);
-            let ty = match self.advance().kind.clone() {
-                TokenKind::TypeKw(t) => t,
+            match self.peek().kind.clone() {
+                TokenKind::TypeKw(ty) => {
+                    self.advance();
+                    if is_slice {
+                        self.expect_kind(&TokenKind::RBracket)?;
+                    }
+                    let name = match self.advance().kind.clone() {
+                        TokenKind::Ident(n) => n,
+                        other => {
+                            return Err(format!(
+                                "expected parameter name, got '{}'",
+                                token_kind_to_str(&other)
+                            ));
+                        }
+                    };
+                    let param_ty = if is_slice {
+                        ParamTy::Slice(ty)
+                    } else {
+                        ParamTy::Scalar(ty)
+                    };
+                    params.push((name, param_ty));
+                }
+                TokenKind::Ident(struct_name) if !is_slice => {
+                    // Struct type parameter: `StructName param_name`
+                    // Validated later by HIR against declared structs.
+                    self.advance();
+                    let name = match self.advance().kind.clone() {
+                        TokenKind::Ident(n) => n,
+                        other => {
+                            return Err(format!(
+                                "expected parameter name after struct type '{}', got '{}'",
+                                struct_name,
+                                token_kind_to_str(&other)
+                            ));
+                        }
+                    };
+                    params.push((name, ParamTy::Struct(struct_name)));
+                }
                 other => {
+                    self.advance();
                     return Err(format!(
                         "expected parameter type, got '{}'",
                         token_kind_to_str(&other)
                     ));
                 }
-            };
-            if is_slice {
-                self.expect_kind(&TokenKind::RBracket)?;
             }
-            let name = match self.advance().kind.clone() {
-                TokenKind::Ident(n) => n,
-                other => {
-                    return Err(format!(
-                        "expected parameter name, got '{}'",
-                        token_kind_to_str(&other)
-                    ));
-                }
-            };
-            let param_ty = if is_slice {
-                ParamTy::Slice(ty)
-            } else {
-                ParamTy::Scalar(ty)
-            };
-            params.push((name, param_ty));
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -2050,8 +2073,13 @@ impl TokParser {
                 self.expect_kind(&TokenKind::LBrace)?;
                 let then_body = self.parse_block_tok()?;
                 let else_body = if self.eat(&TokenKind::Else) {
-                    self.expect_kind(&TokenKind::LBrace)?;
-                    self.parse_block_tok()?
+                    if self.at(&TokenKind::If) {
+                        // `else if` → parse as a nested if statement
+                        vec![self.parse_stmt_tok()?]
+                    } else {
+                        self.expect_kind(&TokenKind::LBrace)?;
+                        self.parse_block_tok()?
+                    }
                 } else {
                     Vec::new()
                 };

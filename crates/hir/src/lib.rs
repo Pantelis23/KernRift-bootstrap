@@ -1771,6 +1771,16 @@ fn lower_function(
             ParserParamTy::Slice(elem) => {
                 slice_elem_types.insert(pname.clone(), lower_mmio_scalar_type(*elem));
             }
+            ParserParamTy::Struct(sname) => {
+                // Flatten struct param into individual field slots: param@field
+                if let Some(sd) = struct_decls.iter().find(|s| s.name == *sname) {
+                    for field in &sd.fields {
+                        let flat_name = format!("{}@{}", pname, field.name);
+                        initial_slot_types.insert(flat_name, lower_mmio_scalar_type(field.ty));
+                    }
+                }
+                // Also register the struct local so field access works
+            }
         }
     }
     let mut queue: Vec<PendingFn> = vec![PendingFn {
@@ -1780,11 +1790,31 @@ fn lower_function(
         slot_types: initial_slot_types,
         inherited_cells: vec![],
     }];
-    let main_params: Vec<(String, KrirParamTy)> = item
-        .params
-        .iter()
-        .map(|(name, ty)| (name.clone(), lower_param_ty(*ty)))
-        .collect();
+    let main_params: Vec<(String, KrirParamTy)> = {
+        let mut flat = Vec::new();
+        for (name, ty) in &item.params {
+            match ty {
+                ParserParamTy::Struct(sname) => {
+                    // Flatten struct into individual scalar fields
+                    if let Some(sd) = struct_decls.iter().find(|s| s.name == *sname) {
+                        for field in &sd.fields {
+                            flat.push((
+                                format!("{}@{}", name, field.name),
+                                KrirParamTy::Scalar {
+                                    ty: lower_mmio_scalar_type(field.ty),
+                                },
+                            ));
+                        }
+                    } else {
+                        // Unknown struct — fall through, will be caught later
+                        flat.push((name.clone(), lower_param_ty(ty.clone())));
+                    }
+                }
+                _ => flat.push((name.clone(), lower_param_ty(ty.clone()))),
+            }
+        }
+        flat
+    };
     let main_ctx_ok: Vec<_> = facts.ctx_ok.into_iter().collect();
     let main_caps_req: Vec<_> = facts.caps_req.into_iter().collect();
     let main_attrs = facts.attrs.clone();
@@ -1805,19 +1835,42 @@ fn lower_function(
         // regular stack cells (avoids virtual slot index mismatch in canonical-exec).
         if work.name == item.name {
             for (pname, pty) in &item.params {
-                if let ParserParamTy::Scalar(s) = pty {
-                    let kty = lower_mmio_scalar_type(*s);
-                    ops.push(KrirOp::StackCell {
-                        ty: kty,
-                        cell: pname.clone(),
-                    });
-                    ops.push(KrirOp::StackStore {
-                        ty: kty,
-                        cell: pname.clone(),
-                        value: KrirMmioValueExpr::Ident {
-                            name: pname.clone(),
-                        },
-                    });
+                match pty {
+                    ParserParamTy::Scalar(s) => {
+                        let kty = lower_mmio_scalar_type(*s);
+                        ops.push(KrirOp::StackCell {
+                            ty: kty,
+                            cell: pname.clone(),
+                        });
+                        ops.push(KrirOp::StackStore {
+                            ty: kty,
+                            cell: pname.clone(),
+                            value: KrirMmioValueExpr::Ident {
+                                name: pname.clone(),
+                            },
+                        });
+                    }
+                    ParserParamTy::Struct(sname) => {
+                        // Spill flattened struct fields from params into stack cells
+                        if let Some(sd) = struct_decls.iter().find(|s| s.name == *sname) {
+                            for field in &sd.fields {
+                                let flat = format!("{}@{}", pname, field.name);
+                                let kty = lower_mmio_scalar_type(field.ty);
+                                ops.push(KrirOp::StackCell {
+                                    ty: kty,
+                                    cell: flat.clone(),
+                                });
+                                ops.push(KrirOp::StackStore {
+                                    ty: kty,
+                                    cell: flat.clone(),
+                                    value: KrirMmioValueExpr::Ident { name: flat.clone() },
+                                });
+                            }
+                            // Register as struct local for field access
+                            struct_locals.insert(pname.clone(), sname.clone());
+                        }
+                    }
+                    ParserParamTy::Slice(_) => {} // slices handled separately
                 }
             }
         } else {
@@ -2990,6 +3043,21 @@ fn lower_expr(
             });
             Ok(slot)
         }
+        ParserExpr::CharLiteral(b) => {
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U8,
+                cell: slot.clone(),
+            });
+            ops.push(KrirOp::StackStore {
+                ty: KrirMmioScalarType::U8,
+                cell: slot.clone(),
+                value: KrirMmioValueExpr::IntLiteral {
+                    value: (*b as u64).to_string(),
+                },
+            });
+            Ok(slot)
+        }
         ParserExpr::FloatLiteral(v) => {
             let slot = fresh_slot(slot_counter);
             ops.push(KrirOp::StackCell {
@@ -3131,13 +3199,85 @@ fn lower_expr(
                 });
                 return Ok(l);
             }
-            match op {
-                ParserBinOpKind::LogAnd | ParserBinOpKind::LogOr => {
-                    return Err(
-                        "logical && / || not yet lowered (short-circuit not implemented)".into(),
-                    );
-                }
-                _ => {}
+            if matches!(op, ParserBinOpKind::LogAnd | ParserBinOpKind::LogOr) {
+                // Non-short-circuit lowering:
+                //   LogAnd: result = (l != 0) & (r != 0)
+                //   LogOr:  result = (l != 0) | (r != 0)
+                let r = lower_expr(
+                    rhs,
+                    ops,
+                    slot_counter,
+                    device_regs,
+                    eff_used,
+                    slot_types,
+                    const_map,
+                    slice_elem_types,
+                    static_var_map,
+                    struct_decls,
+                    struct_locals,
+                    local_arrays,
+                )?;
+                // l != 0 → l_bool
+                let l_bool = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: l_bool.clone(),
+                });
+                let zero_l = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: zero_l.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: KrirMmioScalarType::U64,
+                    cell: zero_l.clone(),
+                    value: KrirMmioValueExpr::IntLiteral {
+                        value: "0".to_string(),
+                    },
+                });
+                ops.push(KrirOp::CompareIntoSlot {
+                    cmp_op: KrirCmpOp::Ne,
+                    lhs: l.clone(),
+                    rhs: zero_l,
+                    out: l_bool.clone(),
+                });
+                // r != 0 → r_bool
+                let r_bool = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: r_bool.clone(),
+                });
+                let zero_r = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: zero_r.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: KrirMmioScalarType::U64,
+                    cell: zero_r.clone(),
+                    value: KrirMmioValueExpr::IntLiteral {
+                        value: "0".to_string(),
+                    },
+                });
+                ops.push(KrirOp::CompareIntoSlot {
+                    cmp_op: KrirCmpOp::Ne,
+                    lhs: r,
+                    rhs: zero_r,
+                    out: r_bool.clone(),
+                });
+                // Combine: AND or OR the bool results
+                let combine_op = if *op == ParserBinOpKind::LogAnd {
+                    KrirArithOp::And
+                } else {
+                    KrirArithOp::Or
+                };
+                ops.push(KrirOp::SlotArith {
+                    ty: KrirMmioScalarType::U64,
+                    dst: l_bool.clone(),
+                    src: r_bool,
+                    arith_op: combine_op,
+                });
+                return Ok(l_bool);
             }
             // Comparison ops produce 0 or 1 into a fresh bool slot.
             if let Some(cmp_op) = binop_to_krir_cmp(*op) {
@@ -3584,10 +3724,6 @@ fn lower_expr(
                 }
             }
         }
-        _ => Err(format!(
-            "expression type not yet supported in HIR lowering: {:?}",
-            expr
-        )),
     }
 }
 
@@ -5108,6 +5244,11 @@ fn lower_param_ty(ty: ParserParamTy) -> KrirParamTy {
         },
         ParserParamTy::Slice(elem) => KrirParamTy::Slice {
             elem: lower_mmio_scalar_type(elem),
+        },
+        // Struct params are flattened before reaching this point;
+        // if one leaks through, treat as opaque u64 (pointer-like).
+        ParserParamTy::Struct(_) => KrirParamTy::Scalar {
+            ty: KrirMmioScalarType::U64,
         },
     }
 }
