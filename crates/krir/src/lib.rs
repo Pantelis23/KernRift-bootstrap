@@ -2409,8 +2409,39 @@ pub fn lower_current_krir_to_executable_krir(
                                 value: parsed,
                             });
                         }
-                        MmioValueExpr::Ident { .. } | MmioValueExpr::FloatLiteral { .. } => {
-                            // Value is already in %rbx from a prior StackLoad/StaticLoad
+                        MmioValueExpr::Ident { name: ident } => {
+                            // Ensure the correct value is loaded into %rbx before
+                            // storing to the static variable.
+                            if let Some(&(param_idx, param_ty)) = param_map.get(ident.as_str()) {
+                                // Value comes from a function parameter — load it.
+                                exec_ops.push(ExecutableOp::ParamLoad {
+                                    param_idx,
+                                    ty: param_ty,
+                                });
+                            } else if executable_slot_name.as_deref() != Some(ident.as_str()) {
+                                // Value is NOT already in %rbx — load it from its
+                                // stack slot first.
+                                if let Some(&(slot_idx, cell_ty)) =
+                                    cell_slot_map.get(ident.as_str())
+                                {
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: cell_ty,
+                                        slot_idx,
+                                    });
+                                }
+                                // If the ident is not in cell_slot_map either, fall
+                                // through — the subsequent StaticStoreValue will use
+                                // whatever is in %rbx (matching prior behaviour for
+                                // unknown names, which is reported elsewhere).
+                            }
+                            // %rbx now holds the right value — store to the static.
+                            exec_ops.push(ExecutableOp::StaticStoreValue {
+                                ty: *ty,
+                                static_idx,
+                            });
+                        }
+                        MmioValueExpr::FloatLiteral { .. } => {
+                            // Float literals: value presumed in %rbx from prior op.
                             exec_ops.push(ExecutableOp::StaticStoreValue {
                                 ty: *ty,
                                 static_idx,
