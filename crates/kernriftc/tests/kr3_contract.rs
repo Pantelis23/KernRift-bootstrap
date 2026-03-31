@@ -352,7 +352,7 @@ fn multiple_stack_cells_produce_correct_n_stack_cells_in_executable_krir() {
         .find(|f| f.name == "two_cells")
         .expect("two_cells must exist");
     // slot 0 (cell_x) and slot 1 (cell_y) → two StackStoreImm ops with slot_idx 0 and 1
-    let store_slots: Vec<u8> = f.blocks[0]
+    let store_slots: Vec<u16> = f.blocks[0]
         .ops
         .iter()
         .filter_map(|op| match op {

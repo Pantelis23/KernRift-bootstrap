@@ -791,7 +791,7 @@ pub enum ExecutableOp {
         callee: String,
         args: Vec<ExecutableCallArg>,
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     BranchIfZero {
         ty: MmioScalarType,
@@ -834,15 +834,15 @@ pub enum ExecutableOp {
     StackStoreImm {
         ty: MmioScalarType,
         value: u64,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StackStoreValue {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StackLoad {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Load a module-level static variable into %rbx (the saved-value register).
     StaticLoad {
@@ -862,14 +862,14 @@ pub enum ExecutableOp {
     },
     SlotArithImm {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
         arith_op: ArithOp,
         imm: u64,
     },
     SlotArithSlot {
         ty: MmioScalarType,
-        dst_slot_idx: u8,
-        src_slot_idx: u8,
+        dst_slot_idx: u16,
+        src_slot_idx: u16,
         arith_op: ArithOp,
     },
     ParamLoad {
@@ -901,17 +901,17 @@ pub enum ExecutableOp {
     LoopContinue,
     /// Conditional break: if slot_idx == 0, jump to loop end.
     BranchIfZeroLoopBreak {
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Conditional break: if slot_idx != 0, jump to loop end.
     BranchIfNonZeroLoopBreak {
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Opens an inline if-block scope.  Pairs with `IfEnd`.
     IfBegin,
     /// If slot_idx == 0 (condition false), jump forward to the else/end label.
     BranchIfZeroSkipToElse {
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Unconditional jump from end of then-block to past `IfEnd`.
     JumpToEndIf,
@@ -926,20 +926,20 @@ pub enum ExecutableOp {
     CompareIntoSlot {
         ty: MmioScalarType,
         cmp_op: CmpOp,
-        lhs_idx: u8,
-        rhs_idx: u8,
-        out_idx: u8,
+        lhs_idx: u16,
+        rhs_idx: u16,
+        out_idx: u16,
     },
     /// Load a scalar from the address held in addr_slot_idx and store into out_slot_idx.
     RawPtrLoad {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
-        out_slot_idx: u8,
+        addr_slot_idx: u16,
+        out_slot_idx: u16,
     },
     /// Store a scalar value to the address held in addr_slot_idx.
     RawPtrStore {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
+        addr_slot_idx: u16,
         value: MmioValueExpr,
     },
     /// Emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
@@ -948,7 +948,7 @@ pub enum ExecutableOp {
     /// `str_idx` indexes into `ExecutableKrirModule::static_strings`.
     LoadStaticCstrAddr {
         str_idx: u8,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Emit an inline SYS_write syscall to print `text` to stdout (fd=1).
     /// Self-contained: jmp over inline data + mov/lea/mov/syscall sequence.
@@ -1508,8 +1508,8 @@ pub fn lower_current_krir_to_executable_krir(
 
         let mut exec_ops = Vec::new();
         let mut executable_slot_name = None::<String>;
-        let mut cell_slot_map: BTreeMap<String, (u8, MmioScalarType)> = BTreeMap::new();
-        let mut next_slot_idx: u8 = 0;
+        let mut cell_slot_map: BTreeMap<String, (u16, MmioScalarType)> = BTreeMap::new();
+        let mut next_slot_idx: u16 = 0;
         let mut last_value = None::<ExecutableCapturedValue>;
         let mut tail_call_terminator: Option<(String, Vec<ExecutableCallArg>)> = None;
         // New-syntax functions use multiple StackCell declarations (one per
@@ -1528,11 +1528,11 @@ pub fn lower_current_krir_to_executable_krir(
         // Pre-scan: count real StackCell declarations so that param references
         // in CompareIntoSlot etc. use the correct base slot index regardless of
         // where in the op stream the comparison appears.
-        let n_real_stack_cells: u8 = function
+        let n_real_stack_cells: u16 = function
             .ops
             .iter()
             .filter(|op| matches!(op, KrirOp::StackCell { .. }))
-            .count() as u8;
+            .count() as u16;
         // Build lookup maps from param name to ABI slot indices.
         // Scalar params: 1 ABI slot each.  Slice params: 2 ABI slots (ptr then len).
         let mut param_map: std::collections::BTreeMap<&str, (u8, MmioScalarType)> =
@@ -2947,7 +2947,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let lhs_info = if let Some(&(idx, ty)) = cell_slot_map.get(lhs.as_str()) {
                         Some((idx, ty))
                     } else if let Some(&(pidx, ty)) = param_map.get(lhs.as_str()) {
-                        Some((n_real_stack_cells + pidx, ty))
+                        Some((n_real_stack_cells + u16::from(pidx), ty))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: lhs '{}' not a declared stack cell or param",
@@ -2958,7 +2958,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let rhs_idx = if let Some(&(idx, _)) = cell_slot_map.get(rhs.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(rhs.as_str()) {
-                        Some(n_real_stack_cells + pidx)
+                        Some(n_real_stack_cells + u16::from(pidx))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: rhs '{}' not a declared stack cell or param",
@@ -2969,7 +2969,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let out_idx = if let Some(&(idx, _)) = cell_slot_map.get(out.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(out.as_str()) {
-                        Some(n_real_stack_cells + pidx)
+                        Some(n_real_stack_cells + u16::from(pidx))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: out '{}' not a declared stack cell or param",
@@ -3000,7 +3000,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
-                        Some(n_real_stack_cells + pidx)
+                        Some(n_real_stack_cells + u16::from(pidx))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' branch_if_zero_loop_break: '{}' not a declared stack cell or param",
@@ -3016,7 +3016,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
-                        Some(n_real_stack_cells + pidx)
+                        Some(n_real_stack_cells + u16::from(pidx))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' branch_if_nonzero_loop_break: '{}' not a declared stack cell or param",
@@ -3033,7 +3033,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
-                        Some(n_real_stack_cells + pidx)
+                        Some(n_real_stack_cells + u16::from(pidx))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' branch_if_zero_skip_to_else: '{}' not a declared stack cell or param",
@@ -3533,8 +3533,8 @@ const DEFAULT_EXECUTABLE_MMIO_SLOT: &str = "value";
 fn resolve_executable_stack_cell_slot(
     ty: MmioScalarType,
     cell: &str,
-    cell_slot_map: &BTreeMap<String, (u8, MmioScalarType)>,
-) -> Result<u8, String> {
+    cell_slot_map: &BTreeMap<String, (u16, MmioScalarType)>,
+) -> Result<u16, String> {
     let Some(&(slot_idx, cell_ty)) = cell_slot_map.get(cell) else {
         return Err(if cell == "let" {
             "KernRift has no `let` keyword; declare variables with their type, e.g. `u64 x = ...`"
@@ -4582,7 +4582,7 @@ pub struct X86_64AsmModule {
 pub struct X86_64AsmFunction {
     pub symbol: String,
     pub uses_saved_value_slot: bool,
-    pub n_stack_cells: u8,
+    pub n_stack_cells: u16,
     pub n_params: usize,
     pub instructions: Vec<X86_64AsmInstruction>,
 }
@@ -4610,7 +4610,7 @@ pub enum X86_64AsmInstruction {
         symbol: String,
         args: Vec<ExecutableCallArg>,
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     BranchIfZero {
         ty: MmioScalarType,
@@ -4652,15 +4652,15 @@ pub enum X86_64AsmInstruction {
     StackStoreImm {
         ty: MmioScalarType,
         value: u64,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StackStoreValue {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StackLoad {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StaticLoad {
         ty: MmioScalarType,
@@ -4677,14 +4677,14 @@ pub enum X86_64AsmInstruction {
     },
     SlotArithImm {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
         arith_op: ArithOp,
         imm: u64,
     },
     SlotArithSlot {
         ty: MmioScalarType,
-        dst_slot_idx: u8,
-        src_slot_idx: u8,
+        dst_slot_idx: u16,
+        src_slot_idx: u16,
         arith_op: ArithOp,
     },
     ParamLoad {
@@ -4719,7 +4719,7 @@ pub enum X86_64AsmInstruction {
     JmpIfNonZeroLabel(String),
     /// `movzx eax, byte [rsp + 8*slot_idx]` — load U8 bool slot into eax.
     LoadSlotU8ToEax {
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// `test eax, eax` — sets ZF if eax == 0.
     TestEaxEax,
@@ -4727,26 +4727,26 @@ pub enum X86_64AsmInstruction {
     CompareSlots {
         ty: MmioScalarType,
         cmp_op: CmpOp,
-        lhs_idx: u8,
-        rhs_idx: u8,
-        out_idx: u8,
+        lhs_idx: u16,
+        rhs_idx: u16,
+        out_idx: u16,
     },
     /// Load scalar from address held in addr_slot_idx into out_slot_idx.
     RawPtrLoad {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
-        out_slot_idx: u8,
+        addr_slot_idx: u16,
+        out_slot_idx: u16,
     },
     /// Store scalar value to address held in addr_slot_idx.
     RawPtrStoreImm {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
+        addr_slot_idx: u16,
         value: u64,
     },
     /// Store saved value register to address held in addr_slot_idx.
     RawPtrStoreSavedValue {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
+        addr_slot_idx: u16,
     },
     /// Emit a named kernel intrinsic instruction bytes directly.
     InlineAsm(KernelIntrinsic),
@@ -4754,7 +4754,7 @@ pub enum X86_64AsmInstruction {
     /// The string label is emitted in `.section .rodata` after the `.text` section.
     LoadStaticCstrAddr {
         str_label: String,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Inline jmp-over-data + SYS_write syscall to print `text` to stdout.
     /// `id` is a unique label suffix for the inline data labels.
@@ -4795,7 +4795,7 @@ pub struct AArch64AsmModule {
 pub struct AArch64AsmFunction {
     pub symbol: String,
     pub uses_saved_value_slot: bool,
-    pub n_stack_cells: u8,
+    pub n_stack_cells: u16,
     pub n_params: usize,
     pub instructions: Vec<AArch64AsmInstruction>,
 }
@@ -4823,7 +4823,7 @@ pub enum AArch64AsmInstruction {
         symbol: String,
         args: Vec<ExecutableCallArg>,
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     BranchIfZero {
         ty: MmioScalarType,
@@ -4865,15 +4865,15 @@ pub enum AArch64AsmInstruction {
     StackStoreImm {
         ty: MmioScalarType,
         value: u64,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StackStoreValue {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StackLoad {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
     },
     StaticLoad {
         ty: MmioScalarType,
@@ -4890,14 +4890,14 @@ pub enum AArch64AsmInstruction {
     },
     SlotArithImm {
         ty: MmioScalarType,
-        slot_idx: u8,
+        slot_idx: u16,
         arith_op: ArithOp,
         imm: u64,
     },
     SlotArithSlot {
         ty: MmioScalarType,
-        dst_slot_idx: u8,
-        src_slot_idx: u8,
+        dst_slot_idx: u16,
+        src_slot_idx: u16,
         arith_op: ArithOp,
     },
     ParamLoad {
@@ -4932,7 +4932,7 @@ pub enum AArch64AsmInstruction {
     JmpIfNonZeroLabel(String),
     /// Load U8 bool slot into x9 for comparison.
     LoadSlotU8ToX9 {
-        slot_idx: u8,
+        slot_idx: u16,
     },
     /// Test x9 against itself — conceptually sets flags (no-op in binary emit, CBZ/CBNZ used).
     TestX9,
@@ -4940,26 +4940,26 @@ pub enum AArch64AsmInstruction {
     CompareSlots {
         ty: MmioScalarType,
         cmp_op: CmpOp,
-        lhs_idx: u8,
-        rhs_idx: u8,
-        out_idx: u8,
+        lhs_idx: u16,
+        rhs_idx: u16,
+        out_idx: u16,
     },
     /// Load scalar from address held in addr_slot_idx into out_slot_idx.
     RawPtrLoad {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
-        out_slot_idx: u8,
+        addr_slot_idx: u16,
+        out_slot_idx: u16,
     },
     /// Store scalar value to address held in addr_slot_idx.
     RawPtrStoreImm {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
+        addr_slot_idx: u16,
         value: u64,
     },
     /// Store saved value register to address held in addr_slot_idx.
     RawPtrStoreSavedValue {
         ty: MmioScalarType,
-        addr_slot_idx: u8,
+        addr_slot_idx: u16,
     },
     /// Emit a named kernel intrinsic instruction bytes directly.
     InlineAsm(KernelIntrinsic),
@@ -6431,8 +6431,8 @@ fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> b
     })
 }
 
-fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
-    let mut max_slot: Option<u8> = None;
+fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u16 {
+    let mut max_slot: Option<u16> = None;
     for block in &function.blocks {
         for op in &block.ops {
             let slot = match op {
@@ -6464,7 +6464,7 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                 _ => None,
             };
             if let Some(s) = slot {
-                max_slot = Some(max_slot.map_or(s, |m: u8| m.max(s)));
+                max_slot = Some(max_slot.map_or(s, |m: u16| m.max(s)));
             }
         }
     }
@@ -8430,7 +8430,7 @@ fn syscall_encoded_len(
     total
 }
 
-fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_bytes: u32) -> u64 {
+fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u16, outgoing_bytes: u32) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
         ExecutableOp::CallCapture { ty, .. } => 5 + mmio_saved_value_copy_bytes(*ty),
@@ -8609,9 +8609,9 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
             let offset = outgoing_bytes + 8u32 * *slot_idx as u32;
             1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jz rel32
         }
-        ExecutableOp::JumpToEndIf => 5, // jmp rel32
-        ExecutableOp::ElseBegin => 0,   // label only, no bytes
-        ExecutableOp::IfEnd => 0,       // label only, no bytes
+        ExecutableOp::JumpToEndIf => 5,    // jmp rel32
+        ExecutableOp::ElseBegin => 0,      // label only, no bytes
+        ExecutableOp::IfEnd => 0,          // label only, no bytes
         ExecutableOp::JumpToEpilogue => 5, // jmp rel32
         // load lhs + cmp rhs + setCC al (3) + movzx eax,al (3) + store out
         ExecutableOp::CompareIntoSlot {
@@ -8841,7 +8841,7 @@ fn encode_stack_cell_store_imm_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     value: u64,
-    slot_idx: u8,
+    slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
@@ -8875,7 +8875,7 @@ fn encode_stack_cell_store_imm_slot_bytes(
 fn encode_stack_cell_store_saved_value_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    slot_idx: u8,
+    slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
@@ -8908,7 +8908,7 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
 fn encode_stack_cell_load_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    slot_idx: u8,
+    slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
@@ -8942,7 +8942,7 @@ fn encode_stack_cell_load_slot_bytes(
 fn encode_stack_cell_load_slot_bytes_into_rax(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    slot_idx: u8,
+    slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
@@ -8975,7 +8975,7 @@ fn encode_stack_cell_load_slot_bytes_into_rax(
 fn encode_stack_cell_load_slot_bytes_into_rcx(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    slot_idx: u8,
+    slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
@@ -9033,9 +9033,9 @@ fn encode_compare_into_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     cmp_op: CmpOp,
-    lhs_idx: u8,
-    rhs_idx: u8,
-    out_idx: u8,
+    lhs_idx: u16,
+    rhs_idx: u16,
+    out_idx: u16,
     slot_base: u32,
 ) {
     let lhs_off = slot_base + 8u32 * lhs_idx as u32;
@@ -9128,7 +9128,7 @@ fn encode_slot_arith_slot_op_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     op: ArithOp,
-    dst_slot_idx: u8,
+    dst_slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * dst_slot_idx as u32;
@@ -9545,7 +9545,7 @@ fn encode_mmio_write_saved_value_param_addr_bytes(
 fn encode_stack_cell_store_accumulator_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    slot_idx: u8,
+    slot_idx: u16,
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
@@ -9581,8 +9581,8 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
 fn encode_raw_ptr_load_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    addr_slot_idx: u8,
-    out_slot_idx: u8,
+    addr_slot_idx: u16,
+    out_slot_idx: u16,
     slot_base: u32,
 ) {
     // 1. Load the u64 address from the addr_slot into %rax.
@@ -9608,7 +9608,7 @@ fn encode_raw_ptr_load_bytes(
 fn encode_raw_ptr_store_imm_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    addr_slot_idx: u8,
+    addr_slot_idx: u16,
     value: u64,
     slot_base: u32,
 ) {
@@ -9635,7 +9635,7 @@ fn encode_raw_ptr_store_imm_bytes(
 fn encode_raw_ptr_store_saved_value_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    addr_slot_idx: u8,
+    addr_slot_idx: u16,
     slot_base: u32,
 ) {
     // 1. Load the u64 address from the addr_slot into %rax.
@@ -9922,7 +9922,7 @@ fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
 /// Byte count of a stack-cell load or store at the given slot index.
 /// slot_idx=0 uses the no-displacement SIB form (3/4 bytes);
 /// slot_idx>0 uses the disp8 SIB form (4/5 bytes).
-fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8, outgoing_bytes: u32) -> u64 {
+fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u16, outgoing_bytes: u32) -> u64 {
     let offset = outgoing_bytes + 8u32 * slot_idx as u32;
     let base: u64 = match ty {
         MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 3,
