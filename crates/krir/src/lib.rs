@@ -2314,6 +2314,25 @@ pub fn lower_current_krir_to_executable_krir(
                     };
                     let resolved_value = match resolved_value {
                         Ok(value) => value,
+                        Err(reason) if reason == "__needs_reload__" => {
+                            // The value isn't in rbx — load from the named cell first.
+                            if let MmioValueExpr::Ident { name: src_name } = value {
+                                if let Some(&(src_idx, src_ty)) =
+                                    cell_slot_map.get(src_name.as_str())
+                                {
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: src_ty,
+                                        slot_idx: src_idx,
+                                    });
+                                    ExecutableMmioWriteValue::SavedValue
+                                } else {
+                                    // Can't find the source cell — skip
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
                         Err(reason) => {
                             errors.push(format!(
                                 "canonical-exec: function '{}' contains unsupported {}: {}",
@@ -2702,6 +2721,23 @@ pub fn lower_current_krir_to_executable_krir(
                     };
                     let resolved_value = match resolved_value {
                         Ok(immediate) => immediate,
+                        Err(reason) if reason == "__needs_reload__" => {
+                            if let MmioValueExpr::Ident { name: src_name } = value {
+                                if let Some(&(src_idx, src_ty)) =
+                                    cell_slot_map.get(src_name.as_str())
+                                {
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: src_ty,
+                                        slot_idx: src_idx,
+                                    });
+                                    ExecutableMmioWriteValue::SavedValue
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
                         Err(reason) => {
                             errors.push(format!(
                                 "canonical-exec: function '{}' contains unsupported {}: {}",
@@ -3022,6 +3058,23 @@ pub fn lower_current_krir_to_executable_krir(
                                 addr_slot_idx: addr_idx,
                                 value: value.clone(),
                             });
+                        }
+                        Err(reason) if reason == "__needs_reload__" => {
+                            if let MmioValueExpr::Ident { name: src_name } = value {
+                                if let Some(&(src_idx, src_ty)) =
+                                    cell_slot_map.get(src_name.as_str())
+                                {
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: src_ty,
+                                        slot_idx: src_idx,
+                                    });
+                                    exec_ops.push(ExecutableOp::RawPtrStore {
+                                        ty: *ty,
+                                        addr_slot_idx: addr_idx,
+                                        value: value.clone(),
+                                    });
+                                }
+                            }
                         }
                         Err(reason) => {
                             errors.push(format!(
@@ -3473,7 +3526,7 @@ fn resolve_executable_mmio_write_value(
                         name, slot_name
                     ));
                 }
-                return Ok(ExecutableMmioWriteValue::SavedValue);
+                return Err("__needs_reload__".to_string());
             }
             let Some((read_slot, read_ty)) = available_read_value else {
                 if !new_syntax {
@@ -3554,7 +3607,10 @@ fn resolve_executable_saved_slot_write_value(
                 name, slot_name
             ));
         }
-        return Ok(ExecutableMmioWriteValue::SavedValue);
+        // In new_syntax mode: rbx does NOT hold the right value — the named
+        // cell differs from the captured slot.  Signal the caller to emit a
+        // StackLoad from the named cell before storing.
+        return Err("__needs_reload__".to_string());
     }
     let Some((saved_slot, saved_ty)) = available_saved_value else {
         if !new_syntax {
