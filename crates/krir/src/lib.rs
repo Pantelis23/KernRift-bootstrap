@@ -2333,62 +2333,67 @@ pub fn lower_current_krir_to_executable_krir(
                             new_syntax,
                         ),
                         MmioValueExpr::Ident { name } => {
-                            if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
-                                exec_ops.push(ExecutableOp::ParamLoad {
-                                    param_idx,
-                                    ty: param_ty,
-                                });
+                            if new_syntax {
+                                // New-syntax: reload from the named cell when rbx
+                                // does not already hold the right value.
+                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
+                                } else if executable_slot_name.as_deref() != Some(name.as_str()) {
+                                    // rbx does NOT hold this value — reload.
+                                    if let Some(&(src_idx, src_ty)) =
+                                        cell_slot_map.get(name.as_str())
+                                    {
+                                        exec_ops.push(ExecutableOp::StackLoad {
+                                            ty: src_ty,
+                                            slot_idx: src_idx,
+                                        });
+                                    }
+                                }
+                                // else: executable_slot_name matches — rbx is valid.
                                 Ok(ExecutableMmioWriteValue::SavedValue)
-                            } else if matches!(
-                                last_value.as_ref().map(|value| value.source),
-                                Some(ExecutableCapturedValueSource::SavedSlot)
-                            ) {
-                                resolve_executable_saved_slot_write_value(
-                                    *ty,
-                                    name,
-                                    executable_slot_name.as_deref(),
-                                    last_value
-                                        .as_ref()
-                                        .map(|value| (value.slot.as_str(), value.ty)),
-                                    new_syntax,
-                                )
                             } else {
-                                resolve_executable_mmio_write_value(
-                                    *ty,
-                                    value,
-                                    executable_slot_name.as_deref(),
-                                    last_value.as_ref().and_then(|value| match value.source {
-                                        ExecutableCapturedValueSource::DeferredRead { .. } => {
-                                            Some((value.slot.as_str(), value.ty))
-                                        }
-                                        ExecutableCapturedValueSource::SavedSlot => None,
-                                    }),
-                                    new_syntax,
-                                )
+                                // Old-syntax: existing complex resolution (unchanged).
+                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
+                                    Ok(ExecutableMmioWriteValue::SavedValue)
+                                } else if matches!(
+                                    last_value.as_ref().map(|value| value.source),
+                                    Some(ExecutableCapturedValueSource::SavedSlot)
+                                ) {
+                                    resolve_executable_saved_slot_write_value(
+                                        *ty,
+                                        name,
+                                        executable_slot_name.as_deref(),
+                                        last_value
+                                            .as_ref()
+                                            .map(|value| (value.slot.as_str(), value.ty)),
+                                        new_syntax,
+                                    )
+                                } else {
+                                    resolve_executable_mmio_write_value(
+                                        *ty,
+                                        value,
+                                        executable_slot_name.as_deref(),
+                                        last_value.as_ref().and_then(|value| match value.source {
+                                            ExecutableCapturedValueSource::DeferredRead {
+                                                ..
+                                            } => Some((value.slot.as_str(), value.ty)),
+                                            ExecutableCapturedValueSource::SavedSlot => None,
+                                        }),
+                                        new_syntax,
+                                    )
+                                }
                             }
                         }
                     };
                     let resolved_value = match resolved_value {
                         Ok(value) => value,
-                        Err(reason) if reason == "__needs_reload__" => {
-                            // The value isn't in rbx — load from the named cell first.
-                            if let MmioValueExpr::Ident { name: src_name } = value {
-                                if let Some(&(src_idx, src_ty)) =
-                                    cell_slot_map.get(src_name.as_str())
-                                {
-                                    exec_ops.push(ExecutableOp::StackLoad {
-                                        ty: src_ty,
-                                        slot_idx: src_idx,
-                                    });
-                                    ExecutableMmioWriteValue::SavedValue
-                                } else {
-                                    // Can't find the source cell — skip
-                                    continue;
-                                }
-                            } else {
-                                continue;
-                            }
-                        }
                         Err(reason) => {
                             errors.push(format!(
                                 "canonical-exec: function '{}' contains unsupported {}: {}",
@@ -2496,7 +2501,7 @@ pub fn lower_current_krir_to_executable_krir(
                                     ty: param_ty,
                                 });
                             } else if executable_slot_name.as_deref() != Some(ident.as_str()) {
-                                // Value is NOT already in %rbx — load it from its
+                                // rbx does NOT hold this value — reload from its
                                 // stack slot first.
                                 if let Some(&(slot_idx, cell_ty)) =
                                     cell_slot_map.get(ident.as_str())
@@ -2749,61 +2754,67 @@ pub fn lower_current_krir_to_executable_krir(
                             new_syntax,
                         ),
                         MmioValueExpr::Ident { name } => {
-                            // Check if the ident refers to a function parameter
-                            if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
-                                exec_ops.push(ExecutableOp::ParamLoad {
-                                    param_idx,
-                                    ty: param_ty,
-                                });
+                            if new_syntax {
+                                // New-syntax: reload from the named cell when rbx
+                                // does not already hold the right value.
+                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
+                                } else if executable_slot_name.as_deref() != Some(name.as_str()) {
+                                    // rbx does NOT hold this value — reload.
+                                    if let Some(&(src_idx, src_ty)) =
+                                        cell_slot_map.get(name.as_str())
+                                    {
+                                        exec_ops.push(ExecutableOp::StackLoad {
+                                            ty: src_ty,
+                                            slot_idx: src_idx,
+                                        });
+                                    }
+                                }
+                                // else: executable_slot_name matches — rbx is valid.
                                 Ok(ExecutableMmioWriteValue::SavedValue)
-                            } else if matches!(
-                                last_value.as_ref().map(|value| value.source),
-                                Some(ExecutableCapturedValueSource::SavedSlot)
-                            ) {
-                                resolve_executable_saved_slot_write_value(
-                                    *ty,
-                                    name,
-                                    executable_slot_name.as_deref(),
-                                    last_value
-                                        .as_ref()
-                                        .map(|value| (value.slot.as_str(), value.ty)),
-                                    new_syntax,
-                                )
                             } else {
-                                resolve_executable_mmio_write_value(
-                                    *ty,
-                                    value,
-                                    executable_slot_name.as_deref(),
-                                    last_value.as_ref().and_then(|value| match value.source {
-                                        ExecutableCapturedValueSource::DeferredRead { .. } => {
-                                            Some((value.slot.as_str(), value.ty))
-                                        }
-                                        ExecutableCapturedValueSource::SavedSlot => None,
-                                    }),
-                                    new_syntax,
-                                )
+                                // Old-syntax: existing complex resolution (unchanged).
+                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
+                                    Ok(ExecutableMmioWriteValue::SavedValue)
+                                } else if matches!(
+                                    last_value.as_ref().map(|value| value.source),
+                                    Some(ExecutableCapturedValueSource::SavedSlot)
+                                ) {
+                                    resolve_executable_saved_slot_write_value(
+                                        *ty,
+                                        name,
+                                        executable_slot_name.as_deref(),
+                                        last_value
+                                            .as_ref()
+                                            .map(|value| (value.slot.as_str(), value.ty)),
+                                        new_syntax,
+                                    )
+                                } else {
+                                    resolve_executable_mmio_write_value(
+                                        *ty,
+                                        value,
+                                        executable_slot_name.as_deref(),
+                                        last_value.as_ref().and_then(|value| match value.source {
+                                            ExecutableCapturedValueSource::DeferredRead {
+                                                ..
+                                            } => Some((value.slot.as_str(), value.ty)),
+                                            ExecutableCapturedValueSource::SavedSlot => None,
+                                        }),
+                                        new_syntax,
+                                    )
+                                }
                             }
                         }
                     };
                     let resolved_value = match resolved_value {
                         Ok(immediate) => immediate,
-                        Err(reason) if reason == "__needs_reload__" => {
-                            if let MmioValueExpr::Ident { name: src_name } = value {
-                                if let Some(&(src_idx, src_ty)) =
-                                    cell_slot_map.get(src_name.as_str())
-                                {
-                                    exec_ops.push(ExecutableOp::StackLoad {
-                                        ty: src_ty,
-                                        slot_idx: src_idx,
-                                    });
-                                    ExecutableMmioWriteValue::SavedValue
-                                } else {
-                                    continue;
-                                }
-                            } else {
-                                continue;
-                            }
-                        }
                         Err(reason) => {
                             errors.push(format!(
                                 "canonical-exec: function '{}' contains unsupported {}: {}",
@@ -3113,38 +3124,62 @@ pub fn lower_current_krir_to_executable_krir(
                             new_syntax,
                         ),
                         MmioValueExpr::Ident { name } => {
-                            if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
-                                exec_ops.push(ExecutableOp::ParamLoad {
-                                    param_idx,
-                                    ty: param_ty,
-                                });
+                            if new_syntax {
+                                // New-syntax: reload from the named cell when rbx
+                                // does not already hold the right value.
+                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
+                                } else if executable_slot_name.as_deref() != Some(name.as_str()) {
+                                    // rbx does NOT hold this value — reload.
+                                    if let Some(&(src_idx, src_ty)) =
+                                        cell_slot_map.get(name.as_str())
+                                    {
+                                        exec_ops.push(ExecutableOp::StackLoad {
+                                            ty: src_ty,
+                                            slot_idx: src_idx,
+                                        });
+                                    }
+                                }
+                                // else: executable_slot_name matches — rbx is valid.
                                 Ok(ExecutableMmioWriteValue::SavedValue)
-                            } else if matches!(
-                                last_value.as_ref().map(|value| value.source),
-                                Some(ExecutableCapturedValueSource::SavedSlot)
-                            ) {
-                                resolve_executable_saved_slot_write_value(
-                                    *ty,
-                                    name,
-                                    executable_slot_name.as_deref(),
-                                    last_value
-                                        .as_ref()
-                                        .map(|value| (value.slot.as_str(), value.ty)),
-                                    new_syntax,
-                                )
                             } else {
-                                resolve_executable_mmio_write_value(
-                                    *ty,
-                                    value,
-                                    executable_slot_name.as_deref(),
-                                    last_value.as_ref().and_then(|value| match value.source {
-                                        ExecutableCapturedValueSource::DeferredRead { .. } => {
-                                            Some((value.slot.as_str(), value.ty))
-                                        }
-                                        ExecutableCapturedValueSource::SavedSlot => None,
-                                    }),
-                                    new_syntax,
-                                )
+                                // Old-syntax: existing complex resolution (unchanged).
+                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
+                                    Ok(ExecutableMmioWriteValue::SavedValue)
+                                } else if matches!(
+                                    last_value.as_ref().map(|value| value.source),
+                                    Some(ExecutableCapturedValueSource::SavedSlot)
+                                ) {
+                                    resolve_executable_saved_slot_write_value(
+                                        *ty,
+                                        name,
+                                        executable_slot_name.as_deref(),
+                                        last_value
+                                            .as_ref()
+                                            .map(|value| (value.slot.as_str(), value.ty)),
+                                        new_syntax,
+                                    )
+                                } else {
+                                    resolve_executable_mmio_write_value(
+                                        *ty,
+                                        value,
+                                        executable_slot_name.as_deref(),
+                                        last_value.as_ref().and_then(|value| match value.source {
+                                            ExecutableCapturedValueSource::DeferredRead {
+                                                ..
+                                            } => Some((value.slot.as_str(), value.ty)),
+                                            ExecutableCapturedValueSource::SavedSlot => None,
+                                        }),
+                                        new_syntax,
+                                    )
+                                }
                             }
                         }
                     };
@@ -3155,22 +3190,6 @@ pub fn lower_current_krir_to_executable_krir(
                                 addr_slot_idx: addr_idx,
                                 value: value.clone(),
                             });
-                        }
-                        Err(reason) if reason == "__needs_reload__" => {
-                            if let MmioValueExpr::Ident { name: src_name } = value
-                                && let Some(&(src_idx, src_ty)) =
-                                    cell_slot_map.get(src_name.as_str())
-                            {
-                                exec_ops.push(ExecutableOp::StackLoad {
-                                    ty: src_ty,
-                                    slot_idx: src_idx,
-                                });
-                                exec_ops.push(ExecutableOp::RawPtrStore {
-                                    ty: *ty,
-                                    addr_slot_idx: addr_idx,
-                                    value: value.clone(),
-                                });
-                            }
                         }
                         Err(reason) => {
                             errors.push(format!(
@@ -3616,13 +3635,10 @@ fn resolve_executable_mmio_write_value(
                 return Ok(ExecutableMmioWriteValue::SavedValue);
             };
             if name != slot_name {
-                if !new_syntax {
-                    return Err(format!(
-                        "named write value '{}' does not match the captured executable slot '{}' in this function",
-                        name, slot_name
-                    ));
-                }
-                return Err("__needs_reload__".to_string());
+                return Err(format!(
+                    "named write value '{}' does not match the captured executable slot '{}' in this function",
+                    name, slot_name
+                ));
             }
             let Some((read_slot, read_ty)) = available_read_value else {
                 if !new_syntax {
@@ -3697,16 +3713,10 @@ fn resolve_executable_saved_slot_write_value(
         return Ok(ExecutableMmioWriteValue::SavedValue);
     };
     if name != slot_name {
-        if !new_syntax {
-            return Err(format!(
-                "named write value '{}' does not match the captured executable slot '{}' in this function",
-                name, slot_name
-            ));
-        }
-        // In new_syntax mode: rbx does NOT hold the right value — the named
-        // cell differs from the captured slot.  Signal the caller to emit a
-        // StackLoad from the named cell before storing.
-        return Err("__needs_reload__".to_string());
+        return Err(format!(
+            "named write value '{}' does not match the captured executable slot '{}' in this function",
+            name, slot_name
+        ));
     }
     let Some((saved_slot, saved_ty)) = available_saved_value else {
         if !new_syntax {
