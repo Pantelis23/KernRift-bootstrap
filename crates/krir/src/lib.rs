@@ -2522,6 +2522,11 @@ pub fn lower_current_krir_to_executable_krir(
                         arith_op: *arith_op,
                         imm: *imm,
                     });
+                    // CellArithImm modifies the cell in-place on the stack.
+                    // If rbx was tracking this cell, it's now stale.
+                    if executable_slot_name.as_deref() == Some(cell.as_str()) {
+                        executable_slot_name = None;
+                    }
                 }
                 KrirOp::SlotArith {
                     ty,
@@ -2559,6 +2564,11 @@ pub fn lower_current_krir_to_executable_krir(
                         src_slot_idx,
                         arith_op: *arith_op,
                     });
+                    // SlotArith modifies dst in-place on the stack.
+                    // If rbx was tracking dst, it's now stale.
+                    if executable_slot_name.as_deref() == Some(dst.as_str()) {
+                        executable_slot_name = None;
+                    }
                 }
                 KrirOp::MmioRead {
                     ty,
@@ -2919,6 +2929,11 @@ pub fn lower_current_krir_to_executable_krir(
                             rhs_idx: ri,
                             out_idx: oi,
                         });
+                        // CompareIntoSlot writes to out slot via rax, not rbx.
+                        // But if out matches executable_slot_name, rbx is stale.
+                        if executable_slot_name.as_deref() == Some(out.as_str()) {
+                            executable_slot_name = None;
+                        }
                     }
                 }
                 KrirOp::LoopBegin => exec_ops.push(ExecutableOp::LoopBegin),
@@ -2987,6 +3002,11 @@ pub fn lower_current_krir_to_executable_krir(
                         addr_slot_idx: addr_idx,
                         out_slot_idx: out_idx,
                     });
+                    // RawPtrLoad writes to out_slot via rax, not rbx.
+                    // If rbx was tracking out_slot, it's now stale.
+                    if executable_slot_name.as_deref() == Some(out_slot.as_str()) {
+                        executable_slot_name = None;
+                    }
                 }
                 KrirOp::RawPtrStore {
                     ty,
