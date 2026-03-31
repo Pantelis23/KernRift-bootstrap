@@ -6209,8 +6209,33 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
     max_slot.map_or(0, |m| m + 1)
 }
 
+/// Maximum number of stack-passed arguments (args beyond the first 6) across
+/// all call-like ops and terminators in a function.  Used to reserve outgoing
+/// argument space in the caller's stack frame so that we can write stack args
+/// via `mov [rsp+off], rax` instead of `push rax`.
+fn executable_function_max_outgoing_stack_args(function: &ExecutableFunction) -> u32 {
+    let mut max_sa: usize = 0;
+    for block in &function.blocks {
+        for op in &block.ops {
+            let n = match op {
+                ExecutableOp::CallWithArgs { args, .. }
+                | ExecutableOp::CallCaptureWithArgs { args, .. }
+                | ExecutableOp::BranchIfZeroWithArgs { args, .. } => args.len().saturating_sub(6),
+                _ => 0,
+            };
+            max_sa = max_sa.max(n);
+        }
+        if let ExecutableTerminator::TailCall { args, .. } = &block.terminator {
+            max_sa = max_sa.max(args.len().saturating_sub(6));
+        }
+    }
+    max_sa as u32
+}
+
 fn executable_function_uses_frame(function: &ExecutableFunction) -> bool {
-    executable_function_n_stack_cells(function) > 0 || !function.signature.params.is_empty()
+    executable_function_n_stack_cells(function) > 0
+        || !function.signature.params.is_empty()
+        || executable_function_max_outgoing_stack_args(function) > 0
 }
 
 /// Round frame_size up for SysV AMD64 ABI 16-byte stack alignment.
@@ -7969,6 +7994,17 @@ fn loadless_value_offset(cursor: usize, opcode_bytes: usize) -> usize {
     cursor + 10 + opcode_bytes
 }
 
+/// Adjust an `ExecutableCallArg::Slot` byte_offset by adding `slot_base`.
+/// Returns a new arg with the adjusted offset (or the original for non-Slot variants).
+fn adjust_call_arg(arg: &ExecutableCallArg, slot_base: u32) -> ExecutableCallArg {
+    match arg {
+        ExecutableCallArg::Slot { byte_offset } => ExecutableCallArg::Slot {
+            byte_offset: slot_base + byte_offset,
+        },
+        other => other.clone(),
+    }
+}
+
 /// Byte count for loading an `ExecutableCallArg` into RAX (full 64-bit register).
 fn call_arg_to_rax_len(arg: &ExecutableCallArg) -> u64 {
     match arg {
@@ -8132,7 +8168,7 @@ fn syscall_encoded_len(
     total
 }
 
-fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
+fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_bytes: u32) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
         ExecutableOp::CallCapture { ty, .. } => 5 + mmio_saved_value_copy_bytes(*ty),
@@ -8146,7 +8182,9 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
             let args_bytes: u64 = args
                 .iter()
                 .enumerate()
-                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
+                .map(|(i, a)| {
+                    call_arg_indexed_encoded_bytes(i, &adjust_call_arg(a, outgoing_bytes))
+                })
                 .sum();
             args_bytes + mmio_saved_value_zero_test_bytes(*ty) + 21
         }
@@ -8214,7 +8252,8 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
         },
         // ParamLoad: movb/movw/movl/movq off(%rsp), %bl/%bx/%ebx/%rbx
         ExecutableOp::ParamLoad { ty, param_idx } => {
-            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let offset =
+                outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
             let prefix: u64 = match ty {
                 MmioScalarType::U8
                 | MmioScalarType::I8
@@ -8236,7 +8275,8 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
             ty,
             capture_value,
         } => {
-            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let offset =
+                outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
             let load_addr = 2 + rsp_sib_disp_len(offset); // REX.W 8B + SIB disp
             load_addr
                 + mmio_load_bytes(*ty)
@@ -8247,12 +8287,14 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
                 }
         }
         ExecutableOp::MmioWriteImmParamAddr { param_idx, ty, .. } => {
-            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let offset =
+                outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
             let load_addr = 2 + rsp_sib_disp_len(offset);
             load_addr + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
         }
         ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
-            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let offset =
+                outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
             let load_addr = 2 + rsp_sib_disp_len(offset);
             load_addr + mmio_saved_value_store_bytes(*ty)
         }
@@ -8260,15 +8302,11 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
             let args_bytes: u64 = args
                 .iter()
                 .enumerate()
-                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
+                .map(|(i, a)| {
+                    call_arg_indexed_encoded_bytes(i, &adjust_call_arg(a, outgoing_bytes))
+                })
                 .sum();
-            let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
-            let cleanup = if n_stack > 0 {
-                rsp_adj_encoded_len((n_stack * 8) as u32)
-            } else {
-                0
-            };
-            args_bytes + 5 + cleanup // 5 = call rel32
+            args_bytes + 5 // 5 = call rel32; no cleanup needed — outgoing args live in reserved frame space
         }
         ExecutableOp::CallCaptureWithArgs {
             args, ty, slot_idx, ..
@@ -8276,17 +8314,12 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
             let args_bytes: u64 = args
                 .iter()
                 .enumerate()
-                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
+                .map(|(i, a)| {
+                    call_arg_indexed_encoded_bytes(i, &adjust_call_arg(a, outgoing_bytes))
+                })
                 .sum();
-            let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
-            let cleanup = if n_stack > 0 {
-                rsp_adj_encoded_len((n_stack * 8) as u32)
-            } else {
-                0
-            };
             args_bytes
                 + 5  // call rel32
-                + cleanup
                 + stack_cell_access_bytes(*ty, *slot_idx) // store acc -> slot
         }
         // Loop ops:
@@ -8397,8 +8430,9 @@ fn call_arg_indexed_encoded_bytes(arg_idx: usize, arg: &ExecutableCallArg) -> u6
     if arg_idx < 6 {
         call_arg_to_gpr_len(arg)
     } else {
-        // Load value into rax (variable size) + push rax (1 byte)
-        call_arg_to_rax_len(arg) + 1
+        // Load value into rax (variable size) + mov [rsp+off], rax (2 + SIB disp)
+        let stack_offset = (arg_idx as u32 - 6) * 8;
+        call_arg_to_rax_len(arg) + 2 + rsp_sib_disp_len(stack_offset)
     }
 }
 
@@ -8421,8 +8455,12 @@ fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
             value: ExecutableValue::Unit,
         } => frame_bytes + pop_rbx + 1,
         ExecutableTerminator::TailCall { args, .. } => {
+            let outgoing = 8u32 * executable_function_max_outgoing_stack_args(function);
+            // Adjust arg slot offsets for outgoing arg area.
+            let adj_args: Vec<ExecutableCallArg> =
+                args.iter().map(|a| adjust_call_arg(a, outgoing)).collect();
             // Register args (0-5): same as call encoding.
-            let reg_args_bytes: u64 = args
+            let reg_args_bytes: u64 = adj_args
                 .iter()
                 .enumerate()
                 .take(6)
@@ -8432,19 +8470,9 @@ fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
             let uses_saved = executable_function_uses_saved_value_slot(function);
             let rbx_adj: u32 = if uses_saved { 8 } else { 0 };
             let frame_sz = executable_function_frame_size(function);
-            let stack_args_bytes: u64 = (6..args.len())
+            let stack_args_bytes: u64 = (6..adj_args.len())
                 .map(|j| {
-                    let load_len: u64 = match &args[j] {
-                        ExecutableCallArg::Imm { value } => {
-                            if *value <= 0x7FFF_FFFF {
-                                5
-                            } else {
-                                10
-                            }
-                        }
-                        ExecutableCallArg::Slot { .. } => 5,
-                        ExecutableCallArg::SavedValue => 3,
-                    };
+                    let load_len: u64 = call_arg_to_rax_len(&adj_args[j]);
                     let dest_disp = frame_sz + rbx_adj + 8 + ((j - 6) as u32) * 8;
                     let store_len: u64 = if dest_disp <= 127 { 5 } else { 8 };
                     load_len + store_len
@@ -8536,8 +8564,9 @@ fn encode_stack_cell_store_imm_slot_bytes(
     ty: MmioScalarType,
     value: u64,
     slot_idx: u8,
+    slot_base: u32,
 ) {
-    let offset = 8u32 * slot_idx as u32;
+    let offset = slot_base + 8u32 * slot_idx as u32;
     push_mov_imm_to_value_register(out, ty, value);
     // Store %cl/%cx/%ecx/%rcx (reg=1) to [rsp + offset].
     match ty {
@@ -8569,8 +8598,9 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     slot_idx: u8,
+    slot_base: u32,
 ) {
-    let offset = 8u32 * slot_idx as u32;
+    let offset = slot_base + 8u32 * slot_idx as u32;
     // Store %bl/%bx/%ebx/%rbx (reg=3) to [rsp + offset].
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
@@ -8597,8 +8627,13 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
     }
 }
 
-fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
-    let offset = 8u32 * slot_idx as u32;
+fn encode_stack_cell_load_slot_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    slot_idx: u8,
+    slot_base: u32,
+) {
+    let offset = slot_base + 8u32 * slot_idx as u32;
     // Load [rsp + offset] into %bl/%bx/%ebx/%rbx (reg=3).
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
@@ -8626,8 +8661,13 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
 }
 
 /// Load a stack slot into `%al/%ax/%eax/%rax` (scratch, reg field = 0).
-fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
-    let offset = 8u32 * slot_idx as u32;
+fn encode_stack_cell_load_slot_bytes_into_rax(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    slot_idx: u8,
+    slot_base: u32,
+) {
+    let offset = slot_base + 8u32 * slot_idx as u32;
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x8A);
@@ -8654,8 +8694,13 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
 }
 
 /// Load a stack slot into `%cl/%cx/%ecx/%rcx` (shift-count register, reg field = 1).
-fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
-    let offset = 8u32 * slot_idx as u32;
+fn encode_stack_cell_load_slot_bytes_into_rcx(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    slot_idx: u8,
+    slot_base: u32,
+) {
+    let offset = slot_base + 8u32 * slot_idx as u32;
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x8A);
@@ -8713,10 +8758,11 @@ fn encode_compare_into_slot_bytes(
     lhs_idx: u8,
     rhs_idx: u8,
     out_idx: u8,
+    slot_base: u32,
 ) {
-    let lhs_off = 8u32 * lhs_idx as u32;
-    let rhs_off = 8u32 * rhs_idx as u32;
-    let out_off = 8u32 * out_idx as u32;
+    let lhs_off = slot_base + 8u32 * lhs_idx as u32;
+    let rhs_off = slot_base + 8u32 * rhs_idx as u32;
+    let out_off = slot_base + 8u32 * out_idx as u32;
     // Step 1: type-appropriate zero-extending load of lhs into %eax/%rax.
     // Step 2: compare with rhs.
     match ty {
@@ -8805,8 +8851,9 @@ fn encode_slot_arith_slot_op_bytes(
     ty: MmioScalarType,
     op: ArithOp,
     dst_slot_idx: u8,
+    slot_base: u32,
 ) {
-    let offset = 8u32 * dst_slot_idx as u32;
+    let offset = slot_base + 8u32 * dst_slot_idx as u32;
     match op {
         ArithOp::Add | ArithOp::Sub | ArithOp::And | ArithOp::Or | ArithOp::Xor => {
             // `op r/m, r` family: reg=0 (%rax family). modrm_disp8 = 0x44.
@@ -8951,10 +8998,14 @@ fn emit_add_rsp(out: &mut Vec<u8>, amount: u32) {
     }
 }
 
-/// Total frame size in bytes: 8 bytes per stack cell + 8 bytes per param.
+/// Total frame size in bytes: 8 bytes per stack cell + 8 bytes per param +
+/// 8 bytes per outgoing stack argument slot (reserved at the bottom of the
+/// frame so callers can write stack args via `mov [rsp+off], rax` without
+/// decrementing rsp).
 fn executable_function_frame_size(function: &ExecutableFunction) -> u32 {
     8u32 * u32::from(executable_function_n_stack_cells(function))
         + 8u32 * function.signature.params.len() as u32
+        + 8u32 * executable_function_max_outgoing_stack_args(function)
 }
 
 fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u32, caller_stack_disp: u32) {
@@ -9014,14 +9065,17 @@ fn param_spill_encoded_len(param_idx: usize, offset: u32, caller_stack_disp: u32
 
 /// Encode one call-with-args argument into the corresponding SysV integer arg register.
 /// Registers by index: 0→%rdi, 1→%rsi, 2→%rdx, 3→%rcx, 4→%r8, 5→%r9.
-/// Sizes: Imm(≤0x7FFFFFFF)→7B, Imm(>0x7FFFFFFF)→10B, Slot→5B (disp8), SavedValue→3B.
+/// Args 6+ are written to the outgoing argument area at the bottom of the frame
+/// via `mov [rsp + (arg_idx - 6) * 8], rax`.
 fn encode_call_arg_bytes(out: &mut Vec<u8>, arg_idx: u8, arg: &ExecutableCallArg) {
-    // Args 6+ go on the stack: push rax after loading the value into rax.
+    // Args 6+ go to the outgoing stack arg area at [rsp + (N-6)*8].
     if arg_idx >= 6 {
-        // Load value into rax first
+        let stack_offset = (arg_idx as u32 - 6) * 8;
+        // Load value into rax first.
         encode_call_arg_to_rax(out, arg);
-        // push rax (0x50)
-        out.push(0x50);
+        // mov [rsp + stack_offset], rax — REX.W 89 + SIB disp
+        out.extend_from_slice(&[0x48, 0x89]);
+        emit_rsp_sib_disp(out, 0x44, stack_offset);
         return;
     }
     // (reg_field in ModRM/opcode, is_extended: register number ≥ 8)
@@ -9214,8 +9268,9 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     slot_idx: u8,
+    slot_base: u32,
 ) {
-    let offset = 8u32 * slot_idx as u32;
+    let offset = slot_base + 8u32 * slot_idx as u32;
     // Store %al/%ax/%eax/%rax (reg=0) to [rsp + offset].
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
@@ -9250,9 +9305,10 @@ fn encode_raw_ptr_load_bytes(
     ty: MmioScalarType,
     addr_slot_idx: u8,
     out_slot_idx: u8,
+    slot_base: u32,
 ) {
     // 1. Load the u64 address from the addr_slot into %rax.
-    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
+    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx, slot_base);
     // 2. Indirect load from [%rax] into %al/%ax/%eax/%rax.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x00]),
@@ -9266,7 +9322,7 @@ fn encode_raw_ptr_load_bytes(
         }
     }
     // 3. Store result (%al/%ax/%eax/%rax) into out_slot on the stack.
-    encode_stack_cell_store_accumulator_slot_bytes(out, ty, out_slot_idx);
+    encode_stack_cell_store_accumulator_slot_bytes(out, ty, out_slot_idx, slot_base);
 }
 
 /// Encode `RawPtrStore` with an immediate value: load addr (u64) from addr_slot into %rax,
@@ -9276,9 +9332,10 @@ fn encode_raw_ptr_store_imm_bytes(
     ty: MmioScalarType,
     addr_slot_idx: u8,
     value: u64,
+    slot_base: u32,
 ) {
     // 1. Load the u64 address from the addr_slot into %rax.
-    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
+    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx, slot_base);
     // 2. Load the immediate value into the value register (%cl/%cx/%ecx/%rcx).
     push_mov_imm_to_value_register(out, ty, value);
     // 3. Store %cl/%cx/%ecx/%rcx to [%rax].
@@ -9301,9 +9358,10 @@ fn encode_raw_ptr_store_saved_value_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     addr_slot_idx: u8,
+    slot_base: u32,
 ) {
     // 1. Load the u64 address from the addr_slot into %rax.
-    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
+    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx, slot_base);
     // 2. Store %bl/%bx/%ebx/%rbx to [%rax].
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x18]),
@@ -9970,10 +10028,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         let frame_sz = executable_function_frame_size(function);
         let caller_stack_disp_for_size =
             frame_sz + if uses_saved_value_slot { 8u32 } else { 0u32 } + 8; // return address
+        let outgoing_for_size = 8u32 * executable_function_max_outgoing_stack_args(function);
         let sc_bytes_for_size = 8u32 * u32::from(executable_function_n_stack_cells(function));
         let param_spill_total: u64 = (0..n_params as usize)
             .map(|i| {
-                let off = sc_bytes_for_size + 8u32 * i as u32;
+                let off = outgoing_for_size + sc_bytes_for_size + 8u32 * i as u32;
                 param_spill_encoded_len(i, off, caller_stack_disp_for_size)
             })
             .sum();
@@ -9988,7 +10047,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 .ops
                 .iter()
                 .map(|op| {
-                    executable_op_encoded_len(op, executable_function_n_stack_cells(function))
+                    executable_op_encoded_len(
+                        op,
+                        executable_function_n_stack_cells(function),
+                        8 * executable_function_max_outgoing_stack_args(function),
+                    )
                 })
                 .sum::<u64>()
             + executable_terminator_encoded_len(function);
@@ -10052,17 +10115,24 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
         let n_stack_cells = executable_function_n_stack_cells(function);
         let n_params = function.signature.params.len();
-        let uses_frame = n_stack_cells > 0 || n_params > 0;
+        let max_outgoing = executable_function_max_outgoing_stack_args(function);
+        let outgoing_bytes = 8u32 * max_outgoing;
+        let uses_frame = n_stack_cells > 0 || n_params > 0 || max_outgoing > 0;
         let mut local_offset = 0u64;
         if uses_saved_value_slot {
             code_bytes.push(0x53);
             local_offset += 1;
         }
         if uses_frame {
-            // Frame layout: [cells: 8*n_stack_cells bytes][param_0..param_n-1: 8 bytes each]
-            // Cell i is at (8*i)(%rsp); param j is at (8*n_stack_cells + 8*j)(%rsp)
+            // Frame layout (low→high):
+            //   [outgoing arg area: 8*max_outgoing bytes]
+            //   [cells: 8*n_stack_cells bytes]
+            //   [param_0..param_n-1: 8 bytes each]
+            // Outgoing arg j is at (j*8)(%rsp).
+            // Cell i is at (8*max_outgoing + 8*i)(%rsp).
+            // Param j is at (8*max_outgoing + 8*n_stack_cells + 8*j)(%rsp).
             let sc_bytes = 8u32 * u32::from(n_stack_cells);
-            let frame_size = sc_bytes + 8u32 * n_params as u32;
+            let frame_size = outgoing_bytes + sc_bytes + 8u32 * n_params as u32;
             emit_sub_rsp(&mut code_bytes, frame_size);
             local_offset += rsp_adj_encoded_len(frame_size);
             // Spill params to their stack slots.
@@ -10071,7 +10141,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             let caller_stack_disp =
                 frame_size + if uses_saved_value_slot { 8u32 } else { 0u32 } + 8; // return address
             for i in 0..n_params {
-                let offset = sc_bytes + 8u32 * i as u32;
+                let offset = outgoing_bytes + sc_bytes + 8u32 * i as u32;
                 emit_param_spill(&mut code_bytes, i, offset, caller_stack_disp);
                 local_offset += param_spill_encoded_len(i, offset, caller_stack_disp);
             }
@@ -10125,7 +10195,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::BranchIfZero {
                     ty,
@@ -10159,7 +10229,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::BranchIfZeroWithArgs {
                     ty,
@@ -10178,18 +10248,23 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                             unresolved_targets.insert(callee.clone());
                         }
                     }
+                    // Adjust all arg slot offsets for outgoing arg area at frame bottom.
+                    let adj_args: Vec<ExecutableCallArg> = args
+                        .iter()
+                        .map(|a| adjust_call_arg(a, outgoing_bytes))
+                        .collect();
                     // Emit arg-loading prefix, then the same test/jne/call/jmp/call structure.
-                    let args_len: u64 = args
+                    let args_len: u64 = adj_args
                         .iter()
                         .enumerate()
                         .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
                         .sum();
-                    // Push stack args (6+) in reverse order per SysV ABI.
-                    for i in (6..args.len()).rev() {
-                        encode_call_arg_bytes(&mut code_bytes, i as u8, &args[i]);
+                    // Store stack args (6+) to outgoing arg area at [rsp + (N-6)*8].
+                    for (i, adj_arg) in adj_args.iter().enumerate().skip(6) {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, adj_arg);
                     }
                     // Load register args (0-5).
-                    for (i, arg) in args.iter().enumerate().take(6) {
+                    for (i, arg) in adj_args.iter().enumerate().take(6) {
                         encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                     }
                     let test_bytes = mmio_saved_value_zero_test_bytes(*ty);
@@ -10208,7 +10283,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::BranchIfEqImm {
                     ty,
@@ -10243,7 +10318,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::BranchIfMaskNonZeroImm {
                     ty,
@@ -10278,7 +10353,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::MmioRead {
                     ty,
@@ -10286,31 +10361,47 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     capture_value,
                 } => {
                     encode_mmio_read_bytes(&mut code_bytes, *ty, *addr, *capture_value);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::MmioWriteImm { ty, addr, value } => {
                     encode_mmio_write_imm_bytes(&mut code_bytes, *ty, *addr, *value);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::MmioWriteValue { ty, addr } => {
                     encode_mmio_write_saved_value_bytes(&mut code_bytes, *ty, *addr);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::StackStoreImm {
                     ty,
                     value,
                     slot_idx,
                 } => {
-                    encode_stack_cell_store_imm_slot_bytes(&mut code_bytes, *ty, *value, *slot_idx);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    encode_stack_cell_store_imm_slot_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *value,
+                        *slot_idx,
+                        outgoing_bytes,
+                    );
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::StackStoreValue { ty, slot_idx } => {
-                    encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    encode_stack_cell_store_saved_value_slot_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *slot_idx,
+                        outgoing_bytes,
+                    );
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::StackLoad { ty, slot_idx } => {
-                    encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    encode_stack_cell_load_slot_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *slot_idx,
+                        outgoing_bytes,
+                    );
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::SlotArithImm {
                     ty,
@@ -10321,7 +10412,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     match arith_op {
                         ArithOp::Mul => {
                             // load slot into %rbx
-                            encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                            encode_stack_cell_load_slot_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *slot_idx,
+                                outgoing_bytes,
+                            );
                             // movabs $imm, %rax: REX.W 0xB8 + imm64 = [0x48, 0xB8, imm_8_bytes]
                             code_bytes.extend_from_slice(&[0x48, 0xB8]);
                             code_bytes.extend_from_slice(&imm.to_le_bytes());
@@ -10332,6 +10428,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *slot_idx,
+                                outgoing_bytes,
                             );
                         }
                         ArithOp::Div | ArithOp::Rem => {
@@ -10340,6 +10437,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *slot_idx,
+                                outgoing_bytes,
                             );
                             // xorq %rdx, %rdx
                             code_bytes.extend_from_slice(&[0x48, 0x31, 0xD2]);
@@ -10354,26 +10452,33 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                     &mut code_bytes,
                                     *ty,
                                     *slot_idx,
+                                    outgoing_bytes,
                                 );
                             } else {
                                 // store %rdx (remainder) to slot
                                 // movq %rdx, offset(%rsp): REX.W 0x89 /2 ModRM SIB disp
-                                let offset = 8u32 * *slot_idx as u32;
+                                let offset = outgoing_bytes + 8u32 * *slot_idx as u32;
                                 code_bytes.extend_from_slice(&[0x48, 0x89]);
                                 emit_rsp_sib_disp(&mut code_bytes, 0x54, offset);
                             }
                         }
                         _ => {
-                            encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                            encode_stack_cell_load_slot_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *slot_idx,
+                                outgoing_bytes,
+                            );
                             encode_slot_arith_imm_bytes(&mut code_bytes, *arith_op, *imm);
                             encode_stack_cell_store_saved_value_slot_bytes(
                                 &mut code_bytes,
                                 *ty,
                                 *slot_idx,
+                                outgoing_bytes,
                             );
                         }
                     }
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::SlotArithSlot {
                     ty,
@@ -10384,12 +10489,18 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     match arith_op {
                         ArithOp::Mul => {
                             // load dst into %rbx (saved-value register)
-                            encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *dst_slot_idx);
+                            encode_stack_cell_load_slot_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *dst_slot_idx,
+                                outgoing_bytes,
+                            );
                             // load src into %rax (accumulator)
                             encode_stack_cell_load_slot_bytes_into_rax(
                                 &mut code_bytes,
                                 *ty,
                                 *src_slot_idx,
+                                outgoing_bytes,
                             );
                             // imulq %rax, %rbx: REX.W 0F AF /r (reg=rbx=3, r/m=rax=0)
                             code_bytes.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xD8]);
@@ -10398,6 +10509,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *dst_slot_idx,
+                                outgoing_bytes,
                             );
                         }
                         ArithOp::Div | ArithOp::Rem => {
@@ -10406,6 +10518,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *dst_slot_idx,
+                                outgoing_bytes,
                             );
                             // xorq %rdx, %rdx
                             code_bytes.extend_from_slice(&[0x48, 0x31, 0xD2]);
@@ -10414,6 +10527,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *src_slot_idx,
+                                outgoing_bytes,
                             );
                             // divq %rcx: REX.W 0xF7 /6 ModRM(rcx) = [0x48, 0xF7, 0xF1]
                             code_bytes.extend_from_slice(&[0x48, 0xF7, 0xF1]);
@@ -10423,10 +10537,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                     &mut code_bytes,
                                     *ty,
                                     *dst_slot_idx,
+                                    outgoing_bytes,
                                 );
                             } else {
                                 // store %rdx (remainder) to dst slot
-                                let offset = 8u32 * *dst_slot_idx as u32;
+                                let offset = outgoing_bytes + 8u32 * *dst_slot_idx as u32;
                                 code_bytes.extend_from_slice(&[0x48, 0x89]);
                                 emit_rsp_sib_disp(&mut code_bytes, 0x54, offset);
                             }
@@ -10436,12 +10551,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *src_slot_idx,
+                                outgoing_bytes,
                             );
                             encode_slot_arith_slot_op_bytes(
                                 &mut code_bytes,
                                 *ty,
                                 *arith_op,
                                 *dst_slot_idx,
+                                outgoing_bytes,
                             );
                         }
                         _ => {
@@ -10449,44 +10566,54 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 &mut code_bytes,
                                 *ty,
                                 *src_slot_idx,
+                                outgoing_bytes,
                             );
                             encode_slot_arith_slot_op_bytes(
                                 &mut code_bytes,
                                 *ty,
                                 *arith_op,
                                 *dst_slot_idx,
+                                outgoing_bytes,
                             );
                         }
                     }
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::ParamLoad { param_idx, ty } => {
-                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+                    let offset = outgoing_bytes
+                        + 8u32 * u32::from(n_stack_cells)
+                        + 8u32 * u32::from(*param_idx);
                     encode_param_load_bytes(&mut code_bytes, *ty, offset);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::MmioReadParamAddr {
                     param_idx,
                     ty,
                     capture_value,
                 } => {
-                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+                    let offset = outgoing_bytes
+                        + 8u32 * u32::from(n_stack_cells)
+                        + 8u32 * u32::from(*param_idx);
                     encode_mmio_read_param_addr_bytes(&mut code_bytes, *ty, offset, *capture_value);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::MmioWriteImmParamAddr {
                     param_idx,
                     ty,
                     value,
                 } => {
-                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+                    let offset = outgoing_bytes
+                        + 8u32 * u32::from(n_stack_cells)
+                        + 8u32 * u32::from(*param_idx);
                     encode_mmio_write_imm_param_addr_bytes(&mut code_bytes, *ty, offset, *value);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
-                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+                    let offset = outgoing_bytes
+                        + 8u32 * u32::from(n_stack_cells)
+                        + 8u32 * u32::from(*param_idx);
                     encode_mmio_write_saved_value_param_addr_bytes(&mut code_bytes, *ty, offset);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::CallWithArgs { callee, args } => {
                     if !function_offsets.contains_key(callee) {
@@ -10498,18 +10625,23 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         }
                         unresolved_targets.insert(callee.clone());
                     }
-                    // Push stack args (6+) in reverse order per SysV ABI.
-                    for i in (6..args.len()).rev() {
-                        encode_call_arg_bytes(&mut code_bytes, i as u8, &args[i]);
+                    // Adjust all arg slot offsets for outgoing arg area at frame bottom.
+                    let adj_args: Vec<ExecutableCallArg> = args
+                        .iter()
+                        .map(|a| adjust_call_arg(a, outgoing_bytes))
+                        .collect();
+                    // Store stack args (6+) to outgoing arg area at [rsp + (N-6)*8].
+                    for (i, adj_arg) in adj_args.iter().enumerate().skip(6) {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, adj_arg);
                     }
                     // Load register args (0-5).
-                    for (i, arg) in args.iter().enumerate().take(6) {
+                    for (i, arg) in adj_args.iter().enumerate().take(6) {
                         encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                     }
                     code_bytes.push(0xE8);
                     code_bytes.extend_from_slice(&[0, 0, 0, 0]);
                     // Displacement field is after the per-arg bytes and the E8 opcode.
-                    let args_len: u64 = args
+                    let args_len: u64 = adj_args
                         .iter()
                         .enumerate()
                         .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
@@ -10521,12 +10653,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
-                    // Clean up stack args after call.
-                    let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
-                    if n_stack > 0 {
-                        emit_add_rsp(&mut code_bytes, (n_stack * 8) as u32);
-                    }
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::CallCaptureWithArgs {
                     callee,
@@ -10543,15 +10670,20 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         }
                         unresolved_targets.insert(callee.clone());
                     }
-                    // Push stack args (6+) in reverse order per SysV ABI.
-                    for i in (6..args.len()).rev() {
-                        encode_call_arg_bytes(&mut code_bytes, i as u8, &args[i]);
+                    // Adjust all arg slot offsets for outgoing arg area at frame bottom.
+                    let adj_args: Vec<ExecutableCallArg> = args
+                        .iter()
+                        .map(|a| adjust_call_arg(a, outgoing_bytes))
+                        .collect();
+                    // Store stack args (6+) to outgoing arg area at [rsp + (N-6)*8].
+                    for (i, adj_arg) in adj_args.iter().enumerate().skip(6) {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, adj_arg);
                     }
                     // Load register args (0-5).
-                    for (i, arg) in args.iter().enumerate().take(6) {
+                    for (i, arg) in adj_args.iter().enumerate().take(6) {
                         encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                     }
-                    let args_len: u64 = args
+                    let args_len: u64 = adj_args
                         .iter()
                         .enumerate()
                         .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
@@ -10566,22 +10698,29 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
-                    // Clean up stack args after call.
-                    let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
-                    if n_stack > 0 {
-                        emit_add_rsp(&mut code_bytes, (n_stack * 8) as u32);
-                    }
+                    // No stack cleanup needed — outgoing args live in reserved frame space.
                     // Store accumulator to capture slot.
-                    encode_stack_cell_store_accumulator_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    encode_stack_cell_store_accumulator_slot_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *slot_idx,
+                        outgoing_bytes,
+                    );
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::RawPtrLoad {
                     ty,
                     addr_slot_idx,
                     out_slot_idx,
                 } => {
-                    encode_raw_ptr_load_bytes(&mut code_bytes, *ty, *addr_slot_idx, *out_slot_idx);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    encode_raw_ptr_load_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *addr_slot_idx,
+                        *out_slot_idx,
+                        outgoing_bytes,
+                    );
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::RawPtrStore {
                     ty,
@@ -10596,6 +10735,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                     *ty,
                                     *addr_slot_idx,
                                     v,
+                                    outgoing_bytes,
                                 );
                             }
                             Err(e) => {
@@ -10605,15 +10745,18 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 ));
                             }
                         }
-                        local_offset += executable_op_encoded_len(op, n_stack_cells);
+                        local_offset +=
+                            executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                     }
                     MmioValueExpr::Ident { .. } => {
                         encode_raw_ptr_store_saved_value_bytes(
                             &mut code_bytes,
                             *ty,
                             *addr_slot_idx,
+                            outgoing_bytes,
                         );
-                        local_offset += executable_op_encoded_len(op, n_stack_cells);
+                        local_offset +=
+                            executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                     }
                     MmioValueExpr::FloatLiteral { .. } => {
                         return Err(format!(
@@ -10648,8 +10791,9 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         &mut code_bytes,
                         MmioScalarType::U64,
                         *slot_idx,
+                        outgoing_bytes,
                     );
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::InlineAsm(intr) => {
                     let bytes: &[u8] = match intr {
@@ -10666,7 +10810,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         KernelIntrinsic::Cpuid => &[0x0F, 0xA2],
                     };
                     code_bytes.extend_from_slice(bytes);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::CompareIntoSlot {
                     ty,
@@ -10682,8 +10826,9 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         *lhs_idx,
                         *rhs_idx,
                         *out_idx,
+                        outgoing_bytes,
                     );
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::PrintStdout { text } => {
                     let n = text.len();
@@ -10710,7 +10855,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     code_bytes.extend_from_slice(&[0x48, 0x83, 0xC0, n as u8]);
                     // mov [rdi], rax                ; 48 89 07
                     code_bytes.extend_from_slice(&[0x48, 0x89, 0x07]);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::LoopBegin => {
                     // No bytes emitted — just record the loop head position.
@@ -10762,7 +10907,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 }
                 ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
                     // mov al, [rsp + off]  : 8A + SIB disp
-                    let off = 8u32 * *slot_idx as u32;
+                    let off = outgoing_bytes + 8u32 * *slot_idx as u32;
                     code_bytes.push(0x8A);
                     emit_rsp_sib_disp(&mut code_bytes, 0x44, off);
                     // test eax, eax               : 85 C0            (2 bytes)
@@ -10775,11 +10920,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .expect("BranchIfZeroLoopBreak outside loop")
                         .1
                         .push(jcc_start + 2);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
                     // mov al, [rsp + off]  : 8A + SIB disp
-                    let off = 8u32 * *slot_idx as u32;
+                    let off = outgoing_bytes + 8u32 * *slot_idx as u32;
                     code_bytes.push(0x8A);
                     emit_rsp_sib_disp(&mut code_bytes, 0x44, off);
                     // test eax, eax               : 85 C0            (2 bytes)
@@ -10792,7 +10937,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .expect("BranchIfNonZeroLoopBreak outside loop")
                         .1
                         .push(jcc_start + 2);
-                    local_offset += executable_op_encoded_len(op, n_stack_cells);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
                 }
                 ExecutableOp::PortIn {
                     width,
@@ -10935,7 +11080,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 if uses_frame {
                     emit_add_rsp(
                         &mut code_bytes,
-                        8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32,
+                        outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32,
                     );
                 }
                 if uses_saved_value_slot {
@@ -10949,7 +11094,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 if uses_frame {
                     emit_add_rsp(
                         &mut code_bytes,
-                        8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32,
+                        outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32,
                     );
                 }
                 if uses_saved_value_slot {
@@ -10972,8 +11117,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 // point at the return address; callee arg j goes at
                 // [rsp_final + 8 + j*8] = [rsp_now + frame_size + (rbx?8:0) + 8 + j*8].
                 let rbx_adj: u32 = if uses_saved_value_slot { 8 } else { 0 };
-                let frame_size_tc = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
-                for (j, arg) in args.iter().enumerate().skip(6) {
+                // Adjust all arg slot offsets for outgoing arg area at frame bottom.
+                let adj_tc_args: Vec<ExecutableCallArg> = args
+                    .iter()
+                    .map(|a| adjust_call_arg(a, outgoing_bytes))
+                    .collect();
+                let frame_size_tc =
+                    outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
+                for (j, arg) in adj_tc_args.iter().enumerate().skip(6) {
                     let dest_disp = frame_size_tc + rbx_adj + 8 + ((j - 6) as u32) * 8;
                     // Load arg value into rax.
                     encode_call_arg_to_rax(&mut code_bytes, arg);
@@ -10987,10 +11138,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     }
                 }
                 // Load register args (0-5) into SysV registers before frame teardown.
-                for (i, arg) in args.iter().enumerate().take(6) {
+                for (i, arg) in adj_tc_args.iter().enumerate().take(6) {
                     encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                 }
-                let frame_size = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
+                let frame_size =
+                    outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
                 let frame_bytes: u64 = if uses_frame {
                     rsp_adj_encoded_len(frame_size)
                 } else {
@@ -11003,7 +11155,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 if uses_saved_value_slot {
                     code_bytes.push(0x5B);
                 }
-                let args_bytes: u64 = args
+                let args_bytes: u64 = adj_tc_args
                     .iter()
                     .enumerate()
                     .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a))
