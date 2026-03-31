@@ -8211,10 +8211,10 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
         }
         ExecutableOp::MmioWriteValue { ty, .. } => 10 + mmio_saved_value_store_bytes(*ty),
         ExecutableOp::StackStoreImm { ty, slot_idx, .. } => {
-            mmio_value_load_immediate_bytes(*ty) + stack_cell_access_bytes(*ty, *slot_idx)
+            mmio_value_load_immediate_bytes(*ty) + stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes)
         }
-        ExecutableOp::StackStoreValue { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx),
-        ExecutableOp::StackLoad { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx),
+        ExecutableOp::StackStoreValue { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes),
+        ExecutableOp::StackLoad { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes),
         ExecutableOp::SlotArithImm {
             ty,
             slot_idx,
@@ -8222,7 +8222,7 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
             imm,
         } => {
             // load + arith_op + store
-            let access = stack_cell_access_bytes(*ty, *slot_idx);
+            let access = stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes);
             let op_bytes = slot_arith_imm_op_bytes(*arith_op, *imm);
             access + op_bytes + access
         }
@@ -8234,20 +8234,20 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
         } => match arith_op {
             ArithOp::Mul => {
                 // load dst + load src + imulq(4) + store dst
-                2 * stack_cell_access_bytes(*ty, *dst_slot_idx)
-                    + stack_cell_access_bytes(*ty, *src_slot_idx)
+                2 * stack_cell_access_bytes(*ty, *dst_slot_idx, outgoing_bytes)
+                    + stack_cell_access_bytes(*ty, *src_slot_idx, outgoing_bytes)
                     + 4
             }
             ArithOp::Div | ArithOp::Rem => {
                 // load dst_rax + xorq(3) + load src_rcx + divq(3) + store
-                2 * stack_cell_access_bytes(*ty, *dst_slot_idx)
-                    + stack_cell_access_bytes(*ty, *src_slot_idx)
+                2 * stack_cell_access_bytes(*ty, *dst_slot_idx, outgoing_bytes)
+                    + stack_cell_access_bytes(*ty, *src_slot_idx, outgoing_bytes)
                     + 6
             }
             _ => {
                 // load src into scratch reg + typed op into dst memory
-                stack_cell_access_bytes(*ty, *src_slot_idx)
-                    + stack_cell_access_bytes(*ty, *dst_slot_idx)
+                stack_cell_access_bytes(*ty, *src_slot_idx, outgoing_bytes)
+                    + stack_cell_access_bytes(*ty, *dst_slot_idx, outgoing_bytes)
             }
         },
         // ParamLoad: movb/movw/movl/movq off(%rsp), %bl/%bx/%ebx/%rbx
@@ -8320,7 +8320,7 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
                 .sum();
             args_bytes
                 + 5  // call rel32
-                + stack_cell_access_bytes(*ty, *slot_idx) // store acc -> slot
+                + stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes) // store acc -> slot
         }
         // Loop ops:
         ExecutableOp::LoopBegin => 0,    // label only, no bytes
@@ -8329,11 +8329,11 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
         ExecutableOp::LoopContinue => 5, // jmp rel32
         // movzx eax, byte ptr [rsp+off] + test eax, eax (2 bytes) + jz/jnz rel32 (6 bytes)
         ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
-            let offset = 8u32 * *slot_idx as u32;
+            let offset = outgoing_bytes + 8u32 * *slot_idx as u32;
             1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jz
         }
         ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
-            let offset = 8u32 * *slot_idx as u32;
+            let offset = outgoing_bytes + 8u32 * *slot_idx as u32;
             1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jnz
         }
         // load lhs + cmp rhs + setCC al (3) + movzx eax,al (3) + store out
@@ -8344,9 +8344,9 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
             out_idx,
             ..
         } => {
-            let lhs_off = 8u32 * *lhs_idx as u32;
-            let rhs_off = 8u32 * *rhs_idx as u32;
-            let out_off = 8u32 * *out_idx as u32;
+            let lhs_off = outgoing_bytes + 8u32 * *lhs_idx as u32;
+            let rhs_off = outgoing_bytes + 8u32 * *rhs_idx as u32;
+            let out_off = outgoing_bytes + 8u32 * *out_idx as u32;
             compare_into_slot_encoded_len(*ty, lhs_off, rhs_off, out_off)
         }
         // RawPtrLoad: load addr (u64) from addr_slot into %rax, then indirect load [%rax] into %al/etc,
@@ -8356,9 +8356,9 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
             addr_slot_idx,
             out_slot_idx,
         } => {
-            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx)
+            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx, outgoing_bytes)
                 + mmio_load_bytes(*ty)
-                + stack_cell_access_bytes(*ty, *out_slot_idx)
+                + stack_cell_access_bytes(*ty, *out_slot_idx, outgoing_bytes)
         }
         // RawPtrStore: load addr (u64) from addr_slot into %rax, then store value to [%rax].
         ExecutableOp::RawPtrStore {
@@ -8377,7 +8377,7 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
                     )
                 }
             };
-            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx) + value_bytes
+            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx, outgoing_bytes) + value_bytes
         }
         ExecutableOp::InlineAsm(intr) => match intr {
             KernelIntrinsic::Cli
@@ -8391,7 +8391,7 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
         // lea [rip+disp32], %rbx  (7 bytes: REX.W + opcode + ModRM + rel32)
         // followed by mov %rbx, slot(%rsp)
         ExecutableOp::LoadStaticCstrAddr { slot_idx, .. } => {
-            7 + stack_cell_access_bytes(MmioScalarType::U64, *slot_idx)
+            7 + stack_cell_access_bytes(MmioScalarType::U64, *slot_idx, outgoing_bytes)
         }
         // movabs rbx(10) + mov rax,[rbx](3) + lea r8(5) + 5*n byte-writes + add rax,n(4) + mov [rbx],rax(3) = 5n+25
         // Restricted to n < 128 so each index fits in disp8 and n fits in imm8.
@@ -9644,8 +9644,8 @@ fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
 /// Byte count of a stack-cell load or store at the given slot index.
 /// slot_idx=0 uses the no-displacement SIB form (3/4 bytes);
 /// slot_idx>0 uses the disp8 SIB form (4/5 bytes).
-fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
-    let offset = 8u32 * slot_idx as u32;
+fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8, outgoing_bytes: u32) -> u64 {
+    let offset = outgoing_bytes + 8u32 * slot_idx as u32;
     let base: u64 = match ty {
         MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 3,
         MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 4,
@@ -11186,6 +11186,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             offset: function_offset,
             size: function_size,
         });
+        let actual_size = code_bytes.len() as u64 - function_offset;
+        assert_eq!(
+            actual_size, function_size,
+            "function '{}' emitted {} bytes but predicted {}: offset mismatch will corrupt subsequent functions",
+            function.name, actual_size, function_size
+        );
         emit_cursor += function_size;
     }
 
