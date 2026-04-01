@@ -8580,10 +8580,12 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u16, outgoing_byt
             let offset =
                 outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
             let prefix: u64 = match ty {
-                MmioScalarType::U8
-                | MmioScalarType::I8 => 1, // opcode only
+                MmioScalarType::U8 | MmioScalarType::I8 => 1, // opcode only
                 MmioScalarType::U16 | MmioScalarType::I16 => 2, // 0x66 + opcode
-                MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => 2, // REX.W + opcode
+                MmioScalarType::U32
+                | MmioScalarType::I32
+                | MmioScalarType::U64
+                | MmioScalarType::I64 => 2, // REX.W + opcode
                 MmioScalarType::F32 | MmioScalarType::F64 => {
                     unreachable!(
                         "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9060,7 +9062,7 @@ fn compare_into_slot_encoded_len(
         MmioScalarType::U8 | MmioScalarType::I8 => (2, 1), // 0F B6 + SIB, 3A + SIB
         MmioScalarType::U16 | MmioScalarType::I16 => (2, 2), // 0F B7 + SIB, 66 3B + SIB
         // U32/I32 promoted to 64-bit (same as U64)
-        _ => (2, 2),                                       // 48 8B + SIB, 48 3B + SIB
+        _ => (2, 2), // 48 8B + SIB, 48 3B + SIB
     };
     let load_lhs = load_prefix + rsp_sib_disp_len(lhs_off);
     let cmp_rhs = cmp_prefix + rsp_sib_disp_len(rhs_off);
@@ -9190,7 +9192,10 @@ fn encode_slot_arith_slot_op_bytes(
                     out.extend_from_slice(&[0x66, opcode8 + 1]);
                     emit_rsp_sib_disp(out, 0x44, offset);
                 }
-                MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
+                MmioScalarType::U32
+                | MmioScalarType::I32
+                | MmioScalarType::U64
+                | MmioScalarType::I64 => {
                     out.extend_from_slice(&[0x48, opcode8 + 1]);
                     emit_rsp_sib_disp(out, 0x44, offset);
                 }
@@ -9218,7 +9223,10 @@ fn encode_slot_arith_slot_op_bytes(
                     out.extend_from_slice(&[0x66, 0xD3]);
                     emit_rsp_sib_disp(out, modrm_d8, offset);
                 }
-                MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
+                MmioScalarType::U32
+                | MmioScalarType::I32
+                | MmioScalarType::U64
+                | MmioScalarType::I64 => {
                     out.extend_from_slice(&[0x48, 0xD3]);
                     emit_rsp_sib_disp(out, modrm_d8, offset);
                 }
@@ -9952,7 +9960,12 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u16, outgoing_bytes: u3
     let offset = outgoing_bytes + 8u32 * slot_idx as u32;
     let base: u64 = match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => 3,
-        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => 4,
+        MmioScalarType::U16
+        | MmioScalarType::I16
+        | MmioScalarType::U32
+        | MmioScalarType::I32
+        | MmioScalarType::U64
+        | MmioScalarType::I64 => 4,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
