@@ -8575,16 +8575,15 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u16, outgoing_byt
             }
         },
         // ParamLoad: movb/movw/movl/movq off(%rsp), %bl/%bx/%ebx/%rbx
+        // U32/I32 promoted to 64-bit (REX.W) for consistency with 64-bit cell stores.
         ExecutableOp::ParamLoad { ty, param_idx } => {
             let offset =
                 outgoing_bytes + 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
             let prefix: u64 = match ty {
                 MmioScalarType::U8
-                | MmioScalarType::I8
-                | MmioScalarType::U32
-                | MmioScalarType::I32 => 1, // opcode only
+                | MmioScalarType::I8 => 1, // opcode only
                 MmioScalarType::U16 | MmioScalarType::I16 => 2, // 0x66 + opcode
-                MmioScalarType::U64 | MmioScalarType::I64 => 2, // REX.W + opcode
+                MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => 2, // REX.W + opcode
                 MmioScalarType::F32 | MmioScalarType::F64 => {
                     unreachable!(
                         "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8904,6 +8903,7 @@ fn encode_stack_cell_store_imm_slot_bytes(
     let offset = slot_base + 8u32 * slot_idx as u32;
     push_mov_imm_to_value_register(out, ty, value);
     // Store %cl/%cx/%ecx/%rcx (reg=1) to [rsp + offset].
+    // U32/I32 promoted to 64-bit store — see comment in accumulator variant.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x88);
@@ -8913,11 +8913,7 @@ fn encode_stack_cell_store_imm_slot_bytes(
             out.extend_from_slice(&[0x66, 0x89]);
             emit_rsp_sib_disp(out, 0x4C, offset);
         }
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x89);
-            emit_rsp_sib_disp(out, 0x4C, offset);
-        }
-        MmioScalarType::U64 | MmioScalarType::I64 => {
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0x89]);
             emit_rsp_sib_disp(out, 0x4C, offset);
         }
@@ -8937,6 +8933,7 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
     // Store %bl/%bx/%ebx/%rbx (reg=3) to [rsp + offset].
+    // U32/I32 promoted to 64-bit store — see comment in accumulator variant.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x88);
@@ -8947,7 +8944,7 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
             emit_rsp_sib_disp(out, 0x5C, offset);
         }
         MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x89);
+            out.extend_from_slice(&[0x48, 0x89]);
             emit_rsp_sib_disp(out, 0x5C, offset);
         }
         MmioScalarType::U64 | MmioScalarType::I64 => {
@@ -8970,6 +8967,7 @@ fn encode_stack_cell_load_slot_bytes(
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
     // Load [rsp + offset] into %bl/%bx/%ebx/%rbx (reg=3).
+    // U32/I32 promoted to 64-bit load for consistency with 64-bit stores.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x8A);
@@ -8979,11 +8977,7 @@ fn encode_stack_cell_load_slot_bytes(
             out.extend_from_slice(&[0x66, 0x8B]);
             emit_rsp_sib_disp(out, 0x5C, offset);
         }
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x8B);
-            emit_rsp_sib_disp(out, 0x5C, offset);
-        }
-        MmioScalarType::U64 | MmioScalarType::I64 => {
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0x8B]);
             emit_rsp_sib_disp(out, 0x5C, offset);
         }
@@ -9003,6 +8997,7 @@ fn encode_stack_cell_load_slot_bytes_into_rax(
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
+    // U32/I32 promoted to 64-bit load for consistency with 64-bit stores.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x8A);
@@ -9012,11 +9007,7 @@ fn encode_stack_cell_load_slot_bytes_into_rax(
             out.extend_from_slice(&[0x66, 0x8B]);
             emit_rsp_sib_disp(out, 0x44, offset);
         }
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x8B);
-            emit_rsp_sib_disp(out, 0x44, offset);
-        }
-        MmioScalarType::U64 | MmioScalarType::I64 => {
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0x8B]);
             emit_rsp_sib_disp(out, 0x44, offset);
         }
@@ -9036,6 +9027,7 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(
     slot_base: u32,
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
+    // U32/I32 promoted to 64-bit load for consistency with 64-bit stores.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x8A);
@@ -9045,11 +9037,7 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(
             out.extend_from_slice(&[0x66, 0x8B]);
             emit_rsp_sib_disp(out, 0x4C, offset);
         }
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x8B);
-            emit_rsp_sib_disp(out, 0x4C, offset);
-        }
-        MmioScalarType::U64 | MmioScalarType::I64 => {
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0x8B]);
             emit_rsp_sib_disp(out, 0x4C, offset);
         }
@@ -9071,8 +9059,8 @@ fn compare_into_slot_encoded_len(
     let (load_prefix, cmp_prefix): (u64, u64) = match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => (2, 1), // 0F B6 + SIB, 3A + SIB
         MmioScalarType::U16 | MmioScalarType::I16 => (2, 2), // 0F B7 + SIB, 66 3B + SIB
-        MmioScalarType::U32 | MmioScalarType::I32 => (1, 1), // 8B + SIB, 3B + SIB
-        _ => (2, 2),                                       // U64: 48 8B + SIB, 48 3B + SIB
+        // U32/I32 promoted to 64-bit (same as U64)
+        _ => (2, 2),                                       // 48 8B + SIB, 48 3B + SIB
     };
     let load_lhs = load_prefix + rsp_sib_disp_len(lhs_off);
     let cmp_rhs = cmp_prefix + rsp_sib_disp_len(rhs_off);
@@ -9117,16 +9105,8 @@ fn encode_compare_into_slot_bytes(
             out.extend_from_slice(&[0x66, 0x3B]);
             emit_rsp_sib_disp(out, 0x44, rhs_off);
         }
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            // movl lhs_off(%rsp), %eax    [8B + SIB disp]
-            out.push(0x8B);
-            emit_rsp_sib_disp(out, 0x44, lhs_off);
-            // cmpl rhs_off(%rsp), %eax    [3B + SIB disp]
-            out.push(0x3B);
-            emit_rsp_sib_disp(out, 0x44, rhs_off);
-        }
         _ => {
-            // U64: movq lhs_off(%rsp), %rax  [48 8B + SIB disp]
+            // U32/I32/U64/I64: movq lhs_off(%rsp), %rax  [48 8B + SIB disp]
             out.extend_from_slice(&[0x48, 0x8B]);
             emit_rsp_sib_disp(out, 0x44, lhs_off);
             // cmpq rhs_off(%rsp), %rax       [48 3B + SIB disp]
@@ -9200,6 +9180,7 @@ fn encode_slot_arith_slot_op_bytes(
                 ArithOp::Xor => 0x30,
                 _ => unreachable!(),
             };
+            // U32/I32 promoted to 64-bit for consistency with 64-bit cell stores.
             match ty {
                 MmioScalarType::U8 | MmioScalarType::I8 => {
                     out.push(opcode8);
@@ -9209,11 +9190,7 @@ fn encode_slot_arith_slot_op_bytes(
                     out.extend_from_slice(&[0x66, opcode8 + 1]);
                     emit_rsp_sib_disp(out, 0x44, offset);
                 }
-                MmioScalarType::U32 | MmioScalarType::I32 => {
-                    out.push(opcode8 + 1);
-                    emit_rsp_sib_disp(out, 0x44, offset);
-                }
-                MmioScalarType::U64 | MmioScalarType::I64 => {
+                MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
                     out.extend_from_slice(&[0x48, opcode8 + 1]);
                     emit_rsp_sib_disp(out, 0x44, offset);
                 }
@@ -9231,6 +9208,7 @@ fn encode_slot_arith_slot_op_bytes(
                 ArithOp::Shr => 0x6C,
                 _ => unreachable!(),
             };
+            // U32/I32 promoted to 64-bit for consistency with 64-bit cell stores.
             match ty {
                 MmioScalarType::U8 | MmioScalarType::I8 => {
                     out.push(0xD2);
@@ -9240,11 +9218,7 @@ fn encode_slot_arith_slot_op_bytes(
                     out.extend_from_slice(&[0x66, 0xD3]);
                     emit_rsp_sib_disp(out, modrm_d8, offset);
                 }
-                MmioScalarType::U32 | MmioScalarType::I32 => {
-                    out.push(0xD3);
-                    emit_rsp_sib_disp(out, modrm_d8, offset);
-                }
-                MmioScalarType::U64 | MmioScalarType::I64 => {
+                MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
                     out.extend_from_slice(&[0x48, 0xD3]);
                     emit_rsp_sib_disp(out, modrm_d8, offset);
                 }
@@ -9500,6 +9474,7 @@ fn encode_call_arg_to_gpr(out: &mut Vec<u8>, reg_field: u8, is_ext: bool, arg: &
 
 // Emit `MOV ty-sized [rsp+offset] -> %rbx` (load param into saved-value register).
 fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u32) {
+    // U32/I32 promoted to 64-bit load for consistency with 64-bit stores.
     match ty {
         // movb  off(%rsp), %bl  — 0x8A + SIB disp (reg=3, modrm_disp8=0x5C)
         MmioScalarType::U8 | MmioScalarType::I8 => {
@@ -9511,13 +9486,8 @@ fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u32) {
             out.extend_from_slice(&[0x66, 0x8B]);
             emit_rsp_sib_disp(out, 0x5C, offset);
         }
-        // movl  off(%rsp), %ebx — 0x8B + SIB disp (zero-extends to rbx)
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x8B);
-            emit_rsp_sib_disp(out, 0x5C, offset);
-        }
         // movq  off(%rsp), %rbx — REX.W 0x8B + SIB disp
-        MmioScalarType::U64 | MmioScalarType::I64 => {
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0x8B]);
             emit_rsp_sib_disp(out, 0x5C, offset);
         }
@@ -9607,6 +9577,9 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
 ) {
     let offset = slot_base + 8u32 * slot_idx as u32;
     // Store %al/%ax/%eax/%rax (reg=0) to [rsp + offset].
+    // U32/I32 use 64-bit store (REX.W) to zero-fill upper 4 bytes of the
+    // 8-byte stack cell.  This is safe because every 32-bit operation on
+    // x86_64 zero-extends to 64 bits, so rax already has clean upper bits.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0x88);
@@ -9616,11 +9589,7 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
             out.extend_from_slice(&[0x66, 0x89]);
             emit_rsp_sib_disp(out, 0x44, offset);
         }
-        MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.push(0x89);
-            emit_rsp_sib_disp(out, 0x44, offset);
-        }
-        MmioScalarType::U64 | MmioScalarType::I64 => {
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0x89]);
             emit_rsp_sib_disp(out, 0x44, offset);
         }
@@ -9982,8 +9951,8 @@ fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
 fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u16, outgoing_bytes: u32) -> u64 {
     let offset = outgoing_bytes + 8u32 * slot_idx as u32;
     let base: u64 = match ty {
-        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 3,
-        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 4,
+        MmioScalarType::U8 | MmioScalarType::I8 => 3,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::U64 | MmioScalarType::I64 => 4,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
