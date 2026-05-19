@@ -2,6 +2,13 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## Licensing — 2026-05-19
+
+- Relicensed from MIT to Apache 2.0. See `LICENSE` and `NOTICE`.
+- Workspace `Cargo.toml` `license` field updated; all crates inherit via `license.workspace = true`.
+- Copyright attribution updated: `Copyright (c) 2025–2026 Panteleimon-Panagiotis ("Pantelis") Christou`.
+- All commits up to and including the previous one remain available under the MIT license under which they were originally published; everything from this commit forward is Apache 2.0.
+
 ## Unreleased
 
 ### Added
